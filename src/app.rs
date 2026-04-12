@@ -1,0 +1,1290 @@
+use iced::widget::{
+    button, canvas, column, container, horizontal_space, row, scrollable, text,
+    text_input, vertical_space, Space,
+};
+use iced::{
+    alignment, event, keyboard, mouse, time, Color, Element, Fill, Font,
+    Length, Padding, Pixels, Point, Rectangle, Renderer, Size, Subscription,
+    Task, Theme,
+};
+
+use std::collections::HashMap;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
+
+use crate::ssh::{SshEvent, SshManager};
+use crate::storage::{ConnectionConfig, ConnectionInfo, ConnectionStore};
+use crate::terminal::TerminalGrid;
+use crate::ui::theme;
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+pub struct NeoShell {
+    screen: Screen,
+
+    // Password screens
+    password_input: String,
+    confirm_input: String,
+    error_message: String,
+
+    // Connection management
+    store: Arc<ConnectionStore>,
+    connections: Vec<ConnectionInfo>,
+
+    // SSH
+    ssh_manager: Arc<SshManager>,
+    ssh_event_rx: Option<mpsc::Receiver<SshEvent>>,
+
+    // Terminal tabs
+    tabs: Vec<TerminalTab>,
+    active_tab: Option<usize>,
+
+    // Connection form
+    show_form: bool,
+    form: ConnectionFormData,
+    edit_id: Option<String>,
+
+    // Sidebar
+    search_query: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Screen {
+    Setup,
+    Locked,
+    Main,
+}
+
+struct TerminalTab {
+    id: String,
+    session_id: String,
+    title: String,
+    terminal: Arc<parking_lot::Mutex<TerminalGrid>>,
+}
+
+#[derive(Default, Clone)]
+struct ConnectionFormData {
+    name: String,
+    host: String,
+    port: String,
+    username: String,
+    auth_type: String,
+    password: String,
+    private_key: String,
+    passphrase: String,
+    group: String,
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    // Password
+    PasswordChanged(String),
+    ConfirmChanged(String),
+    CreateVault,
+    VaultCreated,
+    UnlockVault,
+    VaultUnlocked,
+
+    // Connections
+    LoadConnections,
+    ConnectionsLoaded(Vec<ConnectionInfo>),
+    ConnectTo(String),
+    DeleteConnection(String),
+
+    // Form
+    ShowForm(Option<String>),
+    HideForm,
+    FormNameChanged(String),
+    FormHostChanged(String),
+    FormPortChanged(String),
+    FormUsernameChanged(String),
+    FormAuthTypeChanged(String),
+    FormPasswordChanged(String),
+    FormPrivateKeyChanged(String),
+    FormPassphraseChanged(String),
+    FormGroupChanged(String),
+    SaveForm,
+
+    // Terminal
+    SshConnected(String, String, String),
+    SshData(String, Vec<u8>),
+    SshClosed(String),
+    TerminalInput(String, String),
+    TabSelected(usize),
+    TabClosed(usize),
+
+    // Polling / keyboard
+    PollSshEvents,
+    KeyboardEvent(keyboard::Key, keyboard::Modifiers),
+    // Search
+    SearchChanged(String),
+
+    // Misc
+    Tick,
+    None,
+    Error(String),
+}
+
+// ---------------------------------------------------------------------------
+// Default (initial state before run_with)
+// ---------------------------------------------------------------------------
+
+impl Default for NeoShell {
+    fn default() -> Self {
+        let store = Arc::new(ConnectionStore::new());
+        let (ssh_manager, ssh_event_rx) = SshManager::new();
+
+        let screen = if store.vault_exists() {
+            Screen::Locked
+        } else {
+            Screen::Setup
+        };
+
+        Self {
+            screen,
+            password_input: String::new(),
+            confirm_input: String::new(),
+            error_message: String::new(),
+            store,
+            connections: Vec::new(),
+            ssh_manager: Arc::new(ssh_manager),
+            ssh_event_rx: Some(ssh_event_rx),
+            tabs: Vec::new(),
+            active_tab: None,
+            show_form: false,
+            form: ConnectionFormData::default(),
+            edit_id: None,
+            search_query: String::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Application entry point
+// ---------------------------------------------------------------------------
+
+pub fn run() -> iced::Result {
+    iced::application("NeoShell", update, view)
+        .subscription(subscription)
+        .theme(|_state| Theme::Dark)
+        .window_size(Size::new(1200.0, 800.0))
+        .antialiasing(true)
+        .default_font(Font::MONOSPACE)
+        .run()
+}
+
+// ---------------------------------------------------------------------------
+// Update
+// ---------------------------------------------------------------------------
+
+fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
+    match message {
+        // ---- password / vault ------------------------------------------------
+        Message::PasswordChanged(v) => {
+            state.password_input = v;
+            Task::none()
+        }
+        Message::ConfirmChanged(v) => {
+            state.confirm_input = v;
+            Task::none()
+        }
+        Message::CreateVault => {
+            if state.password_input.len() < 4 {
+                state.error_message = "Password must be at least 4 characters".into();
+                return Task::none();
+            }
+            if state.password_input != state.confirm_input {
+                state.error_message = "Passwords do not match".into();
+                return Task::none();
+            }
+            let store = state.store.clone();
+            let pw = state.password_input.clone();
+            Task::perform(
+                async move { store.set_master_password(&pw) },
+                |result| match result {
+                    Ok(()) => Message::VaultCreated,
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+        Message::VaultCreated => {
+            state.screen = Screen::Main;
+            state.password_input.clear();
+            state.confirm_input.clear();
+            state.error_message.clear();
+            Task::done(Message::LoadConnections)
+        }
+        Message::UnlockVault => {
+            let store = state.store.clone();
+            let pw = state.password_input.clone();
+            Task::perform(
+                async move { store.unlock(&pw) },
+                |result| match result {
+                    Ok(true) => Message::VaultUnlocked,
+                    Ok(false) => Message::Error("Invalid password".into()),
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+        Message::VaultUnlocked => {
+            state.screen = Screen::Main;
+            state.password_input.clear();
+            state.error_message.clear();
+            Task::done(Message::LoadConnections)
+        }
+
+        // ---- connections -----------------------------------------------------
+        Message::LoadConnections => {
+            let store = state.store.clone();
+            Task::perform(
+                async move { store.get_connections() },
+                |result| match result {
+                    Ok(conns) => Message::ConnectionsLoaded(conns),
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+        Message::ConnectionsLoaded(conns) => {
+            state.connections = conns;
+            Task::none()
+        }
+        Message::ConnectTo(id) => {
+            let store = state.store.clone();
+            let ssh = state.ssh_manager.clone();
+            let tab_id = uuid::Uuid::new_v4().to_string();
+            Task::perform(
+                async move {
+                    let config = store.get_connection(&id)?;
+                    let session_id = ssh.connect_config(&config)?;
+                    let title = format!("{}@{}:{}", config.username, config.host, config.port);
+                    Ok((tab_id, session_id, title))
+                },
+                |result: Result<(String, String, String), String>| match result {
+                    Ok((tab_id, session_id, title)) => {
+                        Message::SshConnected(tab_id, session_id, title)
+                    }
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+        Message::DeleteConnection(id) => {
+            let store = state.store.clone();
+            Task::perform(
+                async move {
+                    store.delete_connection(&id)?;
+                    store.get_connections()
+                },
+                |result| match result {
+                    Ok(conns) => Message::ConnectionsLoaded(conns),
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+
+        // ---- form ------------------------------------------------------------
+        Message::ShowForm(maybe_id) => {
+            state.show_form = true;
+            if let Some(id) = maybe_id.clone() {
+                state.edit_id = Some(id.clone());
+                if let Some(info) = state.connections.iter().find(|c| c.id == id) {
+                    state.form = ConnectionFormData {
+                        name: info.name.clone(),
+                        host: info.host.clone(),
+                        port: info.port.to_string(),
+                        username: info.username.clone(),
+                        auth_type: info.auth_type.clone(),
+                        group: info.group.clone(),
+                        ..Default::default()
+                    };
+                }
+            } else {
+                state.edit_id = None;
+                state.form = ConnectionFormData {
+                    port: "22".into(),
+                    auth_type: "password".into(),
+                    ..Default::default()
+                };
+            }
+            Task::none()
+        }
+        Message::HideForm => {
+            state.show_form = false;
+            state.edit_id = None;
+            state.form = ConnectionFormData::default();
+            Task::none()
+        }
+        Message::FormNameChanged(v) => {
+            state.form.name = v;
+            Task::none()
+        }
+        Message::FormHostChanged(v) => {
+            state.form.host = v;
+            Task::none()
+        }
+        Message::FormPortChanged(v) => {
+            state.form.port = v;
+            Task::none()
+        }
+        Message::FormUsernameChanged(v) => {
+            state.form.username = v;
+            Task::none()
+        }
+        Message::FormAuthTypeChanged(v) => {
+            state.form.auth_type = v;
+            Task::none()
+        }
+        Message::FormPasswordChanged(v) => {
+            state.form.password = v;
+            Task::none()
+        }
+        Message::FormPrivateKeyChanged(v) => {
+            state.form.private_key = v;
+            Task::none()
+        }
+        Message::FormPassphraseChanged(v) => {
+            state.form.passphrase = v;
+            Task::none()
+        }
+        Message::FormGroupChanged(v) => {
+            state.form.group = v;
+            Task::none()
+        }
+        Message::SaveForm => {
+            let port: u16 = state.form.port.parse().unwrap_or(22);
+            let config = ConnectionConfig {
+                id: state.edit_id.clone().unwrap_or_default(),
+                name: state.form.name.clone(),
+                host: state.form.host.clone(),
+                port,
+                username: state.form.username.clone(),
+                auth_type: state.form.auth_type.clone(),
+                password: if state.form.password.is_empty() {
+                    None
+                } else {
+                    Some(state.form.password.clone())
+                },
+                private_key: if state.form.private_key.is_empty() {
+                    None
+                } else {
+                    Some(state.form.private_key.clone())
+                },
+                passphrase: if state.form.passphrase.is_empty() {
+                    None
+                } else {
+                    Some(state.form.passphrase.clone())
+                },
+                group: state.form.group.clone(),
+                color: String::new(),
+            };
+
+            let store = state.store.clone();
+            let is_edit = state.edit_id.is_some();
+
+            state.show_form = false;
+            state.edit_id = None;
+            state.form = ConnectionFormData::default();
+
+            Task::perform(
+                async move {
+                    if is_edit {
+                        store.update_connection(config)?;
+                    } else {
+                        store.save_connection(config)?;
+                    }
+                    store.get_connections()
+                },
+                |result| match result {
+                    Ok(conns) => Message::ConnectionsLoaded(conns),
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+
+        // ---- terminal --------------------------------------------------------
+        Message::SshConnected(tab_id, session_id, title) => {
+            let terminal = Arc::new(parking_lot::Mutex::new(TerminalGrid::new(80, 24)));
+            state.tabs.push(TerminalTab {
+                id: tab_id,
+                session_id,
+                title,
+                terminal,
+            });
+            state.active_tab = Some(state.tabs.len() - 1);
+            Task::none()
+        }
+        Message::SshData(session_id, data) => {
+            if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
+                let mut grid = tab.terminal.lock();
+                grid.write(&data);
+            }
+            Task::none()
+        }
+        Message::SshClosed(session_id) => {
+            if let Some(idx) = state.tabs.iter().position(|t| t.session_id == session_id) {
+                state.tabs.remove(idx);
+                if state.tabs.is_empty() {
+                    state.active_tab = None;
+                } else {
+                    state.active_tab = Some(idx.min(state.tabs.len() - 1));
+                }
+            }
+            Task::none()
+        }
+        Message::TerminalInput(session_id, data) => {
+            let ssh = state.ssh_manager.clone();
+            Task::perform(
+                async move {
+                    ssh.send_data(&session_id, data.as_bytes())?;
+                    Ok(())
+                },
+                |result: Result<(), String>| match result {
+                    Ok(()) => Message::None,
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+        Message::TabSelected(idx) => {
+            if idx < state.tabs.len() {
+                state.active_tab = Some(idx);
+            }
+            Task::none()
+        }
+        Message::TabClosed(idx) => {
+            if idx < state.tabs.len() {
+                let session_id = state.tabs[idx].session_id.clone();
+                let ssh = state.ssh_manager.clone();
+                state.tabs.remove(idx);
+                if state.tabs.is_empty() {
+                    state.active_tab = None;
+                } else {
+                    state.active_tab = Some(idx.min(state.tabs.len() - 1));
+                }
+                Task::perform(
+                    async move {
+                        let _ = ssh.disconnect(&session_id);
+                    },
+                    |_| Message::None,
+                )
+            } else {
+                Task::none()
+            }
+        }
+
+        // ---- SSH event polling -----------------------------------------------
+        Message::PollSshEvents => {
+            if let Some(rx) = &state.ssh_event_rx {
+                while let Ok(event) = rx.try_recv() {
+                    match event {
+                        SshEvent::Data { session_id, data } => {
+                            if let Some(tab) =
+                                state.tabs.iter().find(|t| t.session_id == session_id)
+                            {
+                                let mut grid = tab.terminal.lock();
+                                grid.write(&data);
+                            }
+                        }
+                        SshEvent::Closed { session_id } => {
+                            if let Some(idx) =
+                                state.tabs.iter().position(|t| t.session_id == session_id)
+                            {
+                                state.tabs.remove(idx);
+                                if state.tabs.is_empty() {
+                                    state.active_tab = None;
+                                } else {
+                                    state.active_tab = Some(idx.min(state.tabs.len() - 1));
+                                }
+                            }
+                        }
+                        SshEvent::Error { session_id, error } => {
+                            log::error!("SSH error for {}: {}", session_id, error);
+                        }
+                    }
+                }
+            }
+            Task::none()
+        }
+
+        // ---- keyboard -------------------------------------------------------
+        Message::KeyboardEvent(key, modifiers) => {
+            if state.screen != Screen::Main {
+                return Task::none();
+            }
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    let session_id = tab.session_id.clone();
+                    if let Some(data) = key_to_terminal_bytes(&key, &modifiers) {
+                        return Task::done(Message::TerminalInput(session_id, data));
+                    }
+                }
+            }
+            Task::none()
+        }
+        // ---- search ----------------------------------------------------------
+        Message::SearchChanged(v) => {
+            state.search_query = v;
+            Task::none()
+        }
+
+        // ---- misc ------------------------------------------------------------
+        Message::Tick => Task::none(),
+        Message::None => Task::none(),
+        Message::Error(e) => {
+            state.error_message = e;
+            Task::none()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Subscription
+// ---------------------------------------------------------------------------
+
+fn subscription(state: &NeoShell) -> Subscription<Message> {
+    let mut subs = vec![
+        time::every(Duration::from_millis(50)).map(|_| Message::PollSshEvents),
+    ];
+
+    // Listen for keyboard events when we're on the main screen with an active
+    // terminal tab. We use `event::listen_with` so we can capture key events
+    // even when the canvas does not have focus.
+    if state.screen == Screen::Main && state.active_tab.is_some() {
+        subs.push(event::listen_with(handle_event));
+    }
+
+    Subscription::batch(subs)
+}
+
+/// Global event handler forwarded from `event::listen_with`.
+/// Only forward key presses that were not captured by a widget (e.g. text_input).
+fn handle_event(
+    evt: iced::Event,
+    status: event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    if status == event::Status::Captured {
+        return None;
+    }
+    match evt {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            ..
+        }) => Some(Message::KeyboardEvent(key, modifiers)),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// View
+// ---------------------------------------------------------------------------
+
+fn view(state: &NeoShell) -> Element<Message> {
+    match &state.screen {
+        Screen::Setup => view_setup(state),
+        Screen::Locked => view_unlock(state),
+        Screen::Main => view_main(state),
+    }
+}
+
+// ---- Setup screen --------------------------------------------------------
+
+fn view_setup(state: &NeoShell) -> Element<'_, Message> {
+    let title = text("Welcome to NeoShell")
+        .size(28)
+        .color(theme::TEXT_PRIMARY);
+
+    let subtitle = text("Create a master password to protect your connections")
+        .size(14)
+        .color(theme::TEXT_SECONDARY);
+
+    let pw_input = text_input("Master password", &state.password_input)
+        .on_input(Message::PasswordChanged)
+        .secure(true)
+        .padding(10)
+        .size(16);
+
+    let confirm_input = text_input("Confirm password", &state.confirm_input)
+        .on_input(Message::ConfirmChanged)
+        .secure(true)
+        .padding(10)
+        .size(16);
+
+    let create_btn = button(
+        text("Create Vault").color(theme::TEXT_PRIMARY).size(16),
+    )
+    .on_press(Message::CreateVault)
+    .padding(Padding::from([10, 24]))
+    .style(accent_button_style);
+
+    let error_text = if state.error_message.is_empty() {
+        text("").size(1)
+    } else {
+        text(&state.error_message).color(theme::DANGER).size(14)
+    };
+
+    let form = column![title, subtitle, pw_input, confirm_input, error_text, create_btn]
+        .spacing(16)
+        .align_x(alignment::Horizontal::Center)
+        .width(360);
+
+    container(form)
+        .center_x(Fill)
+        .center_y(Fill)
+        .width(Fill)
+        .height(Fill)
+        .style(bg_primary_container)
+        .into()
+}
+
+// ---- Unlock screen -------------------------------------------------------
+
+fn view_unlock(state: &NeoShell) -> Element<'_, Message> {
+    let title = text("NeoShell")
+        .size(28)
+        .color(theme::TEXT_PRIMARY);
+
+    let subtitle = text("Enter master password to unlock")
+        .size(14)
+        .color(theme::TEXT_SECONDARY);
+
+    let pw_input = text_input("Master password", &state.password_input)
+        .on_input(Message::PasswordChanged)
+        .on_submit(Message::UnlockVault)
+        .secure(true)
+        .padding(10)
+        .size(16);
+
+    let unlock_btn = button(
+        text("Unlock").color(theme::TEXT_PRIMARY).size(16),
+    )
+    .on_press(Message::UnlockVault)
+    .padding(Padding::from([10, 24]))
+    .style(accent_button_style);
+
+    let error_text = if state.error_message.is_empty() {
+        text("").size(1)
+    } else {
+        text(&state.error_message).color(theme::DANGER).size(14)
+    };
+
+    let form = column![title, subtitle, pw_input, error_text, unlock_btn]
+        .spacing(16)
+        .align_x(alignment::Horizontal::Center)
+        .width(360);
+
+    container(form)
+        .center_x(Fill)
+        .center_y(Fill)
+        .width(Fill)
+        .height(Fill)
+        .style(bg_primary_container)
+        .into()
+}
+
+// ---- Main screen (tabs + sidebar + terminal) -----------------------------
+
+fn view_main(state: &NeoShell) -> Element<'_, Message> {
+    let tab_bar = view_tab_bar(state);
+    let sidebar = view_sidebar(state);
+    let terminal_area = view_terminal_area(state);
+    let status_bar = view_status_bar(state);
+
+    let body = row![
+        container(sidebar).width(220).height(Fill),
+        container(terminal_area).width(Fill).height(Fill),
+    ];
+
+    let mut main_col = column![tab_bar, body, status_bar];
+
+    // If connection form is visible, we overlay it.  Since iced doesn't have
+    // a built-in modal, we layer it by replacing the main content entirely
+    // with a modal wrapper.
+    if state.show_form {
+        let overlay = view_connection_form(state);
+        main_col = column![overlay];
+    }
+
+    container(main_col)
+        .width(Fill)
+        .height(Fill)
+        .style(bg_primary_container)
+        .into()
+}
+
+// ---- Tab bar -------------------------------------------------------------
+
+fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
+    let mut tabs_row = row![].spacing(0);
+
+    for (i, tab) in state.tabs.iter().enumerate() {
+        let is_active = state.active_tab == Some(i);
+        let bg_color = if is_active { theme::BG_TERTIARY } else { theme::BG_SECONDARY };
+        let text_color = if is_active {
+            theme::TEXT_PRIMARY
+        } else {
+            theme::TEXT_SECONDARY
+        };
+
+        let label = text(&tab.title).color(text_color).size(13);
+        let close_btn = button(text("x").color(theme::TEXT_MUTED).size(11))
+            .on_press(Message::TabClosed(i))
+            .padding(Padding::from([2, 6]))
+            .style(transparent_button_style);
+
+        let tab_content = row![label, close_btn].spacing(8).align_y(alignment::Vertical::Center);
+
+        let tab_btn = button(tab_content)
+            .on_press(Message::TabSelected(i))
+            .padding(Padding::from([6, 14]))
+            .style(move |theme: &Theme, status| {
+                let mut s = button::Style::default();
+                s.background = Some(bg_color.into());
+                s.text_color = text_color;
+                if let button::Status::Hovered = status {
+                    s.background = Some(theme::BG_HOVER.into());
+                }
+                s
+            });
+
+        tabs_row = tabs_row.push(tab_btn);
+    }
+
+    // Fill remaining space with empty bar
+    tabs_row = tabs_row.push(horizontal_space());
+
+    container(tabs_row)
+        .width(Fill)
+        .height(34)
+        .style(|_theme| container::Style {
+            background: Some(theme::BG_SECONDARY.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- Sidebar -------------------------------------------------------------
+
+fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
+    let header = row![
+        text("Connections").color(theme::TEXT_PRIMARY).size(15),
+        horizontal_space(),
+        button(text("+").color(theme::ACCENT).size(18))
+            .on_press(Message::ShowForm(None))
+            .padding(Padding::from([2, 8]))
+            .style(transparent_button_style),
+    ]
+    .align_y(alignment::Vertical::Center)
+    .padding(Padding::from([8, 12]));
+
+    let search = text_input("Search...", &state.search_query)
+        .on_input(Message::SearchChanged)
+        .padding(8)
+        .size(13);
+
+    let search_container = container(search)
+        .padding(Padding::new(8.0).top(0.0));
+
+    // Group connections
+    let query = state.search_query.to_lowercase();
+    let filtered: Vec<&ConnectionInfo> = state
+        .connections
+        .iter()
+        .filter(|c| {
+            if query.is_empty() {
+                return true;
+            }
+            c.name.to_lowercase().contains(&query)
+                || c.host.to_lowercase().contains(&query)
+                || c.username.to_lowercase().contains(&query)
+                || c.group.to_lowercase().contains(&query)
+        })
+        .collect();
+
+    // Build grouped list
+    let mut groups: HashMap<String, Vec<&ConnectionInfo>> = HashMap::new();
+    for conn in &filtered {
+        let group_name = if conn.group.is_empty() {
+            "Ungrouped".to_string()
+        } else {
+            conn.group.clone()
+        };
+        groups.entry(group_name).or_default().push(conn);
+    }
+
+    let mut list_col = column![].spacing(2);
+
+    let mut group_names: Vec<String> = groups.keys().cloned().collect();
+    group_names.sort();
+
+    for group_name in group_names {
+        let conns = &groups[&group_name];
+
+        let group_label = text(group_name.clone())
+            .color(theme::TEXT_MUTED)
+            .size(11);
+
+        list_col = list_col.push(
+            container(group_label).padding(Padding::new(12.0).top(6.0).bottom(2.0)),
+        );
+
+        for conn in conns {
+            let status_dot = text("\u{25CF} ").color(theme::SUCCESS).size(10);
+            let name_label = text(&conn.name).color(theme::TEXT_PRIMARY).size(13);
+            let host_label = text(format!("{}@{}:{}", conn.username, conn.host, conn.port))
+                .color(theme::TEXT_MUTED)
+                .size(11);
+
+            let conn_content = column![
+                row![status_dot, name_label].align_y(alignment::Vertical::Center),
+                host_label,
+            ]
+            .spacing(2);
+
+            let conn_id = conn.id.clone();
+            let conn_id_for_edit = conn.id.clone();
+            let conn_id_for_delete = conn.id.clone();
+
+            let connect_btn = button(conn_content)
+                .on_press(Message::ConnectTo(conn_id))
+                .padding(Padding::from([6, 12]))
+                .width(Fill)
+                .style(sidebar_item_style);
+
+            list_col = list_col.push(connect_btn);
+        }
+    }
+
+    if filtered.is_empty() {
+        list_col = list_col.push(
+            container(
+                text("No connections found")
+                    .color(theme::TEXT_MUTED)
+                    .size(13),
+            )
+            .padding(Padding::from([16, 12])),
+        );
+    }
+
+    let sidebar_content = column![header, search_container, scrollable(list_col).height(Fill)]
+        .height(Fill);
+
+    container(sidebar_content)
+        .width(220)
+        .height(Fill)
+        .style(|_theme| container::Style {
+            background: Some(theme::BG_SECONDARY.into()),
+            border: iced::Border {
+                color: theme::BORDER,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- Terminal area -------------------------------------------------------
+
+fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
+    if let Some(idx) = state.active_tab {
+        if let Some(tab) = state.tabs.get(idx) {
+            let term_view = TerminalView {
+                grid: tab.terminal.clone(),
+            };
+
+            return canvas(term_view)
+                .width(Fill)
+                .height(Fill)
+                .into();
+        }
+    }
+
+    // Empty state
+    let placeholder = column![
+        vertical_space().height(80),
+        text("NeoShell").size(36).color(theme::TEXT_MUTED),
+        text("Select a connection from the sidebar to begin")
+            .size(14)
+            .color(theme::TEXT_MUTED),
+    ]
+    .spacing(12)
+    .align_x(alignment::Horizontal::Center);
+
+    container(placeholder)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .style(|_theme| container::Style {
+            background: Some(theme::BG_PRIMARY.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- Status bar ----------------------------------------------------------
+
+fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
+    let left = text("NeoShell v0.1.0")
+        .color(theme::TEXT_MUTED)
+        .size(12);
+
+    let right = if let Some(idx) = state.active_tab {
+        if let Some(tab) = state.tabs.get(idx) {
+            text(&tab.title).color(theme::TEXT_SECONDARY).size(12)
+        } else {
+            text("").size(12)
+        }
+    } else {
+        text("No active session").color(theme::TEXT_MUTED).size(12)
+    };
+
+    let bar = row![left, horizontal_space(), right]
+        .padding(Padding::from([4, 12]))
+        .align_y(alignment::Vertical::Center);
+
+    container(bar)
+        .width(Fill)
+        .height(24)
+        .style(|_theme| container::Style {
+            background: Some(theme::BG_TERTIARY.into()),
+            border: iced::Border {
+                color: theme::BORDER,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- Connection form (modal-like) ----------------------------------------
+
+fn view_connection_form(state: &NeoShell) -> Element<'_, Message> {
+    let title_text = if state.edit_id.is_some() {
+        "Edit Connection"
+    } else {
+        "New Connection"
+    };
+
+    let title = text(title_text)
+        .size(20)
+        .color(theme::TEXT_PRIMARY);
+
+    let name_input = labeled_input("Name", &state.form.name, Message::FormNameChanged);
+    let host_input = labeled_input("Host", &state.form.host, Message::FormHostChanged);
+    let port_input = labeled_input("Port", &state.form.port, Message::FormPortChanged);
+    let user_input = labeled_input("Username", &state.form.username, Message::FormUsernameChanged);
+
+    let auth_row = row![
+        button(text("Password").color(if state.form.auth_type == "password" { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED }).size(13))
+            .on_press(Message::FormAuthTypeChanged("password".into()))
+            .padding(Padding::from([6, 12]))
+            .style(if state.form.auth_type == "password" { accent_button_style } else { transparent_button_style }),
+        button(text("Private Key").color(if state.form.auth_type == "key" { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED }).size(13))
+            .on_press(Message::FormAuthTypeChanged("key".into()))
+            .padding(Padding::from([6, 12]))
+            .style(if state.form.auth_type == "key" { accent_button_style } else { transparent_button_style }),
+    ]
+    .spacing(8);
+
+    let auth_label = text("Auth Type").color(theme::TEXT_SECONDARY).size(12);
+
+    let auth_fields: Element<'_, Message> = if state.form.auth_type == "key" {
+        column![
+            labeled_input("Private Key Path", &state.form.private_key, Message::FormPrivateKeyChanged),
+            labeled_input("Passphrase (optional)", &state.form.passphrase, Message::FormPassphraseChanged),
+        ]
+        .spacing(12)
+        .into()
+    } else {
+        labeled_input("Password", &state.form.password, Message::FormPasswordChanged)
+    };
+
+    let group_input = labeled_input("Group (optional)", &state.form.group, Message::FormGroupChanged);
+
+    let error_text = if state.error_message.is_empty() {
+        text("").size(1)
+    } else {
+        text(&state.error_message).color(theme::DANGER).size(13)
+    };
+
+    let buttons = row![
+        button(text("Cancel").color(theme::TEXT_SECONDARY).size(14))
+            .on_press(Message::HideForm)
+            .padding(Padding::from([8, 20]))
+            .style(transparent_button_style),
+        button(text("Save").color(theme::TEXT_PRIMARY).size(14))
+            .on_press(Message::SaveForm)
+            .padding(Padding::from([8, 20]))
+            .style(accent_button_style),
+    ]
+    .spacing(12);
+
+    let form = column![
+        title,
+        name_input,
+        host_input,
+        port_input,
+        user_input,
+        auth_label,
+        auth_row,
+        auth_fields,
+        group_input,
+        error_text,
+        buttons,
+    ]
+    .spacing(12)
+    .width(440)
+    .padding(24);
+
+    let card = container(form)
+        .style(|_theme| container::Style {
+            background: Some(theme::BG_SECONDARY.into()),
+            border: iced::Border {
+                color: theme::BORDER,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 20.0,
+            },
+            ..Default::default()
+        });
+
+    // Center the card as a modal overlay
+    container(card)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .style(|_theme| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Helper: a labeled text input field.
+fn labeled_input<'a>(
+    label: &'a str,
+    value: &'a str,
+    on_change: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    let label_text = text(label).color(theme::TEXT_SECONDARY).size(12);
+    let input = text_input("", value)
+        .on_input(on_change)
+        .padding(8)
+        .size(14);
+    column![label_text, input].spacing(4).into()
+}
+
+// ---------------------------------------------------------------------------
+// Terminal canvas program
+// ---------------------------------------------------------------------------
+
+struct TerminalView {
+    grid: Arc<parking_lot::Mutex<TerminalGrid>>,
+}
+
+impl<Message> canvas::Program<Message> for TerminalView {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let grid = self.grid.lock();
+        let font_size: f32 = 14.0;
+        let cell_w = font_size * 0.6;
+        let cell_h = font_size * 1.5;
+
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+
+        // Background fill
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::BG_PRIMARY);
+
+        // Draw each cell
+        for y in 0..grid.rows {
+            for x in 0..grid.cols {
+                let cell = &grid.cells[y][x];
+                if cell.c != ' ' && cell.c != '\0' {
+                    // Cell background (if non-default)
+                    let bg = cell_color_to_iced(cell.style.bg);
+                    if bg != theme::BG_PRIMARY {
+                        frame.fill_rectangle(
+                            Point::new(x as f32 * cell_w, y as f32 * cell_h),
+                            Size::new(cell_w, cell_h),
+                            bg,
+                        );
+                    }
+
+                    // Foreground text
+                    let fg = if cell.style.inverse {
+                        cell_color_to_iced(cell.style.bg)
+                    } else {
+                        cell_color_to_iced(cell.style.fg)
+                    };
+
+                    frame.fill_text(canvas::Text {
+                        content: cell.c.to_string(),
+                        position: Point::new(x as f32 * cell_w, y as f32 * cell_h),
+                        color: fg,
+                        size: Pixels(font_size),
+                        font: Font::MONOSPACE,
+                        ..canvas::Text::default()
+                    });
+                }
+            }
+        }
+
+        // Cursor
+        if grid.cursor_visible && grid.cursor_y < grid.rows && grid.cursor_x < grid.cols {
+            frame.fill_rectangle(
+                Point::new(grid.cursor_x as f32 * cell_w, grid.cursor_y as f32 * cell_h),
+                Size::new(2.0, cell_h),
+                theme::ACCENT,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Convert our terminal color (r, g, b fields) to an iced Color.
+fn cell_color_to_iced(c: crate::terminal::Color) -> Color {
+    Color::from_rgb(c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0)
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard → terminal byte conversion
+// ---------------------------------------------------------------------------
+
+fn key_to_terminal_bytes(key: &keyboard::Key, modifiers: &keyboard::Modifiers) -> Option<String> {
+    use keyboard::key::Named;
+    use keyboard::Key;
+
+    match key {
+        Key::Character(c) => {
+            let s = c.as_str();
+            if modifiers.control() && s.len() == 1 {
+                // Ctrl+letter → send control character (0x01..0x1A)
+                let ch = s.chars().next()?;
+                if ch.is_ascii_alphabetic() {
+                    let ctrl_byte = (ch.to_ascii_uppercase() as u8) - b'A' + 1;
+                    return Some(String::from(ctrl_byte as char));
+                }
+            }
+            Some(s.to_string())
+        }
+        Key::Named(named) => {
+            let seq = match named {
+                Named::Enter => "\r",
+                Named::Backspace => "\x7f",
+                Named::Tab => "\t",
+                Named::Escape => "\x1b",
+                Named::ArrowUp => "\x1b[A",
+                Named::ArrowDown => "\x1b[B",
+                Named::ArrowRight => "\x1b[C",
+                Named::ArrowLeft => "\x1b[D",
+                Named::Home => "\x1b[H",
+                Named::End => "\x1b[F",
+                Named::PageUp => "\x1b[5~",
+                Named::PageDown => "\x1b[6~",
+                Named::Insert => "\x1b[2~",
+                Named::Delete => "\x1b[3~",
+                Named::F1 => "\x1bOP",
+                Named::F2 => "\x1bOQ",
+                Named::F3 => "\x1bOR",
+                Named::F4 => "\x1bOS",
+                Named::F5 => "\x1b[15~",
+                Named::F6 => "\x1b[17~",
+                Named::F7 => "\x1b[18~",
+                Named::F8 => "\x1b[19~",
+                Named::F9 => "\x1b[20~",
+                Named::F10 => "\x1b[21~",
+                Named::F11 => "\x1b[23~",
+                Named::F12 => "\x1b[24~",
+                Named::Space => " ",
+                _ => return None,
+            };
+            Some(seq.to_string())
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Style helpers
+// ---------------------------------------------------------------------------
+
+fn bg_primary_container(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme::BG_PRIMARY.into()),
+        ..Default::default()
+    }
+}
+
+fn accent_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => Color::from_rgb(
+            theme::ACCENT.r * 1.15,
+            theme::ACCENT.g * 1.15,
+            theme::ACCENT.b * 1.15,
+        ),
+        _ => theme::ACCENT,
+    };
+    button::Style {
+        background: Some(bg.into()),
+        text_color: theme::TEXT_PRIMARY,
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn transparent_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => Some(theme::BG_HOVER.into()),
+        _ => None,
+    };
+    button::Style {
+        background: bg,
+        text_color: theme::TEXT_PRIMARY,
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn sidebar_item_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => Some(theme::BG_HOVER.into()),
+        _ => Some(Color::TRANSPARENT.into()),
+    };
+    button::Style {
+        background: bg,
+        text_color: theme::TEXT_PRIMARY,
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}

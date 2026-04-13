@@ -123,6 +123,10 @@ pub struct NeoShell {
     net_rx_rate: HashMap<String, f64>,
     net_tx_rate: HashMap<String, f64>,
 
+    // Track last command typed per session (for sz filename capture)
+    cmd_buffer: HashMap<String, String>,
+    sz_filename: HashMap<String, String>,  // session_id -> captured filename from "sz xxx"
+
     // ZMODEM: suppress residual binary data for ~2s after detection
     zmodem_active: HashMap<String, std::time::Instant>,
 
@@ -317,6 +321,8 @@ impl Default for NeoShell {
             prev_net_time: HashMap::new(),
             net_rx_rate: HashMap::new(),
             net_tx_rate: HashMap::new(),
+            cmd_buffer: HashMap::new(),
+            sz_filename: HashMap::new(),
             zmodem_active: HashMap::new(),
             selection_start: None,
             selection_end: None,
@@ -685,6 +691,24 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::TerminalInput(session_id, data) => {
+            // Track typed commands to capture "sz filename"
+            let buf = state.cmd_buffer.entry(session_id.clone()).or_default();
+            if data == "\r" || data == "\n" {
+                // Enter pressed — check for sz command
+                let cmd = buf.trim().to_string();
+                if cmd.starts_with("sz ") {
+                    let filename = cmd[3..].trim().to_string();
+                    if !filename.is_empty() {
+                        state.sz_filename.insert(session_id.clone(), filename);
+                    }
+                }
+                buf.clear();
+            } else if data == "\x7f" || data == "\x08" {
+                buf.pop(); // Backspace
+            } else if data.chars().all(|c| !c.is_control()) {
+                buf.push_str(&data);
+            }
+
             let ssh = state.ssh_manager.clone();
             Task::perform(
                 async move {
@@ -1325,10 +1349,64 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::done(Message::ChangeDir(sid, path))
         }
         Message::SzDetected(sid) => {
-            // Refresh the SFTP file browser so the user can pick the file to download
-            let path = state.current_dir.get(&sid).cloned()
-                .unwrap_or_else(|| "~".to_string());
-            Task::done(Message::ChangeDir(sid, path))
+            // Use captured filename from "sz filename" command
+            let filename = state.sz_filename.remove(&sid);
+            let current_dir = state.current_dir.get(&sid).cloned().unwrap_or("~".to_string());
+
+            if let Some(fname) = filename {
+                let remote_path = if fname.starts_with('/') {
+                    fname.clone()
+                } else {
+                    format!("{}/{}", current_dir.trim_end_matches('/'), fname)
+                };
+                // Auto-download via SFTP
+                let ssh = state.ssh_manager.clone();
+                let progress = Arc::new(TransferProgress::new());
+                state.transfer_progress = Some(progress.clone());
+
+                if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
+                    tab.terminal.lock().write(
+                        format!("\r\n\x1b[36m[NeoShell] sz: downloading {} via SFTP...\x1b[0m\r\n", fname).as_bytes(),
+                    );
+                }
+
+                Task::perform(
+                    async move {
+                        let default_dir = dirs::download_dir()
+                            .or_else(dirs::desktop_dir)
+                            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
+                        let save_path = rfd::AsyncFileDialog::new()
+                            .set_title(&format!("Save: {}", fname))
+                            .set_file_name(&fname)
+                            .set_directory(&default_dir)
+                            .save_file()
+                            .await;
+
+                        if let Some(save_handle) = save_path {
+                            let local_path = save_handle.path().to_string_lossy().to_string();
+                            tokio::task::spawn_blocking(move || {
+                                ssh.download_file_with_progress(&sid, &remote_path, &local_path, progress)
+                                    .map(|_| format!("Downloaded to {}", local_path))
+                            }).await.map_err(|e| format!("{}", e))?
+                        } else {
+                            Err("cancelled".to_string())
+                        }
+                    },
+                    |result: Result<String, String>| match result {
+                        Ok(_) => Message::DownloadComplete("sz download done".to_string()),
+                        Err(e) if e == "cancelled" => Message::None,
+                        Err(e) => Message::Error(e),
+                    },
+                )
+            } else {
+                // No filename captured — refresh file browser
+                if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
+                    tab.terminal.lock().write(
+                        b"\r\n\x1b[33m[NeoShell] sz: no filename captured. Use file browser to download.\x1b[0m\r\n",
+                    );
+                }
+                Task::done(Message::ChangeDir(sid, current_dir))
+            }
         }
 
         // ---- terminal scrollback & selection ------------------------------------
@@ -2443,25 +2521,24 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
                 theme::TEXT_PRIMARY
             };
 
-            let name_text = text(format!("{} {}", icon, truncate_str(&entry.name, 20)))
+            let name_text = text(format!("{} {}", icon, truncate_str(&entry.name, 22)))
                 .color(name_color)
-                .size(11)
-                ;
-            let size_text = text(&entry.size)
+                .size(11);
+            let human_size = humanize_file_size(&entry.size);
+            let size_text = text(human_size)
                 .color(theme::TEXT_MUTED)
-                .size(10)
-                ;
+                .size(10);
             let date_text = text(&entry.modified)
                 .color(theme::TEXT_MUTED)
-                .size(10)
-                ;
+                .size(10);
 
-            let mut entry_row = row![name_text]
-                .spacing(6)
-                .align_y(alignment::Vertical::Center);
-            entry_row = entry_row.push(horizontal_space());
-            entry_row = entry_row.push(size_text);
-            entry_row = entry_row.push(date_text);
+            let mut entry_row = row![
+                container(name_text).width(Fill),
+                container(size_text).width(70),
+                container(date_text).width(100),
+            ]
+            .spacing(4)
+            .align_y(alignment::Vertical::Center);
 
             // Action buttons for files (not directories)
             if !entry.is_dir {
@@ -3514,6 +3591,26 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+/// Convert raw size string from `ls -la` (bytes) to human-readable KB/MB/GB.
+fn humanize_file_size(size_str: &str) -> String {
+    match size_str.trim().parse::<u64>() {
+        Ok(bytes) => {
+            if bytes >= 1_099_511_627_776 {
+                format!("{:.1} TB", bytes as f64 / 1_099_511_627_776.0)
+            } else if bytes >= 1_073_741_824 {
+                format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+            } else if bytes >= 1_048_576 {
+                format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+            } else if bytes >= 1024 {
+                format!("{:.1} KB", bytes as f64 / 1024.0)
+            } else {
+                format!("{} B", bytes)
+            }
+        }
+        Err(_) => size_str.to_string(), // Already formatted or not a number
     }
 }
 

@@ -2170,39 +2170,34 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     col = col.push(header);
 
     if let Some(stats) = stats {
-        // Load
-        col = col.push(stat_row("*", &format!(
-            "Load: {:.2} / {:.2} / {:.2}", stats.load_1m, stats.load_5m, stats.load_15m
-        )));
-        col = col.push(stat_row("#", &format!("CPU: {} cores", stats.cpu_cores)));
+        // Load — label left, values right
+        col = col.push(sys_row("Load",
+            &format!("{:.2} / {:.2} / {:.2}", stats.load_1m, stats.load_5m, stats.load_15m)));
+        col = col.push(sys_row("CPU", &format!("{} cores", stats.cpu_cores)));
 
-        // Memory
-        col = col.push(stat_row(">", &format!(
-            "Mem: {} / {} MB ({:.0}%)", stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent
-        )));
+        // Memory — label left, usage right + progress bar
+        col = col.push(sys_row("Mem",
+            &format!("{} / {} MB ({:.0}%)", stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent)));
         col = col.push(progress_bar_widget(stats.mem_percent));
 
-        // Disks (all mount points)
+        // Disks
         if stats.disks.is_empty() {
-            col = col.push(stat_row(">", &format!(
-                "Disk: {:.1} / {:.1} GB ({:.0}%)", stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent
-            )));
+            col = col.push(sys_row("Disk",
+                &format!("{:.1} / {:.1} GB ({:.0}%)", stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent)));
             col = col.push(progress_bar_widget(stats.disk_percent));
         } else {
             for d in &stats.disks {
-                let label = format!(
-                    "{} {}/{}({:.0}%)",
-                    truncate_str(&d.mount_point, 10),
-                    d.used, d.total, d.percent,
-                );
-                col = col.push(stat_row(">", &label));
+                col = col.push(sys_row(
+                    &truncate_str(&d.mount_point, 8),
+                    &format!("{}/{} ({:.0}%)", d.used, d.total, d.percent),
+                ));
                 col = col.push(progress_bar_widget(d.percent));
             }
         }
 
         // Uptime
         if !stats.uptime.is_empty() {
-            col = col.push(stat_row("~", &stats.uptime));
+            col = col.push(sys_row("Up", &stats.uptime));
         }
     } else {
         col = col.push(
@@ -2406,6 +2401,24 @@ fn stat_row(icon: &str, text_content: &str) -> Element<'static, Message> {
         .padding(Padding::from([3, 10]))
         .width(Fill)
         .into()
+}
+
+/// System info row: label(left, 60px) | value(right, fill)
+fn sys_row(label_str: &str, value_str: &str) -> Element<'static, Message> {
+    let l = label_str.to_string();
+    let v = value_str.to_string();
+    container(
+        row![
+            container(text(l).color(theme::TEXT_MUTED).size(10)).width(55),
+            container(text(v).color(theme::TEXT_SECONDARY).size(10))
+                .width(Fill).align_x(alignment::Horizontal::Right),
+        ]
+        .spacing(4)
+        .align_y(alignment::Vertical::Center)
+    )
+    .padding(Padding::from([3, 10]))
+    .width(Fill)
+    .into()
 }
 
 /// A small progress bar widget for memory/disk usage.

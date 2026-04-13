@@ -65,6 +65,9 @@ pub struct NeoShell {
 
     // Transfer progress tracking
     transfer_progress: Option<Arc<TransferProgress>>,
+
+    // Network detail popup
+    selected_interface: Option<crate::ssh::NetInterface>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +151,8 @@ pub enum Message {
     FetchMonitorData,
     MonitorDataReceived(String, ServerStats, Vec<ProcessInfo>),
     MonitorError(String),
+    ShowNetworkDetail(crate::ssh::NetInterface),
+    HideNetworkDetail,
 
     // File browser
     FilesReceived(String, String, Vec<FileEntry>),
@@ -213,6 +218,7 @@ impl Default for NeoShell {
             editor_session_id: None,
             editor_dirty: false,
             transfer_progress: None,
+            selected_interface: None,
         }
     }
 }
@@ -646,6 +652,14 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             log::warn!("Monitor fetch error: {}", e);
             Task::none()
         }
+        Message::ShowNetworkDetail(iface) => {
+            state.selected_interface = Some(iface);
+            Task::none()
+        }
+        Message::HideNetworkDetail => {
+            state.selected_interface = None;
+            Task::none()
+        }
 
         // ---- file browser ----------------------------------------------------
         Message::FilesReceived(sid, path, entries) => {
@@ -1052,6 +1066,18 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
         .into();
     }
 
+    // Network detail popup
+    if state.selected_interface.is_some() {
+        let net_overlay = view_network_detail(state);
+        return container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            net_overlay,
+        ]))
+        .width(Fill)
+        .height(Fill)
+        .into();
+    }
+
     // Modal overlay for connection form
     if state.show_form {
         let form_overlay = view_connection_form_overlay(state);
@@ -1290,7 +1316,7 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
 
     let mut col = column![].spacing(0);
 
-    // Section: System Info header
+    // ── Header ──────────────────────────────────────────────────────────
     let header = container(
         row![
             text("System").color(theme::TEXT_PRIMARY).size(13),
@@ -1311,69 +1337,23 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     col = col.push(header);
 
     if let Some(stats) = stats {
-        // Load average
-        let load_text = format!(
-            "Load: {:.2} / {:.2} / {:.2}",
-            stats.load_1m, stats.load_5m, stats.load_15m
-        );
-        col = col.push(stat_row("*", &load_text));
-
-        // CPU cores
+        // Load
+        col = col.push(stat_row("*", &format!(
+            "Load: {:.2} / {:.2} / {:.2}", stats.load_1m, stats.load_5m, stats.load_15m
+        )));
         col = col.push(stat_row("#", &format!("CPU: {} cores", stats.cpu_cores)));
 
-        // Memory with progress bar
-        let mem_text = format!(
-            "Mem: {} / {} MB ({:.0}%)",
-            stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent
-        );
-        col = col.push(stat_row(">", &mem_text));
+        // Memory
+        col = col.push(stat_row(">", &format!(
+            "Mem: {} / {} MB ({:.0}%)", stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent
+        )));
         col = col.push(progress_bar_widget(stats.mem_percent));
 
         // Disk
-        let disk_text = format!(
-            "Disk: {:.1} / {:.1} GB ({:.0}%)",
-            stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent
-        );
-        col = col.push(stat_row(">", &disk_text));
+        col = col.push(stat_row(">", &format!(
+            "Disk: {:.1} / {:.1} GB ({:.0}%)", stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent
+        )));
         col = col.push(progress_bar_widget(stats.disk_percent));
-
-        // Network section header
-        col = col.push(
-            container(Space::new(Fill, 1)).style(|_| container::Style {
-                background: Some(theme::BORDER.into()), ..Default::default()
-            }).width(Fill).height(1)
-        );
-        col = col.push(
-            container(text("Network").color(theme::TEXT_PRIMARY).size(11))
-                .padding(Padding::from([4, 10]))
-                .style(|_| container::Style {
-                    background: Some(theme::BG_TERTIARY.into()), ..Default::default()
-                }).width(Fill)
-        );
-
-        // Per-interface display
-        for iface in &stats.interfaces {
-            if iface.name == "lo" { continue; }
-            let iface_text = format!("{}:", iface.name);
-            col = col.push(
-                container(
-                    text(iface_text).color(theme::ACCENT).size(10).font(Font::MONOSPACE)
-                ).padding(Padding::from([2, 10]))
-            );
-            col = col.push(
-                container(
-                    text(format!("  \u{2193}{} \u{2191}{}", format_bytes(iface.rx_bytes), format_bytes(iface.tx_bytes)))
-                        .color(theme::TEXT_MUTED).size(10).font(Font::MONOSPACE)
-                ).padding(Padding::from([0, 10]))
-            );
-        }
-        // Total
-        col = col.push(
-            container(
-                text(format!("Total: \u{2193}{} \u{2191}{}", format_bytes(stats.net_rx_bytes), format_bytes(stats.net_tx_bytes)))
-                    .color(theme::TEXT_SECONDARY).size(10).font(Font::MONOSPACE)
-            ).padding(Padding::from([2, 10]))
-        );
 
         // Uptime
         if !stats.uptime.is_empty() {
@@ -1386,79 +1366,44 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
         );
     }
 
-    // Divider
-    col = col.push(
-        container(Space::new(Fill, 1))
-            .style(|_| container::Style {
-                background: Some(theme::BORDER.into()),
-                ..Default::default()
-            })
-            .width(Fill)
-            .height(1),
-    );
+    // ── Divider ─────────────────────────────────────────────────────────
+    col = col.push(sidebar_divider());
 
-    // Section: Top Processes
-    let proc_header = container(
-        text("Top Processes").color(theme::TEXT_PRIMARY).size(13),
-    )
-    .padding(Padding::from([8, 10]))
-    .style(|_| container::Style {
-        background: Some(theme::BG_TERTIARY.into()),
-        ..Default::default()
-    })
-    .width(Fill);
-    col = col.push(proc_header);
+    // ── Top Processes (BEFORE Network) ──────────────────────────────────
+    col = col.push(section_header("Top Processes"));
 
     if let Some(procs) = processes {
-        // Table header
-        let header_text = format!("{:>6} {:>5} {:>5}  {}", "PID", "CPU%", "MEM%", "COMMAND");
+        let hdr = format!("{:>6} {:>5} {:>5}  {}", "PID", "CPU%", "MEM%", "CMD");
         let mut proc_col = column![
-            container(
-                text(header_text).color(theme::TEXT_MUTED).size(9).font(Font::MONOSPACE)
-            ).padding(Padding::from([4, 10]))
+            container(text(hdr).color(theme::TEXT_MUTED).size(9).font(Font::MONOSPACE))
+                .padding(Padding::from([4, 8])),
+            sidebar_divider(),
         ].spacing(0);
 
-        // Divider under header
-        proc_col = proc_col.push(
-            container(Space::new(Fill, 1)).style(|_| container::Style {
-                background: Some(theme::BORDER.into()), ..Default::default()
-            }).width(Fill).height(1)
-        );
-
-        for (i, proc_info) in procs.iter().take(15).enumerate() {
-            let cpu_bar_len = ((proc_info.cpu / 100.0) * 8.0).ceil() as usize;
-            let cpu_bar: String = "\u{2588}".repeat(cpu_bar_len.min(8));
-            let cpu_pad: String = "\u{2591}".repeat(8_usize.saturating_sub(cpu_bar_len));
+        for (i, p) in procs.iter().take(15).enumerate() {
+            let bar_len = ((p.cpu / 100.0) * 8.0).ceil() as usize;
+            let bar: String = "\u{2588}".repeat(bar_len.min(8));
+            let pad: String = "\u{2591}".repeat(8_usize.saturating_sub(bar_len));
 
             let line = format!(
                 "{:>6} {:>5.1} {:>5.1}  {}",
-                proc_info.pid,
-                proc_info.cpu,
-                proc_info.mem,
-                truncate_str(&proc_info.command, 14)
+                p.pid, p.cpu, p.mem, truncate_str(&p.command, 12)
             );
 
-            let color = if proc_info.cpu > 50.0 {
-                theme::DANGER
-            } else if proc_info.cpu > 20.0 {
-                theme::WARNING
-            } else {
-                theme::TEXT_SECONDARY
-            };
-
-            // Alternate row background
+            let color = if p.cpu > 50.0 { theme::DANGER }
+                       else if p.cpu > 20.0 { theme::WARNING }
+                       else { theme::TEXT_SECONDARY };
             let row_bg = if i % 2 == 0 { theme::BG_SECONDARY } else { theme::BG_TERTIARY };
 
             proc_col = proc_col.push(
                 container(
                     row![
-                        text(line).color(color).size(10).font(Font::MONOSPACE),
+                        text(line).color(color).size(9).font(Font::MONOSPACE),
                         horizontal_space(),
-                        text(format!("{}{}", cpu_bar, cpu_pad))
-                            .color(color).size(8).font(Font::MONOSPACE),
+                        text(format!("{}{}", bar, pad)).color(color).size(7).font(Font::MONOSPACE),
                     ].align_y(alignment::Vertical::Center)
                 )
-                .padding(Padding::from([3, 10]))
+                .padding(Padding::from([2, 8]))
                 .width(Fill)
                 .style(move |_| container::Style {
                     background: Some(row_bg.into()),
@@ -1466,15 +1411,92 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
                 })
             );
         }
-        col = col.push(scrollable(proc_col).height(Fill));
+        col = col.push(proc_col);
     } else {
         col = col.push(
-            container(text("Loading...").color(theme::TEXT_MUTED).size(12))
+            container(text("Loading...").color(theme::TEXT_MUTED).size(11))
                 .padding(Padding::from([8, 10])),
         );
     }
 
-    container(col)
+    // ── Divider ─────────────────────────────────────────────────────────
+    col = col.push(sidebar_divider());
+
+    // ── Network (compact: only physical + total, clickable) ─────────────
+    col = col.push(section_header("Network"));
+
+    if let Some(stats) = stats {
+        // Filter: skip lo, show physical first, then virtual (limit 5)
+        let mut physical: Vec<&crate::ssh::NetInterface> = Vec::new();
+        let mut virtual_ifs: Vec<&crate::ssh::NetInterface> = Vec::new();
+        for iface in &stats.interfaces {
+            if iface.name == "lo" { continue; }
+            if iface.name.starts_with("eth") || iface.name.starts_with("en")
+                || iface.name.starts_with("wl") || iface.name.starts_with("bond")
+                || iface.name.starts_with("ib") {
+                physical.push(iface);
+            } else {
+                virtual_ifs.push(iface);
+            }
+        }
+
+        // Show physical interfaces
+        for iface in &physical {
+            let iface_clone = (*iface).clone();
+            let label = format!(
+                "{}: \u{2193}{} \u{2191}{}",
+                truncate_str(&iface.name, 8),
+                format_bytes(iface.rx_bytes),
+                format_bytes(iface.tx_bytes),
+            );
+            col = col.push(
+                button(
+                    text(label).color(theme::ACCENT).size(10).font(Font::MONOSPACE)
+                )
+                .on_press(Message::ShowNetworkDetail(iface_clone))
+                .padding(Padding::from([3, 10]))
+                .width(Fill)
+                .style(sidebar_item_style)
+            );
+        }
+
+        // Show virtual count as summary if many
+        if !virtual_ifs.is_empty() {
+            let virt_rx: u64 = virtual_ifs.iter().map(|i| i.rx_bytes).sum();
+            let virt_tx: u64 = virtual_ifs.iter().map(|i| i.tx_bytes).sum();
+            let label = format!(
+                "virtual({}): \u{2193}{} \u{2191}{}",
+                virtual_ifs.len(),
+                format_bytes(virt_rx),
+                format_bytes(virt_tx),
+            );
+            col = col.push(
+                container(
+                    text(label).color(theme::TEXT_MUTED).size(10).font(Font::MONOSPACE)
+                ).padding(Padding::from([3, 10]))
+            );
+        }
+
+        // Total
+        col = col.push(
+            container(
+                text(format!(
+                    "Total: \u{2193}{} \u{2191}{}",
+                    format_bytes(stats.net_rx_bytes),
+                    format_bytes(stats.net_tx_bytes),
+                ))
+                .color(theme::TEXT_SECONDARY)
+                .size(10)
+                .font(Font::MONOSPACE)
+            )
+            .padding(Padding::from([3, 10]))
+        );
+    }
+
+    // Wrap everything in a scrollable
+    let sidebar_content = scrollable(col).height(Fill);
+
+    container(sidebar_content)
         .width(220)
         .height(Fill)
         .style(|_theme| container::Style {
@@ -1486,6 +1508,28 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
             },
             ..Default::default()
         })
+        .into()
+}
+
+fn sidebar_divider() -> Element<'static, Message> {
+    container(Space::new(Fill, 1))
+        .style(|_| container::Style {
+            background: Some(theme::BORDER.into()),
+            ..Default::default()
+        })
+        .width(Fill)
+        .height(1)
+        .into()
+}
+
+fn section_header(title: &str) -> Element<'static, Message> {
+    container(text(title.to_string()).color(theme::TEXT_PRIMARY).size(12))
+        .padding(Padding::from([6, 10]))
+        .style(|_| container::Style {
+            background: Some(theme::BG_TERTIARY.into()),
+            ..Default::default()
+        })
+        .width(Fill)
         .into()
 }
 
@@ -1773,6 +1817,91 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
     column![header, scrollable(file_col).height(Fill)]
         .height(Length::Fixed(200.0))
         .into()
+}
+
+// ---- Network detail popup ------------------------------------------------
+
+fn view_network_detail(state: &NeoShell) -> Element<'_, Message> {
+    let iface = match &state.selected_interface {
+        Some(i) => i,
+        None => return Space::new(0, 0).into(),
+    };
+
+    let title = text(format!("Interface: {}", iface.name))
+        .color(theme::TEXT_PRIMARY).size(16);
+
+    let close_btn = button(text("Close").color(theme::TEXT_SECONDARY).size(13))
+        .on_press(Message::HideNetworkDetail)
+        .padding(Padding::from([6, 16]))
+        .style(transparent_button_style);
+
+    let header = row![title, horizontal_space(), close_btn]
+        .align_y(alignment::Vertical::Center);
+
+    let rx_text = format_bytes(iface.rx_bytes);
+    let tx_text = format_bytes(iface.tx_bytes);
+    let total = format_bytes(iface.rx_bytes + iface.tx_bytes);
+
+    let mut info_col = column![].spacing(8);
+    info_col = info_col.push(detail_row("Interface", &iface.name));
+    info_col = info_col.push(detail_row("Received (Rx)", &rx_text));
+    info_col = info_col.push(detail_row("Transmitted (Tx)", &tx_text));
+    info_col = info_col.push(detail_row("Total Traffic", &total));
+
+    // Determine interface type
+    let if_type = if iface.name.starts_with("eth") || iface.name.starts_with("en") {
+        "Ethernet"
+    } else if iface.name.starts_with("wl") {
+        "Wireless"
+    } else if iface.name.starts_with("br-") || iface.name.starts_with("docker") {
+        "Docker Bridge"
+    } else if iface.name.starts_with("veth") {
+        "Virtual Ethernet (Container)"
+    } else if iface.name.starts_with("bond") {
+        "Bond"
+    } else if iface.name.starts_with("tun") || iface.name.starts_with("tap") {
+        "VPN Tunnel"
+    } else if iface.name.starts_with("lo") {
+        "Loopback"
+    } else {
+        "Other"
+    };
+    info_col = info_col.push(detail_row("Type", if_type));
+
+    let content = column![header, info_col].spacing(16).padding(24).width(380);
+
+    let card = container(content).style(|_| container::Style {
+        background: Some(theme::BG_SECONDARY.into()),
+        border: iced::Border { color: theme::BORDER, width: 1.0, radius: 8.0.into() },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 20.0,
+        },
+        ..Default::default()
+    });
+
+    container(card)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn detail_row(label: &str, value: &str) -> Element<'static, Message> {
+    let l = label.to_string();
+    let v = value.to_string();
+    row![
+        text(l).color(theme::TEXT_MUTED).size(13).width(140),
+        text(v).color(theme::TEXT_PRIMARY).size(13),
+    ]
+    .spacing(8)
+    .into()
 }
 
 // ---- File editor (modal overlay) -----------------------------------------

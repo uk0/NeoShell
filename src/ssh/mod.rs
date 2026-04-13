@@ -237,9 +237,12 @@ impl SshManager {
         let mut session =
             Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
         session.set_tcp_stream(tcp);
+        session.set_timeout(15000); // 15s timeout for handshake + auth
         session
             .handshake()
             .map_err(|e| format!("SSH handshake failed: {}", e))?;
+
+        log::info!("SSH handshake OK to {}:{}, authenticating as {} ({})", host, port, username, auth_type);
 
         // --- Authenticate --------------------------------------------------
         match auth_type {
@@ -253,9 +256,33 @@ impl SshManager {
                 let key_path_str =
                     private_key.ok_or("Private key path required for key auth")?;
                 let key_path = std::path::Path::new(key_path_str);
-                session
-                    .userauth_pubkey_file(username, None, key_path, passphrase)
-                    .map_err(|e| format!("Public-key auth failed: {}", e))?;
+                log::info!("SSH key auth: user={}, key={}, exists={}", username, key_path_str, key_path.exists());
+
+                if !key_path.exists() {
+                    return Err(format!("Private key file not found: {}", key_path_str));
+                }
+
+                // Try pubkey_file first, then try loading key from memory
+                match session.userauth_pubkey_file(username, None, key_path, passphrase) {
+                    Ok(()) => {
+                        log::info!("SSH key auth succeeded via pubkey_file");
+                    }
+                    Err(e) => {
+                        log::warn!("pubkey_file failed ({}), trying in-memory key auth", e);
+                        // Read key content and try userauth_pubkey_frommemory
+                        let key_data = std::fs::read_to_string(key_path)
+                            .map_err(|e| format!("Failed to read key file: {}", e))?;
+                        session
+                            .userauth_pubkey_memory(
+                                username,
+                                None,
+                                &key_data,
+                                passphrase,
+                            )
+                            .map_err(|e2| format!("Key auth failed: pubkey_file={}, pubkey={}", e, e2))?;
+                        log::info!("SSH key auth succeeded via in-memory pubkey");
+                    }
+                }
             }
             other => {
                 return Err(format!("Unknown auth type: {}", other));
@@ -303,11 +330,14 @@ impl SshManager {
                         .map_err(|e| format!("Exec auth failed: {}", e))?;
                 }
                 "key" => {
-                    let key_path = std::path::Path::new(
-                        private_key.ok_or("Private key required")?,
-                    );
-                    sess2.userauth_pubkey_file(username, None, key_path, passphrase)
-                        .map_err(|e| format!("Exec key auth failed: {}", e))?;
+                    let key_str = private_key.ok_or("Private key required")?;
+                    let key_path = std::path::Path::new(key_str);
+                    if sess2.userauth_pubkey_file(username, None, key_path, passphrase).is_err() {
+                        let key_data = std::fs::read_to_string(key_path)
+                            .map_err(|e| format!("Failed to read key: {}", e))?;
+                        sess2.userauth_pubkey_memory(username, None, &key_data, passphrase)
+                            .map_err(|e| format!("Exec key auth failed: {}", e))?;
+                    }
                 }
                 _ => return Err(format!("Unknown auth type: {}", auth_type)),
             }
@@ -1110,10 +1140,16 @@ fn create_exec_connection(params: &ConnectParams) -> Result<Session, String> {
         }
         "key" => {
             let key = params.private_key.as_deref().ok_or("No key")?;
-            session.userauth_pubkey_file(
-                &params.username, None, std::path::Path::new(key),
-                params.passphrase.as_deref(),
-            ).map_err(|e| format!("Exec key auth failed: {}", e))?;
+            let key_path = std::path::Path::new(key);
+            if session.userauth_pubkey_file(
+                &params.username, None, key_path, params.passphrase.as_deref(),
+            ).is_err() {
+                let key_data = std::fs::read_to_string(key_path)
+                    .map_err(|e| format!("Failed to read key: {}", e))?;
+                session.userauth_pubkey_memory(
+                    &params.username, None, &key_data, params.passphrase.as_deref(),
+                ).map_err(|e| format!("Key auth failed: {}", e))?;
+            }
         }
         _ => return Err("Unknown auth type".into()),
     }
@@ -1181,19 +1217,17 @@ fn reconnect_ssh(
                 .map_err(|e| format!("Auth failed: {}", e))?;
         }
         "key" => {
-            let key = params
-                .private_key
-                .as_deref()
-                .ok_or("No key path stored")?;
+            let key = params.private_key.as_deref().ok_or("No key path stored")?;
             let path = std::path::Path::new(key);
-            session
-                .userauth_pubkey_file(
-                    &params.username,
-                    None,
-                    path,
-                    params.passphrase.as_deref(),
-                )
-                .map_err(|e| format!("Key auth failed: {}", e))?;
+            if session.userauth_pubkey_file(
+                &params.username, None, path, params.passphrase.as_deref(),
+            ).is_err() {
+                let key_data = std::fs::read_to_string(path)
+                    .map_err(|e| format!("Failed to read key: {}", e))?;
+                session.userauth_pubkey_memory(
+                    &params.username, None, &key_data, params.passphrase.as_deref(),
+                ).map_err(|e| format!("Key auth failed: {}", e))?;
+            }
         }
         _ => return Err("Unknown auth type".into()),
     }

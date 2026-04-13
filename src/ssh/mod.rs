@@ -682,8 +682,10 @@ impl SshManager {
         let mut channel = sess
             .channel_session()
             .map_err(|e| format!("Failed to open exec channel: {}", e))?;
+        // Force UTF-8 locale for all exec commands
+        let utf8_cmd = format!("export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 2>/dev/null; {}", command);
         channel
-            .exec(command)
+            .exec(&utf8_cmd)
             .map_err(|e| format!("Failed to exec command: {}", e))?;
 
         let mut output = String::new();

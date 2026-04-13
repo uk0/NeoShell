@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NeoShell — Cross-Platform SSH Manager</title>
+<meta name="description" content="NeoShell is a fast, secure, native SSH terminal manager built entirely in Rust. AES-256-GCM encrypted credentials, real-time server monitoring, multi-tab terminals.">
+<link rel="icon" type="image/png" href="icon.png">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d0e1a;--bg2:#141527;--bg3:#1a1b2e;--bg4:#232436;
+  --accent:#6366f1;--accent2:#818cf8;--cyan:#06b6d4;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --border:#1e293b;--success:#22c55e;--danger:#ef4444;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+a{color:var(--accent2);text-decoration:none}
+a:hover{color:var(--cyan)}
+
+/* Nav */
+nav{position:fixed;top:0;width:100%;z-index:100;backdrop-filter:blur(20px);background:rgba(13,14,26,.85);border-bottom:1px solid var(--border)}
+.nav-inner{max-width:1200px;margin:0 auto;padding:16px 32px;display:flex;align-items:center;justify-content:space-between}
+.nav-logo{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:700;color:var(--text)}
+.nav-logo img{width:32px;height:32px;border-radius:6px}
+.nav-links{display:flex;gap:28px;align-items:center}
+.nav-links a{color:var(--text2);font-size:14px;transition:color .2s}
+.nav-links a:hover{color:var(--text)}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:10px 24px;border-radius:8px;font-size:14px;font-weight:600;transition:all .2s;border:none;cursor:pointer}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent2);color:#fff;transform:translateY(-1px);box-shadow:0 8px 24px rgba(99,102,241,.3)}
+.btn-outline{border:1px solid var(--border);color:var(--text2);background:transparent}
+.btn-outline:hover{border-color:var(--accent);color:var(--text)}
+
+/* Hero */
+.hero{padding:140px 32px 80px;text-align:center;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-200px;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(circle,rgba(99,102,241,.12) 0%,transparent 70%);pointer-events:none}
+.hero h1{font-size:clamp(36px,5vw,64px);font-weight:800;letter-spacing:-.02em;margin-bottom:20px;background:linear-gradient(135deg,var(--text) 0%,var(--accent2) 50%,var(--cyan) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero p{font-size:clamp(16px,2vw,20px);color:var(--text2);max-width:640px;margin:0 auto 40px}
+.hero-buttons{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}
+.hero-icon{width:120px;height:120px;border-radius:24px;margin:0 auto 32px;box-shadow:0 20px 60px rgba(99,102,241,.2)}
+.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;background:rgba(99,102,241,.15);color:var(--accent2);margin-bottom:20px}
+
+/* Screenshot */
+.screenshot-section{padding:40px 32px 80px;text-align:center}
+.screenshot-wrapper{max-width:960px;margin:0 auto;border-radius:12px;overflow:hidden;border:1px solid var(--border);box-shadow:0 40px 100px rgba(0,0,0,.5)}
+.screenshot-wrapper img{width:100%;display:block}
+
+/* Features */
+.features{padding:80px 32px;max-width:1200px;margin:0 auto}
+.section-title{text-align:center;font-size:32px;font-weight:700;margin-bottom:12px}
+.section-sub{text-align:center;color:var(--text2);font-size:16px;margin-bottom:60px}
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px}
+.feature-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;transition:all .3s}
+.feature-card:hover{border-color:var(--accent);transform:translateY(-4px);box-shadow:0 16px 48px rgba(99,102,241,.1)}
+.feature-icon{font-size:32px;margin-bottom:16px}
+.feature-card h3{font-size:18px;margin-bottom:8px;color:var(--text)}
+.feature-card p{font-size:14px;color:var(--text2);line-height:1.7}
+
+/* Tech Stack */
+.tech{padding:80px 32px;background:var(--bg2)}
+.tech-inner{max-width:1000px;margin:0 auto}
+.tech-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;margin-top:48px}
+.tech-item{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:24px;text-align:center;transition:border-color .3s}
+.tech-item:hover{border-color:var(--cyan)}
+.tech-item .tech-name{font-size:16px;font-weight:600;margin-bottom:6px;color:var(--text)}
+.tech-item .tech-desc{font-size:13px;color:var(--text3)}
+.tech-item .tech-logo{font-size:28px;margin-bottom:12px}
+
+/* Security */
+.security{padding:80px 32px;max-width:900px;margin:0 auto}
+.security-box{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(6,182,212,.08));border:1px solid var(--border);border-radius:16px;padding:48px;display:flex;gap:40px;align-items:flex-start}
+.security-box .lock{font-size:48px;flex-shrink:0}
+.security-list{list-style:none;margin-top:16px}
+.security-list li{padding:8px 0;color:var(--text2);font-size:15px;display:flex;align-items:center;gap:10px}
+.security-list li::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--success);flex-shrink:0}
+
+/* Download */
+.download{padding:80px 32px;text-align:center}
+.download-inner{max-width:800px;margin:0 auto}
+.download-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:40px}
+.download-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px 24px;transition:all .3s}
+.download-card:hover{border-color:var(--accent);transform:translateY(-2px)}
+.download-card .os-icon{font-size:36px;margin-bottom:12px}
+.download-card .os-name{font-size:18px;font-weight:600;margin-bottom:6px}
+.download-card .os-arch{font-size:12px;color:var(--text3);margin-bottom:16px}
+.download-card .btn{width:100%;justify-content:center}
+
+/* Footer */
+footer{padding:40px 32px;border-top:1px solid var(--border);text-align:center}
+footer p{color:var(--text3);font-size:13px}
+
+/* Terminal animation */
+.term-demo{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:20px;max-width:600px;margin:40px auto 0;text-align:left;font-family:'JetBrains Mono','Fira Code',monospace;font-size:13px;line-height:1.8}
+.term-demo .prompt{color:var(--success)}
+.term-demo .cmd{color:var(--text)}
+.term-demo .out{color:var(--text3)}
+.term-demo .hl{color:var(--cyan)}
+
+@media(max-width:768px){
+  .nav-links{display:none}
+  .hero{padding:120px 20px 60px}
+  .features-grid{grid-template-columns:1fr}
+  .download-grid{grid-template-columns:1fr}
+  .security-box{flex-direction:column;padding:32px}
+  .tech-grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <div class="nav-logo">
+      <img src="icon.png" alt="NeoShell">
+      NeoShell
+    </div>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#tech">Tech Stack</a>
+      <a href="#security">Security</a>
+      <a href="#download" class="btn btn-primary">Download</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <img src="icon.png" alt="NeoShell" class="hero-icon">
+  <div class="badge">Pure Rust &bull; Native GPU-Accelerated</div>
+  <h1>The Modern SSH Manager</h1>
+  <p>NeoShell is a blazing-fast, cross-platform SSH terminal manager built entirely in Rust. Encrypted credential vault, real-time server monitoring, multi-tab sessions &mdash; all in a single native binary.</p>
+  <div class="hero-buttons">
+    <a href="#download" class="btn btn-primary">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+      Download v0.1.0
+    </a>
+    <a href="https://github.com/uk0/NeoShell" class="btn btn-outline" target="_blank">
+      <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+      GitHub
+    </a>
+  </div>
+
+  <div class="term-demo">
+    <div><span class="prompt">$</span> <span class="cmd">neoshell</span></div>
+    <div class="out">NeoShell v0.1.0 &mdash; loading vault...</div>
+    <div class="out">Vault unlocked. 3 connections loaded.</div>
+    <div><span class="prompt">Connected</span> <span class="hl">nas@10.88.66.222:22</span></div>
+    <div class="out">System: 48 cores | Mem: 57GB/128GB (45%) | Load: 5.39</div>
+    <div class="out">Terminal ready. Type to begin.</div>
+  </div>
+</section>
+
+<section class="features" id="features">
+  <h2 class="section-title">Everything You Need</h2>
+  <p class="section-sub">A complete SSH workstation in a single ~8MB binary</p>
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">&#9002;_</div>
+      <h3>Multi-Tab SSH Terminal</h3>
+      <p>Full VTE terminal emulator with 256-color and truecolor support. Multiple concurrent sessions with instant tab switching.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#128274;</div>
+      <h3>Encrypted Credential Vault</h3>
+      <p>AES-256-GCM encryption with Argon2id key derivation. Your passwords and SSH keys are encrypted at rest — never stored in plaintext.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#128200;</div>
+      <h3>Real-Time Server Monitoring</h3>
+      <p>CPU load, memory, disk usage, per-interface network traffic, and top processes — updated every 3 seconds via a dedicated SSH channel.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#128193;</div>
+      <h3>SFTP File Browser</h3>
+      <p>Browse remote directories, upload and download files with real-time progress bars. Quick-edit text files (JSON, YAML, configs) directly in the app.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#9889;</div>
+      <h3>Native &amp; GPU-Accelerated</h3>
+      <p>Built with iced (wgpu). No Electron, no web runtime. Pure Rust binary with hardware-accelerated rendering for silky-smooth terminal output.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">&#127760;</div>
+      <h3>Cross-Platform</h3>
+      <p>Single codebase targeting macOS, Windows, and Linux. Same experience everywhere — from ARM MacBooks to x86 servers.</p>
+    </div>
+  </div>
+</section>
+
+<section class="tech" id="tech">
+  <div class="tech-inner">
+    <h2 class="section-title">Built With</h2>
+    <p class="section-sub">Zero JavaScript. Zero web runtime. 100% Rust.</p>
+    <div class="tech-grid">
+      <div class="tech-item">
+        <div class="tech-logo">&#129408;</div>
+        <div class="tech-name">Rust</div>
+        <div class="tech-desc">Memory-safe systems language. Entire app in pure Rust.</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-logo">&#127912;</div>
+        <div class="tech-name">iced 0.13</div>
+        <div class="tech-desc">Native GUI framework with wgpu GPU rendering.</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-logo">&#128273;</div>
+        <div class="tech-name">AES-256-GCM</div>
+        <div class="tech-desc">Authenticated encryption for credential storage.</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-logo">&#128272;</div>
+        <div class="tech-name">Argon2id</div>
+        <div class="tech-desc">Memory-hard KDF for master password derivation.</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-logo">&#128424;</div>
+        <div class="tech-name">VTE Parser</div>
+        <div class="tech-desc">Full terminal escape sequence handling (same as Alacritty).</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-logo">&#128279;</div>
+        <div class="tech-name">ssh2 + libssh2</div>
+        <div class="tech-desc">Battle-tested SSH2 protocol implementation.</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-logo">&#9889;</div>
+        <div class="tech-name">tokio</div>
+        <div class="tech-desc">Async runtime for non-blocking I/O operations.</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-logo">&#128230;</div>
+        <div class="tech-name">SFTP</div>
+        <div class="tech-desc">Secure file transfer with chunked progress tracking.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="security" id="security">
+  <h2 class="section-title">Security First</h2>
+  <p class="section-sub">Your credentials never leave your machine unencrypted</p>
+  <div class="security-box">
+    <div class="lock">&#128737;</div>
+    <div>
+      <h3 style="font-size:20px;margin-bottom:4px">Two-Layer Encryption</h3>
+      <p style="color:var(--text2);font-size:14px;margin-bottom:16px">Master Password &rarr; Argon2id (64MB, 3 passes) &rarr; KEK &rarr; AES-256-GCM &rarr; DEK &rarr; Your Data</p>
+      <ul class="security-list">
+        <li>Master password never stored — only the derived key is used</li>
+        <li>Each connection encrypted with unique nonce (IV)</li>
+        <li>Vault file unreadable without correct master password</li>
+        <li>Dedicated SSH session for monitoring — no interference with terminal</li>
+        <li>Private keys encrypted at rest, decrypted only in memory during use</li>
+        <li>Open source — audit the code yourself</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="download" id="download">
+  <div class="download-inner">
+    <h2 class="section-title">Download NeoShell</h2>
+    <p class="section-sub">v0.1.0 &mdash; Single binary, no dependencies</p>
+    <div class="download-grid">
+      <div class="download-card">
+        <div class="os-icon">&#63743;</div>
+        <div class="os-name">macOS</div>
+        <div class="os-arch">Apple Silicon &amp; Intel</div>
+        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — build from source for now')">Download .dmg</a>
+      </div>
+      <div class="download-card">
+        <div class="os-icon">&#128187;</div>
+        <div class="os-name">Windows</div>
+        <div class="os-arch">x86_64</div>
+        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — build from source for now')">Download .msi</a>
+      </div>
+      <div class="download-card">
+        <div class="os-icon">&#128039;</div>
+        <div class="os-name">Linux</div>
+        <div class="os-arch">x86_64 &amp; ARM64</div>
+        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — build from source for now')">Download .AppImage</a>
+      </div>
+    </div>
+    <div style="margin-top:32px">
+      <p style="color:var(--text3);font-size:14px;margin-bottom:12px">Or build from source:</p>
+      <div class="term-demo" style="max-width:500px;font-size:12px;line-height:1.6">
+        <div><span class="prompt">$</span> <span class="cmd">git clone https://github.com/uk0/NeoShell</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">cd NeoShell && cargo build --release</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">./target/release/neoshell</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>&copy; 2026 NeoShell &mdash; Built with Rust &hearts; &mdash; <a href="https://github.com/uk0/NeoShell">GitHub</a></p>
+</footer>
+
+</body>
+</html>

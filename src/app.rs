@@ -58,6 +58,32 @@ fn detect_zmodem_rz(data: &[u8]) -> bool {
         || data.windows(22).any(|w| w.starts_with(b"rz waiting to receive"))
 }
 
+/// Extract filename from "sz filename" echo in SSH data stream.
+/// Handles: "sz file.txt\r\n", "$ sz  my file.tar\r\n", ANSI escape codes stripped.
+fn extract_sz_filename(data: &str) -> Option<String> {
+    // Strip ANSI escape codes for cleaner matching
+    let clean: String = data.chars().filter(|&c| c != '\x1b').collect();
+
+    // Find "sz " in the text (could be "$ sz file" or just "sz file")
+    for line in clean.lines() {
+        let trimmed = line.trim();
+        // Match "sz filename" at end of line or after shell prompt
+        if let Some(pos) = trimmed.rfind("sz ") {
+            let after_sz = trimmed[pos + 3..].trim();
+            // Take everything until ZMODEM garbage or end
+            let fname = after_sz
+                .split(|c: char| c == '*' || c == '\r' || c == '\n')
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !fname.is_empty() && fname.len() > 1 {
+                return Some(fname.to_string());
+            }
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -776,21 +802,32 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                 let _ = state.ssh_manager.send_data(&session_id, ZMODEM_CANCEL);
                                 state.zmodem_active.insert(session_id.clone(), std::time::Instant::now());
 
-                                // Check if user typed "sz" → download, otherwise → rz upload
-                                if state.sz_filename.contains_key(&session_id) {
+                                // Try to extract "sz filename" from the data stream echo
+                                let data_str = String::from_utf8_lossy(&data);
+                                let sz_from_echo = extract_sz_filename(&data_str);
+
+                                // Use data echo first, then keyboard buffer as fallback
+                                let sz_fname = sz_from_echo
+                                    .or_else(|| state.sz_filename.remove(&session_id));
+
+                                if let Some(fname) = sz_fname {
                                     if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
-                                        let fname = state.sz_filename.get(&session_id).cloned().unwrap_or_default();
                                         tab.terminal.lock().write(
-                                            format!("\r\n\x1b[36m[NeoShell] sz detected - downloading {} ...\x1b[0m\r\n", fname).as_bytes(),
+                                            format!("\r\n\x1b[36m[NeoShell] sz: downloading {} via SFTP...\x1b[0m\r\n", fname).as_bytes(),
                                         );
                                     }
+                                    // Store filename for the handler
+                                    state.sz_filename.insert(session_id.clone(), fname);
                                     sz_sessions.push(session_id.clone());
-                                } else {
+                                } else if data_str.contains("rz waiting") || !data_str.contains("sz") {
                                     if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
                                         tab.terminal.lock().write(
                                             b"\r\n\x1b[36m[NeoShell] rz detected - opening file picker...\x1b[0m\r\n",
                                         );
                                     }
+                                    rz_sessions.push(session_id.clone());
+                                } else {
+                                    // Ambiguous — default to rz (upload)
                                     rz_sessions.push(session_id.clone());
                                 }
                                 continue;

@@ -2142,29 +2142,49 @@ fn view_connect_dialog(state: &NeoShell) -> Element<'_, Message> {
         );
     } else {
         for conn in &state.connections {
-            let dot_color = theme::SUCCESS;
             let conn_id = conn.id.clone();
+            let conn_id_edit = conn.id.clone();
+            let conn_id_del = conn.id.clone();
+            let conn_name = conn.name.clone();
 
-            let conn_row = row![
-                text("\u{25CF} ").color(dot_color).size(10),
-                column![
-                    text(&conn.name).color(theme::TEXT_PRIMARY).size(14),
-                    text(format!("{}@{}:{}", conn.username, conn.host, conn.port))
-                        .color(theme::TEXT_MUTED).size(11),
-                ].spacing(2),
+            let info_col = column![
+                text(&conn.name).color(theme::TEXT_PRIMARY).size(14),
+                text(format!("{}@{}:{}", conn.username, conn.host, conn.port))
+                    .color(theme::TEXT_MUTED).size(11),
+            ].spacing(2);
+
+            let connect_btn = button(
+                row![
+                    text("\u{25CF} ").color(theme::SUCCESS).size(10),
+                    info_col,
+                ].spacing(8).align_y(alignment::Vertical::Center)
+            )
+            .on_press(Message::ConnectTo(conn_id))
+            .padding(Padding::from([8, 8]))
+            .style(sidebar_item_style);
+
+            let edit_btn = button(text("Edit").color(theme::ACCENT).size(11))
+                .on_press(Message::ShowForm(Some(conn_id_edit)))
+                .padding(Padding::from([4, 8]))
+                .style(transparent_button_style);
+
+            let del_btn = button(text("Del").color(theme::DANGER).size(11))
+                .on_press(Message::DeleteConnection(conn_id_del))
+                .padding(Padding::from([4, 8]))
+                .style(transparent_button_style);
+
+            let entry_row = row![
+                connect_btn,
                 horizontal_space(),
                 text(&conn.group).color(theme::TEXT_MUTED).size(10),
+                edit_btn,
+                del_btn,
             ]
             .align_y(alignment::Vertical::Center)
-            .spacing(8);
+            .spacing(4)
+            .padding(Padding::from([0, 4]));
 
-            list_col = list_col.push(
-                button(conn_row)
-                    .on_press(Message::ConnectTo(conn_id))
-                    .padding(Padding::from([8, 12]))
-                    .width(Fill)
-                    .style(sidebar_item_style),
-            );
+            list_col = list_col.push(entry_row);
         }
     }
 

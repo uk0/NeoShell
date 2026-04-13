@@ -572,9 +572,20 @@ impl SshManager {
     }
 
     /// Execute a single command via the dedicated exec session and return stdout.
-    /// Uses a completely independent SSH connection — no contention with the
-    /// interactive shell session.
+    /// Auto-reconnects the exec session on failure and retries once.
     pub fn exec_command(&self, session_id: &str, command: &str) -> Result<String, String> {
+        match self.exec_command_inner(session_id, command) {
+            Ok(output) => Ok(output),
+            Err(_first_err) => {
+                // Exec session may be dead — try to rebuild it
+                self.rebuild_exec_session(session_id)?;
+                // Retry once with the new session
+                self.exec_command_inner(session_id, command)
+            }
+        }
+    }
+
+    fn exec_command_inner(&self, session_id: &str, command: &str) -> Result<String, String> {
         let exec_session = {
             let sessions = self.sessions.read();
             sessions
@@ -582,7 +593,6 @@ impl SshManager {
                 .ok_or_else(|| format!("Session '{}' not found", session_id))?
                 .exec_session.clone()
         };
-        // sessions read lock dropped — other operations can proceed
 
         let sess = exec_session.lock();
         sess.set_blocking(true);
@@ -601,6 +611,56 @@ impl SshManager {
         let _ = channel.wait_close();
 
         Ok(output)
+    }
+
+    /// Get the exec session Arc (with auto-reconnect on failure).
+    fn get_exec_session(&self, session_id: &str) -> Result<Arc<Mutex<Session>>, String> {
+        let exec_session = {
+            let sessions = self.sessions.read();
+            sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Session '{}' not found", session_id))?
+                .exec_session.clone()
+        };
+
+        // Quick health check: try to set blocking (fails if TCP is dead)
+        {
+            let sess = exec_session.lock();
+            sess.set_blocking(true);
+            if sess.channel_session().is_err() {
+                drop(sess);
+                // Rebuild and return fresh session
+                self.rebuild_exec_session(session_id)?;
+                let sessions = self.sessions.read();
+                return Ok(sessions
+                    .get(session_id)
+                    .ok_or("Session not found")?
+                    .exec_session.clone());
+            }
+        }
+
+        Ok(exec_session)
+    }
+
+    /// Rebuild the exec session by creating a fresh SSH connection.
+    fn rebuild_exec_session(&self, session_id: &str) -> Result<(), String> {
+        let params = {
+            let sessions = self.sessions.read();
+            sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Session '{}' not found", session_id))?
+                .params.clone()
+        };
+
+        let new_exec = create_exec_connection(&params)?;
+
+        // Replace the exec session in-place
+        let sessions = self.sessions.read();
+        if let Some(ssh_session) = sessions.get(session_id) {
+            let mut old = ssh_session.exec_session.lock();
+            *old = new_exec;
+        }
+        Ok(())
     }
 
     /// Fetch server stats by running monitoring commands.
@@ -793,14 +853,7 @@ impl SshManager {
 
     /// Download a remote file to a local path using SFTP.
     pub fn download_file(&self, session_id: &str, remote_path: &str, local_path: &str) -> Result<(), String> {
-        let exec_session = {
-            let sessions = self.sessions.read();
-            sessions.get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
-        };
-        // sessions read lock dropped
-
+        let exec_session = self.get_exec_session(session_id)?;
         let sess = exec_session.lock();
         sess.set_blocking(true);
 
@@ -822,14 +875,7 @@ impl SshManager {
 
     /// Upload a local file to a remote path using SFTP.
     pub fn upload_file(&self, session_id: &str, local_path: &str, remote_path: &str) -> Result<(), String> {
-        let exec_session = {
-            let sessions = self.sessions.read();
-            sessions.get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
-        };
-        // sessions read lock dropped
-
+        let exec_session = self.get_exec_session(session_id)?;
         let sess = exec_session.lock();
         sess.set_blocking(true);
 
@@ -856,14 +902,7 @@ impl SshManager {
         remote_path: &str,
         progress: Arc<TransferProgress>,
     ) -> Result<(), String> {
-        let exec_session = {
-            let sessions = self.sessions.read();
-            sessions
-                .get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
-        };
-        // sessions read lock dropped
+        let exec_session = self.get_exec_session(session_id)?;
 
         let contents = std::fs::read(local_path)
             .map_err(|e| format!("Failed to read local file: {}", e))?;
@@ -908,14 +947,7 @@ impl SshManager {
         local_path: &str,
         progress: Arc<TransferProgress>,
     ) -> Result<(), String> {
-        let exec_session = {
-            let sessions = self.sessions.read();
-            sessions
-                .get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
-        };
-        // sessions read lock dropped
+        let exec_session = self.get_exec_session(session_id)?;
 
         let filename = std::path::Path::new(remote_path)
             .file_name()
@@ -965,14 +997,7 @@ impl SshManager {
 
     /// Read a remote file's content as a string (for editing).
     pub fn read_file_content(&self, session_id: &str, remote_path: &str) -> Result<String, String> {
-        let exec_session = {
-            let sessions = self.sessions.read();
-            sessions.get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
-        };
-        // sessions read lock dropped
-
+        let exec_session = self.get_exec_session(session_id)?;
         let sess = exec_session.lock();
         sess.set_blocking(true);
 
@@ -991,14 +1016,7 @@ impl SshManager {
 
     /// Write content to a remote file (for saving edits).
     pub fn write_file_content(&self, session_id: &str, remote_path: &str, content: &str) -> Result<(), String> {
-        let exec_session = {
-            let sessions = self.sessions.read();
-            sessions.get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
-        };
-        // sessions read lock dropped
-
+        let exec_session = self.get_exec_session(session_id)?;
         let sess = exec_session.lock();
         sess.set_blocking(true);
 
@@ -1019,6 +1037,47 @@ impl SshManager {
 ///
 /// Returns the interactive session (already set to non-blocking), the channel
 /// (with PTY + tmux or shell), and a fresh exec session for monitoring.
+/// Create a standalone SSH session for exec/SFTP operations.
+fn create_exec_connection(params: &ConnectParams) -> Result<Session, String> {
+    let addr = format!("{}:{}", params.host, params.port);
+    let tcp = TcpStream::connect_timeout(
+        &addr.parse().map_err(|e| format!("Invalid address: {}", e))?,
+        Duration::from_secs(10),
+    )
+    .map_err(|e| format!("Exec TCP connect failed: {}", e))?;
+
+    tcp.set_nonblocking(false).ok();
+
+    let mut session = Session::new()
+        .map_err(|e| format!("Exec session create failed: {}", e))?;
+    session.set_tcp_stream(tcp);
+    session.handshake()
+        .map_err(|e| format!("Exec handshake failed: {}", e))?;
+    session.set_keepalive(true, 15);
+
+    match params.auth_type.as_str() {
+        "password" => {
+            let pw = params.password.as_deref().ok_or("No password")?;
+            session.userauth_password(&params.username, pw)
+                .map_err(|e| format!("Exec auth failed: {}", e))?;
+        }
+        "key" => {
+            let key = params.private_key.as_deref().ok_or("No key")?;
+            session.userauth_pubkey_file(
+                &params.username, None, std::path::Path::new(key),
+                params.passphrase.as_deref(),
+            ).map_err(|e| format!("Exec key auth failed: {}", e))?;
+        }
+        _ => return Err("Unknown auth type".into()),
+    }
+
+    if !session.authenticated() {
+        return Err("Exec auth failed".into());
+    }
+
+    Ok(session)
+}
+
 fn reconnect_ssh(
     params: &ConnectParams,
 ) -> Result<(Session, ssh2::Channel, Session), String> {
@@ -1086,44 +1145,8 @@ fn reconnect_ssh(
     // Set non-blocking for the reader thread
     session.set_blocking(false);
 
-    // --- Create a fresh exec session (independent connection) -------------
-    let exec_tcp = TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .map_err(|e| format!("Invalid address: {}", e))?,
-        Duration::from_secs(10),
-    )
-    .map_err(|e| format!("Exec TCP reconnect failed: {}", e))?;
-
-    let mut exec_sess =
-        Session::new().map_err(|e| format!("Exec session create failed: {}", e))?;
-    exec_sess.set_tcp_stream(exec_tcp);
-    exec_sess
-        .handshake()
-        .map_err(|e| format!("Exec handshake failed: {}", e))?;
-    exec_sess.set_keepalive(true, 15);
-
-    match params.auth_type.as_str() {
-        "password" => {
-            let pw = params.password.as_deref().ok_or("No password")?;
-            exec_sess
-                .userauth_password(&params.username, pw)
-                .map_err(|e| format!("Exec auth failed: {}", e))?;
-        }
-        "key" => {
-            let key = params.private_key.as_deref().ok_or("No key")?;
-            let path = std::path::Path::new(key);
-            exec_sess
-                .userauth_pubkey_file(
-                    &params.username,
-                    None,
-                    path,
-                    params.passphrase.as_deref(),
-                )
-                .map_err(|e| format!("Exec key auth failed: {}", e))?;
-        }
-        _ => return Err("Unknown auth type".into()),
-    }
+    // Create a fresh exec session using the shared helper
+    let exec_sess = create_exec_connection(params)?;
 
     Ok((session, channel, exec_sess))
 }

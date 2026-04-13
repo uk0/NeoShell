@@ -1371,7 +1371,7 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
             .into();
 
         row![
-            container(sidebar).width(220).height(Fill),
+            container(sidebar).width(280).height(Fill),
             right_panel,
         ]
         .height(Fill)
@@ -1381,7 +1381,7 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
         let sidebar = view_sidebar(state);
         let welcome = view_welcome();
         row![
-            container(sidebar).width(220).height(Fill),
+            container(sidebar).width(280).height(Fill),
             container(welcome).width(Fill).height(Fill),
         ]
         .height(Fill)
@@ -1654,7 +1654,7 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
         .height(Fill);
 
     container(sidebar_content)
-        .width(220)
+        .width(280)
         .height(Fill)
         .style(|_theme| container::Style {
             background: Some(theme::BG_SECONDARY.into()),
@@ -1902,7 +1902,7 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     let sidebar_content = scrollable(col).height(Fill);
 
     container(sidebar_content)
-        .width(220)
+        .width(280)
         .height(Fill)
         .style(|_theme| container::Style {
             background: Some(theme::BG_SECONDARY.into()),

@@ -1,5 +1,5 @@
 use iced::widget::{
-    button, canvas, column, container, horizontal_space, row, scrollable, text,
+    button, canvas, column, container, horizontal_space, row, scrollable, stack, text,
     text_input, vertical_space, Space,
 };
 use iced::{
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use crate::ssh::{SshEvent, SshManager};
+use crate::ssh::{FileEntry, ProcessInfo, ServerStats, SshEvent, SshManager};
 use crate::storage::{ConnectionConfig, ConnectionInfo, ConnectionStore};
 use crate::terminal::TerminalGrid;
 use crate::ui::theme;
@@ -48,6 +48,14 @@ pub struct NeoShell {
 
     // Sidebar
     search_query: String,
+
+    // Server monitoring (per active tab)
+    server_stats: HashMap<String, ServerStats>,
+    top_processes: HashMap<String, Vec<ProcessInfo>>,
+
+    // File browser (per active tab)
+    file_entries: HashMap<String, Vec<FileEntry>>,
+    current_dir: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,8 +130,19 @@ pub enum Message {
     // Polling / keyboard
     PollSshEvents,
     KeyboardEvent(keyboard::Key, keyboard::Modifiers),
+
     // Search
     SearchChanged(String),
+
+    // Monitor
+    FetchMonitorData,
+    MonitorDataReceived(String, ServerStats, Vec<ProcessInfo>),
+    MonitorError(String),
+
+    // File browser
+    FilesReceived(String, String, Vec<FileEntry>),
+    ChangeDir(String, String),
+    FileClicked(String, FileEntry),
 
     // Misc
     Tick,
@@ -161,6 +180,10 @@ impl Default for NeoShell {
             form: ConnectionFormData::default(),
             edit_id: None,
             search_query: String::new(),
+            server_stats: HashMap::new(),
+            top_processes: HashMap::new(),
+            file_entries: HashMap::new(),
+            current_dir: HashMap::new(),
         }
     }
 }
@@ -409,6 +432,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         // ---- terminal --------------------------------------------------------
         Message::SshConnected(tab_id, session_id, title) => {
             let terminal = Arc::new(parking_lot::Mutex::new(TerminalGrid::new(80, 24)));
+            let sid_for_fetch = session_id.clone();
             state.tabs.push(TerminalTab {
                 id: tab_id,
                 session_id,
@@ -416,7 +440,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 terminal,
             });
             state.active_tab = Some(state.tabs.len() - 1);
-            Task::none()
+            state.current_dir.insert(sid_for_fetch.clone(), "~".to_string());
+            // Trigger initial file listing
+            Task::done(Message::ChangeDir(sid_for_fetch, "~".to_string()))
         }
         Message::SshData(session_id, data) => {
             if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
@@ -428,6 +454,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::SshClosed(session_id) => {
             if let Some(idx) = state.tabs.iter().position(|t| t.session_id == session_id) {
                 state.tabs.remove(idx);
+                // Cleanup monitoring/file data for this session
+                state.server_stats.remove(&session_id);
+                state.top_processes.remove(&session_id);
+                state.file_entries.remove(&session_id);
+                state.current_dir.remove(&session_id);
                 if state.tabs.is_empty() {
                     state.active_tab = None;
                 } else {
@@ -460,6 +491,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 let session_id = state.tabs[idx].session_id.clone();
                 let ssh = state.ssh_manager.clone();
                 state.tabs.remove(idx);
+                // Cleanup monitoring/file data for this session
+                state.server_stats.remove(&session_id);
+                state.top_processes.remove(&session_id);
+                state.file_entries.remove(&session_id);
+                state.current_dir.remove(&session_id);
                 if state.tabs.is_empty() {
                     state.active_tab = None;
                 } else {
@@ -494,6 +530,10 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                 state.tabs.iter().position(|t| t.session_id == session_id)
                             {
                                 state.tabs.remove(idx);
+                                state.server_stats.remove(&session_id);
+                                state.top_processes.remove(&session_id);
+                                state.file_entries.remove(&session_id);
+                                state.current_dir.remove(&session_id);
                                 if state.tabs.is_empty() {
                                     state.active_tab = None;
                                 } else {
@@ -525,9 +565,84 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+
         // ---- search ----------------------------------------------------------
         Message::SearchChanged(v) => {
             state.search_query = v;
+            Task::none()
+        }
+
+        // ---- monitor ---------------------------------------------------------
+        Message::FetchMonitorData => {
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    let ssh = state.ssh_manager.clone();
+                    let sid = tab.session_id.clone();
+                    return Task::perform(
+                        async move {
+                            let stats = ssh.fetch_server_stats(&sid)?;
+                            let procs = ssh.fetch_top_processes(&sid, 15)?;
+                            Ok((sid, stats, procs))
+                        },
+                        |r: Result<(String, ServerStats, Vec<ProcessInfo>), String>| match r {
+                            Ok((sid, stats, procs)) => {
+                                Message::MonitorDataReceived(sid, stats, procs)
+                            }
+                            Err(e) => Message::MonitorError(e),
+                        },
+                    );
+                }
+            }
+            Task::none()
+        }
+        Message::MonitorDataReceived(sid, stats, procs) => {
+            state.server_stats.insert(sid.clone(), stats);
+            state.top_processes.insert(sid, procs);
+            Task::none()
+        }
+        Message::MonitorError(e) => {
+            log::warn!("Monitor fetch error: {}", e);
+            Task::none()
+        }
+
+        // ---- file browser ----------------------------------------------------
+        Message::FilesReceived(sid, path, entries) => {
+            state.current_dir.insert(sid.clone(), path);
+            state.file_entries.insert(sid, entries);
+            Task::none()
+        }
+        Message::ChangeDir(sid, path) => {
+            let ssh = state.ssh_manager.clone();
+            let sid_for_state = sid.clone();
+            let sid_for_async = sid.clone();
+            let path_async = path.clone();
+            state.current_dir.insert(sid_for_state, path);
+            Task::perform(
+                async move { ssh.list_files(&sid_for_async, &path_async) },
+                move |result: Result<(String, Vec<FileEntry>), String>| match result {
+                    Ok((real_path, entries)) => Message::FilesReceived(sid.clone(), real_path, entries),
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+        Message::FileClicked(sid, entry) => {
+            if entry.is_dir || entry.name == ".." {
+                let current = state
+                    .current_dir
+                    .get(&sid)
+                    .cloned()
+                    .unwrap_or_else(|| "~".to_string());
+                let new_path = if entry.name == ".." {
+                    // Go up one directory
+                    let path = std::path::PathBuf::from(&current);
+                    path.parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "/".to_string())
+                } else {
+                    format!("{}/{}", current.trim_end_matches('/'), entry.name)
+                };
+                return Task::done(Message::ChangeDir(sid, new_path));
+            }
             Task::none()
         }
 
@@ -550,8 +665,13 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
         time::every(Duration::from_millis(50)).map(|_| Message::PollSshEvents),
     ];
 
-    // Listen for keyboard events when we're on the main screen with an active
-    // terminal tab. We use `event::listen_with` so we can capture key events
+    // Monitor refresh every 3 seconds when there is an active tab
+    if state.screen == Screen::Main && state.active_tab.is_some() {
+        subs.push(time::every(Duration::from_secs(3)).map(|_| Message::FetchMonitorData));
+    }
+
+    // Listen for keyboard events when we are on the main screen with an active
+    // terminal tab. We use event::listen_with so we can capture key events
     // even when the canvas does not have focus.
     if state.screen == Screen::Main && state.active_tab.is_some() {
         subs.push(event::listen_with(handle_event));
@@ -560,7 +680,7 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
     Subscription::batch(subs)
 }
 
-/// Global event handler forwarded from `event::listen_with`.
+/// Global event handler forwarded from event::listen_with.
 /// Only forward key presses that were not captured by a widget (e.g. text_input).
 fn handle_event(
     evt: iced::Event,
@@ -584,7 +704,7 @@ fn handle_event(
 // View
 // ---------------------------------------------------------------------------
 
-fn view(state: &NeoShell) -> Element<Message> {
+fn view(state: &NeoShell) -> Element<'_, Message> {
     match &state.screen {
         Screen::Setup => view_setup(state),
         Screen::Locked => view_unlock(state),
@@ -687,33 +807,89 @@ fn view_unlock(state: &NeoShell) -> Element<'_, Message> {
         .into()
 }
 
-// ---- Main screen (tabs + sidebar + terminal) -----------------------------
+// ---- Main screen (tabs + sidebar + terminal + file browser) ---------------
 
 fn view_main(state: &NeoShell) -> Element<'_, Message> {
     let tab_bar = view_tab_bar(state);
-    let sidebar = view_sidebar(state);
-    let terminal_area = view_terminal_area(state);
     let status_bar = view_status_bar(state);
 
-    let body = row![
-        container(sidebar).width(220).height(Fill),
-        container(terminal_area).width(Fill).height(Fill),
-    ];
+    let body: Element<'_, Message> = if state.active_tab.is_some() {
+        // Connected view: monitor sidebar + (terminal + file browser)
+        let sidebar = view_monitor_sidebar(state);
+        let terminal = view_terminal_area(state);
+        let file_browser = view_file_browser(state);
 
-    let mut main_col = column![tab_bar, body, status_bar];
-
-    // If connection form is visible, we overlay it.  Since iced doesn't have
-    // a built-in modal, we layer it by replacing the main content entirely
-    // with a modal wrapper.
-    if state.show_form {
-        let overlay = view_connection_form(state);
-        main_col = column![overlay];
-    }
-
-    container(main_col)
+        let right_panel: Element<'_, Message> = column![
+            container(terminal).height(Fill),
+            file_browser,
+        ]
         .width(Fill)
         .height(Fill)
-        .style(bg_primary_container)
+        .into();
+
+        row![
+            container(sidebar).width(220).height(Fill),
+            right_panel,
+        ]
+        .height(Fill)
+        .into()
+    } else {
+        // Not connected: connection list sidebar + welcome
+        let sidebar = view_sidebar(state);
+        let welcome = view_welcome();
+        row![
+            container(sidebar).width(220).height(Fill),
+            container(welcome).width(Fill).height(Fill),
+        ]
+        .height(Fill)
+        .into()
+    };
+
+    let main_layout: Element<'_, Message> = column![tab_bar, body, status_bar]
+        .height(Fill)
+        .into();
+
+    // Modal overlay for connection form
+    if state.show_form {
+        let form_overlay = view_connection_form_overlay(state);
+        container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            form_overlay,
+        ]))
+        .width(Fill)
+        .height(Fill)
+        .into()
+    } else {
+        container(main_layout)
+            .width(Fill)
+            .height(Fill)
+            .style(bg_primary_container)
+            .into()
+    }
+}
+
+// ---- Welcome screen (no active tab) --------------------------------------
+
+fn view_welcome() -> Element<'static, Message> {
+    let placeholder = column![
+        vertical_space().height(80),
+        text("NeoShell").size(36).color(theme::TEXT_MUTED),
+        text("Select a connection from the sidebar to begin")
+            .size(14)
+            .color(theme::TEXT_MUTED),
+    ]
+    .spacing(12)
+    .align_x(alignment::Horizontal::Center);
+
+    container(placeholder)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .style(|_theme| container::Style {
+            background: Some(theme::BG_PRIMARY.into()),
+            ..Default::default()
+        })
         .into()
 }
 
@@ -724,7 +900,11 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
 
     for (i, tab) in state.tabs.iter().enumerate() {
         let is_active = state.active_tab == Some(i);
-        let bg_color = if is_active { theme::BG_TERTIARY } else { theme::BG_SECONDARY };
+        let bg_color = if is_active {
+            theme::BG_TERTIARY
+        } else {
+            theme::BG_SECONDARY
+        };
         let text_color = if is_active {
             theme::TEXT_PRIMARY
         } else {
@@ -737,12 +917,14 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
             .padding(Padding::from([2, 6]))
             .style(transparent_button_style);
 
-        let tab_content = row![label, close_btn].spacing(8).align_y(alignment::Vertical::Center);
+        let tab_content = row![label, close_btn]
+            .spacing(8)
+            .align_y(alignment::Vertical::Center);
 
         let tab_btn = button(tab_content)
             .on_press(Message::TabSelected(i))
             .padding(Padding::from([6, 14]))
-            .style(move |theme: &Theme, status| {
+            .style(move |_theme: &Theme, status| {
                 let mut s = button::Style::default();
                 s.background = Some(bg_color.into());
                 s.text_color = text_color;
@@ -753,6 +935,14 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
             });
 
         tabs_row = tabs_row.push(tab_btn);
+    }
+
+    // If no tabs, show placeholder
+    if state.tabs.is_empty() {
+        tabs_row = tabs_row.push(
+            container(text("No open tabs").color(theme::TEXT_MUTED).size(12))
+                .padding(Padding::from([8, 14])),
+        );
     }
 
     // Fill remaining space with empty bar
@@ -768,7 +958,7 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
         .into()
 }
 
-// ---- Sidebar -------------------------------------------------------------
+// ---- Sidebar (connection list, shown when no active tab) -----------------
 
 fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
     let header = row![
@@ -787,8 +977,7 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
         .padding(8)
         .size(13);
 
-    let search_container = container(search)
-        .padding(Padding::new(8.0).top(0.0));
+    let search_container = container(search).padding(Padding::new(8.0).top(0.0));
 
     // Group connections
     let query = state.search_query.to_lowercase();
@@ -825,9 +1014,7 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
     for group_name in group_names {
         let conns = &groups[&group_name];
 
-        let group_label = text(group_name.clone())
-            .color(theme::TEXT_MUTED)
-            .size(11);
+        let group_label = text(group_name.clone()).color(theme::TEXT_MUTED).size(11);
 
         list_col = list_col.push(
             container(group_label).padding(Padding::new(12.0).top(6.0).bottom(2.0)),
@@ -847,8 +1034,6 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
             .spacing(2);
 
             let conn_id = conn.id.clone();
-            let conn_id_for_edit = conn.id.clone();
-            let conn_id_for_delete = conn.id.clone();
 
             let connect_btn = button(conn_content)
                 .on_press(Message::ConnectTo(conn_id))
@@ -889,6 +1074,200 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
         .into()
 }
 
+// ---- Monitor sidebar (when terminal active) ------------------------------
+
+fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
+    let active_session = state
+        .active_tab
+        .and_then(|idx| state.tabs.get(idx))
+        .map(|t| t.session_id.as_str());
+
+    let stats = active_session.and_then(|sid| state.server_stats.get(sid));
+    let processes = active_session.and_then(|sid| state.top_processes.get(sid));
+
+    let mut col = column![].spacing(0);
+
+    // Section: System Info header
+    let header = container(
+        row![
+            text("System").color(theme::TEXT_PRIMARY).size(13),
+            horizontal_space(),
+            button(text("+").color(theme::ACCENT).size(16))
+                .on_press(Message::ShowForm(None))
+                .padding(Padding::from([2, 6]))
+                .style(transparent_button_style),
+        ]
+        .align_y(alignment::Vertical::Center)
+        .padding(Padding::from([8, 10])),
+    )
+    .style(|_| container::Style {
+        background: Some(theme::BG_TERTIARY.into()),
+        ..Default::default()
+    })
+    .width(Fill);
+    col = col.push(header);
+
+    if let Some(stats) = stats {
+        // Load average
+        let load_text = format!(
+            "Load: {:.2} / {:.2} / {:.2}",
+            stats.load_1m, stats.load_5m, stats.load_15m
+        );
+        col = col.push(stat_row("*", &load_text));
+
+        // CPU cores
+        col = col.push(stat_row("#", &format!("CPU: {} cores", stats.cpu_cores)));
+
+        // Memory with progress bar
+        let mem_text = format!(
+            "Mem: {} / {} MB ({:.0}%)",
+            stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent
+        );
+        col = col.push(stat_row(">", &mem_text));
+        col = col.push(progress_bar_widget(stats.mem_percent));
+
+        // Disk
+        let disk_text = format!(
+            "Disk: {:.1} / {:.1} GB ({:.0}%)",
+            stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent
+        );
+        col = col.push(stat_row(">", &disk_text));
+        col = col.push(progress_bar_widget(stats.disk_percent));
+
+        // Network
+        col = col.push(stat_row("v", &format!("Rx: {}", format_bytes(stats.net_rx_bytes))));
+        col = col.push(stat_row("^", &format!("Tx: {}", format_bytes(stats.net_tx_bytes))));
+
+        // Rates
+        if !stats.net_rx_rate.is_empty() {
+            col = col.push(stat_row(" ", &format!("  {}/s | {}/s", stats.net_rx_rate, stats.net_tx_rate)));
+        }
+
+        // Uptime
+        if !stats.uptime.is_empty() {
+            col = col.push(stat_row("~", &stats.uptime));
+        }
+    } else {
+        col = col.push(
+            container(text("Connecting...").color(theme::TEXT_MUTED).size(12))
+                .padding(Padding::from([8, 10])),
+        );
+    }
+
+    // Divider
+    col = col.push(
+        container(Space::new(Fill, 1))
+            .style(|_| container::Style {
+                background: Some(theme::BORDER.into()),
+                ..Default::default()
+            })
+            .width(Fill)
+            .height(1),
+    );
+
+    // Section: Top Processes
+    let proc_header = container(
+        text("Top Processes").color(theme::TEXT_PRIMARY).size(13),
+    )
+    .padding(Padding::from([8, 10]))
+    .style(|_| container::Style {
+        background: Some(theme::BG_TERTIARY.into()),
+        ..Default::default()
+    })
+    .width(Fill);
+    col = col.push(proc_header);
+
+    if let Some(procs) = processes {
+        let mut proc_col = column![].spacing(0);
+        for proc_info in procs.iter().take(15) {
+            let line = format!(
+                "{:>5} {:>5.1}% {}",
+                proc_info.pid,
+                proc_info.cpu,
+                truncate_str(&proc_info.command, 18)
+            );
+            let color = if proc_info.cpu > 50.0 {
+                theme::DANGER
+            } else if proc_info.cpu > 20.0 {
+                theme::WARNING
+            } else {
+                theme::TEXT_MUTED
+            };
+            proc_col = proc_col.push(
+                container(
+                    text(line)
+                        .color(color)
+                        .size(10)
+                        .font(Font::MONOSPACE),
+                )
+                .padding(Padding::from([2, 10])),
+            );
+        }
+        col = col.push(scrollable(proc_col).height(Fill));
+    } else {
+        col = col.push(
+            container(text("Loading...").color(theme::TEXT_MUTED).size(12))
+                .padding(Padding::from([8, 10])),
+        );
+    }
+
+    container(col)
+        .width(220)
+        .height(Fill)
+        .style(|_theme| container::Style {
+            background: Some(theme::BG_SECONDARY.into()),
+            border: iced::Border {
+                color: theme::BORDER,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A single stat row in the sidebar (owns its content to avoid borrow issues).
+fn stat_row(icon: &str, text_content: &str) -> Element<'static, Message> {
+    let content = format!("{} {}", icon, text_content);
+    let label = text(content).color(theme::TEXT_SECONDARY).size(11);
+    container(label)
+        .padding(Padding::from([3, 10]))
+        .width(Fill)
+        .into()
+}
+
+/// A small progress bar widget for memory/disk usage.
+fn progress_bar_widget(percent: f64) -> Element<'static, Message> {
+    let clamped = percent.max(0.0).min(100.0);
+    let width = (clamped / 100.0 * 196.0) as f32;
+    let bar_color = if clamped > 90.0 {
+        theme::DANGER
+    } else if clamped > 70.0 {
+        theme::WARNING
+    } else {
+        theme::SUCCESS
+    };
+
+    container(
+        container(Space::new(width, 3))
+            .style(move |_| container::Style {
+                background: Some(bar_color.into()),
+                border: iced::Border {
+                    radius: 2.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+    )
+    .padding(Padding::new(1.0).left(10.0).right(10.0).bottom(4.0))
+    .width(Fill)
+    .style(|_| container::Style {
+        background: Some(theme::BG_TERTIARY.into()),
+        ..Default::default()
+    })
+    .into()
+}
+
 // ---- Terminal area -------------------------------------------------------
 
 fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
@@ -898,14 +1277,11 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
                 grid: tab.terminal.clone(),
             };
 
-            return canvas(term_view)
-                .width(Fill)
-                .height(Fill)
-                .into();
+            return canvas(term_view).width(Fill).height(Fill).into();
         }
     }
 
-    // Empty state
+    // Empty state (fallback)
     let placeholder = column![
         vertical_space().height(80),
         text("NeoShell").size(36).color(theme::TEXT_MUTED),
@@ -928,12 +1304,117 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
         .into()
 }
 
+// ---- File browser --------------------------------------------------------
+
+fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
+    let active_session = state
+        .active_tab
+        .and_then(|idx| state.tabs.get(idx))
+        .map(|t| t.session_id.clone());
+
+    let sid = match &active_session {
+        Some(s) => s.clone(),
+        None => return Space::new(Fill, 0).into(),
+    };
+
+    let current_path = state
+        .current_dir
+        .get(&sid)
+        .map(|s| s.as_str())
+        .unwrap_or("~");
+
+    let entries = state.file_entries.get(&sid);
+
+    // Header with path
+    let path_label = text(format!("[DIR] {}", current_path))
+        .color(theme::TEXT_PRIMARY)
+        .size(12)
+        .font(Font::MONOSPACE);
+
+    let header = container(path_label)
+        .padding(Padding::from([6, 10]))
+        .width(Fill)
+        .style(|_| container::Style {
+            background: Some(theme::BG_TERTIARY.into()),
+            border: iced::Border {
+                color: theme::BORDER,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        });
+
+    let mut file_col = column![].spacing(0);
+
+    if let Some(entries) = entries {
+        // Always add a parent directory entry first
+        let parent_sid = sid.clone();
+        let parent_entry = FileEntry {
+            name: "..".to_string(),
+            is_dir: true,
+            size: String::new(),
+            permissions: String::new(),
+            modified: "(parent)".to_string(),
+            owner: String::new(),
+        };
+        let parent_btn = button(
+            text("  ..  (parent)")
+                .color(theme::ACCENT)
+                .size(11)
+                .font(Font::MONOSPACE),
+        )
+        .on_press(Message::FileClicked(parent_sid, parent_entry))
+        .padding(Padding::from([3, 10]))
+        .width(Fill)
+        .style(sidebar_item_style);
+        file_col = file_col.push(parent_btn);
+
+        for entry in entries.iter().filter(|e| e.name != "..") {
+            let icon = if entry.is_dir { "[D]" } else { "[F]" };
+            let name_color = if entry.is_dir {
+                theme::ACCENT
+            } else {
+                theme::TEXT_PRIMARY
+            };
+
+            let display_name = truncate_str(&entry.name, 24);
+            let entry_line = format!(
+                "{} {:<26} {:>8}  {}",
+                icon, display_name, entry.size, entry.modified,
+            );
+
+            let entry_text = text(entry_line)
+                .color(name_color)
+                .size(11)
+                .font(Font::MONOSPACE);
+
+            let entry_clone = entry.clone();
+            let sid_clone = sid.clone();
+
+            let entry_btn = button(entry_text)
+                .on_press(Message::FileClicked(sid_clone, entry_clone))
+                .padding(Padding::from([3, 10]))
+                .width(Fill)
+                .style(sidebar_item_style);
+
+            file_col = file_col.push(entry_btn);
+        }
+    } else {
+        file_col = file_col.push(
+            container(text("Loading files...").color(theme::TEXT_MUTED).size(12))
+                .padding(Padding::from([8, 10])),
+        );
+    }
+
+    column![header, scrollable(file_col).height(Fill)]
+        .height(Length::Fixed(200.0))
+        .into()
+}
+
 // ---- Status bar ----------------------------------------------------------
 
 fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
-    let left = text("NeoShell v0.1.0")
-        .color(theme::TEXT_MUTED)
-        .size(12);
+    let left = text("NeoShell v0.1.0").color(theme::TEXT_MUTED).size(12);
 
     let right = if let Some(idx) = state.active_tab {
         if let Some(tab) = state.tabs.get(idx) {
@@ -964,33 +1445,59 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
         .into()
 }
 
-// ---- Connection form (modal-like) ----------------------------------------
+// ---- Connection form (modal overlay) -------------------------------------
 
-fn view_connection_form(state: &NeoShell) -> Element<'_, Message> {
+fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
     let title_text = if state.edit_id.is_some() {
         "Edit Connection"
     } else {
         "New Connection"
     };
 
-    let title = text(title_text)
-        .size(20)
-        .color(theme::TEXT_PRIMARY);
+    let title = text(title_text).size(20).color(theme::TEXT_PRIMARY);
 
     let name_input = labeled_input("Name", &state.form.name, Message::FormNameChanged);
     let host_input = labeled_input("Host", &state.form.host, Message::FormHostChanged);
     let port_input = labeled_input("Port", &state.form.port, Message::FormPortChanged);
-    let user_input = labeled_input("Username", &state.form.username, Message::FormUsernameChanged);
+    let user_input = labeled_input(
+        "Username",
+        &state.form.username,
+        Message::FormUsernameChanged,
+    );
 
     let auth_row = row![
-        button(text("Password").color(if state.form.auth_type == "password" { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED }).size(13))
-            .on_press(Message::FormAuthTypeChanged("password".into()))
-            .padding(Padding::from([6, 12]))
-            .style(if state.form.auth_type == "password" { accent_button_style } else { transparent_button_style }),
-        button(text("Private Key").color(if state.form.auth_type == "key" { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED }).size(13))
-            .on_press(Message::FormAuthTypeChanged("key".into()))
-            .padding(Padding::from([6, 12]))
-            .style(if state.form.auth_type == "key" { accent_button_style } else { transparent_button_style }),
+        button(
+            text("Password")
+                .color(if state.form.auth_type == "password" {
+                    theme::TEXT_PRIMARY
+                } else {
+                    theme::TEXT_MUTED
+                })
+                .size(13)
+        )
+        .on_press(Message::FormAuthTypeChanged("password".into()))
+        .padding(Padding::from([6, 12]))
+        .style(if state.form.auth_type == "password" {
+            accent_button_style
+        } else {
+            transparent_button_style
+        }),
+        button(
+            text("Private Key")
+                .color(if state.form.auth_type == "key" {
+                    theme::TEXT_PRIMARY
+                } else {
+                    theme::TEXT_MUTED
+                })
+                .size(13)
+        )
+        .on_press(Message::FormAuthTypeChanged("key".into()))
+        .padding(Padding::from([6, 12]))
+        .style(if state.form.auth_type == "key" {
+            accent_button_style
+        } else {
+            transparent_button_style
+        }),
     ]
     .spacing(8);
 
@@ -998,8 +1505,16 @@ fn view_connection_form(state: &NeoShell) -> Element<'_, Message> {
 
     let auth_fields: Element<'_, Message> = if state.form.auth_type == "key" {
         column![
-            labeled_input("Private Key Path", &state.form.private_key, Message::FormPrivateKeyChanged),
-            labeled_input("Passphrase (optional)", &state.form.passphrase, Message::FormPassphraseChanged),
+            labeled_input(
+                "Private Key Path",
+                &state.form.private_key,
+                Message::FormPrivateKeyChanged
+            ),
+            labeled_input(
+                "Passphrase (optional)",
+                &state.form.passphrase,
+                Message::FormPassphraseChanged
+            ),
         ]
         .spacing(12)
         .into()
@@ -1007,7 +1522,11 @@ fn view_connection_form(state: &NeoShell) -> Element<'_, Message> {
         labeled_input("Password", &state.form.password, Message::FormPasswordChanged)
     };
 
-    let group_input = labeled_input("Group (optional)", &state.form.group, Message::FormGroupChanged);
+    let group_input = labeled_input(
+        "Group (optional)",
+        &state.form.group,
+        Message::FormGroupChanged,
+    );
 
     let error_text = if state.error_message.is_empty() {
         text("").size(1)
@@ -1044,23 +1563,22 @@ fn view_connection_form(state: &NeoShell) -> Element<'_, Message> {
     .width(440)
     .padding(24);
 
-    let card = container(form)
-        .style(|_theme| container::Style {
-            background: Some(theme::BG_SECONDARY.into()),
-            border: iced::Border {
-                color: theme::BORDER,
-                width: 1.0,
-                radius: 8.0.into(),
-            },
-            shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 20.0,
-            },
-            ..Default::default()
-        });
+    let card = container(form).style(|_theme| container::Style {
+        background: Some(theme::BG_SECONDARY.into()),
+        border: iced::Border {
+            color: theme::BORDER,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 20.0,
+        },
+        ..Default::default()
+    });
 
-    // Center the card as a modal overlay
+    // Center the card as a modal overlay with dark backdrop
     container(card)
         .width(Fill)
         .height(Fill)
@@ -1080,10 +1598,7 @@ fn labeled_input<'a>(
     on_change: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
     let label_text = text(label).color(theme::TEXT_SECONDARY).size(12);
-    let input = text_input("", value)
-        .on_input(on_change)
-        .padding(8)
-        .size(14);
+    let input = text_input("", value).on_input(on_change).padding(8).size(14);
     column![label_text, input].spacing(4).into()
 }
 
@@ -1153,7 +1668,10 @@ impl<Message> canvas::Program<Message> for TerminalView {
         // Cursor
         if grid.cursor_visible && grid.cursor_y < grid.rows && grid.cursor_x < grid.cols {
             frame.fill_rectangle(
-                Point::new(grid.cursor_x as f32 * cell_w, grid.cursor_y as f32 * cell_h),
+                Point::new(
+                    grid.cursor_x as f32 * cell_w,
+                    grid.cursor_y as f32 * cell_h,
+                ),
                 Size::new(2.0, cell_h),
                 theme::ACCENT,
             );
@@ -1169,7 +1687,7 @@ fn cell_color_to_iced(c: crate::terminal::Color) -> Color {
 }
 
 // ---------------------------------------------------------------------------
-// Keyboard → terminal byte conversion
+// Keyboard -> terminal byte conversion
 // ---------------------------------------------------------------------------
 
 fn key_to_terminal_bytes(key: &keyboard::Key, modifiers: &keyboard::Modifiers) -> Option<String> {
@@ -1180,7 +1698,7 @@ fn key_to_terminal_bytes(key: &keyboard::Key, modifiers: &keyboard::Modifiers) -
         Key::Character(c) => {
             let s = c.as_str();
             if modifiers.control() && s.len() == 1 {
-                // Ctrl+letter → send control character (0x01..0x1A)
+                // Ctrl+letter -> send control character (0x01..0x1A)
                 let ch = s.chars().next()?;
                 if ch.is_ascii_alphabetic() {
                     let ctrl_byte = (ch.to_ascii_uppercase() as u8) - b'A' + 1;
@@ -1223,6 +1741,30 @@ fn key_to_terminal_bytes(key: &keyboard::Key, modifiers: &keyboard::Modifiers) -
             Some(seq.to_string())
         }
         _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------------
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes > 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes > 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes > 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() > max_len {
+        format!("{}...", &s[..max_len])
+    } else {
+        s.to_string()
     }
 }
 

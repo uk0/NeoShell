@@ -76,3 +76,10 @@ pub const DANGER: Color = Color {
     b: 68.0 / 255.0,
     a: 1.0,
 };
+
+pub const WARNING: Color = Color {
+    r: 245.0 / 255.0,
+    g: 158.0 / 255.0,
+    b: 11.0 / 255.0,
+    a: 1.0,
+};

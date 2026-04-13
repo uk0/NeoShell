@@ -771,36 +771,28 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                 }
                             }
 
-                            // Detect ZMODEM from rz (remote wants to receive file)
+                            // Detect ZMODEM (both rz and sz send **B0 pattern)
                             if data.len() >= 4 && detect_zmodem_rz(&data) {
                                 let _ = state.ssh_manager.send_data(&session_id, ZMODEM_CANCEL);
                                 state.zmodem_active.insert(session_id.clone(), std::time::Instant::now());
-                                if let Some(tab) =
-                                    state.tabs.iter().find(|t| t.session_id == session_id)
-                                {
-                                    tab.terminal.lock().write(
-                                        b"\r\n\x1b[36m[NeoShell] rz detected - opening file picker...\x1b[0m\r\n",
-                                    );
-                                }
-                                rz_sessions.push(session_id.clone());
-                                continue;
-                            }
 
-                            // Detect ZMODEM from sz (remote wants to send file)
-                            if data.len() >= 4
-                                && (data.windows(6).any(|w| w.starts_with(b"**\x18B00"))
-                                    || data.windows(4).any(|w| w == b"**B0"))
-                            {
-                                let _ = state.ssh_manager.send_data(&session_id, ZMODEM_CANCEL);
-                                state.zmodem_active.insert(session_id.clone(), std::time::Instant::now());
-                                if let Some(tab) =
-                                    state.tabs.iter().find(|t| t.session_id == session_id)
-                                {
-                                    tab.terminal.lock().write(
-                                        b"\r\n\x1b[36m[NeoShell] sz detected - use file browser to download\x1b[0m\r\n",
-                                    );
+                                // Check if user typed "sz" → download, otherwise → rz upload
+                                if state.sz_filename.contains_key(&session_id) {
+                                    if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
+                                        let fname = state.sz_filename.get(&session_id).cloned().unwrap_or_default();
+                                        tab.terminal.lock().write(
+                                            format!("\r\n\x1b[36m[NeoShell] sz detected - downloading {} ...\x1b[0m\r\n", fname).as_bytes(),
+                                        );
+                                    }
+                                    sz_sessions.push(session_id.clone());
+                                } else {
+                                    if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
+                                        tab.terminal.lock().write(
+                                            b"\r\n\x1b[36m[NeoShell] rz detected - opening file picker...\x1b[0m\r\n",
+                                        );
+                                    }
+                                    rz_sessions.push(session_id.clone());
                                 }
-                                sz_sessions.push(session_id.clone());
                                 continue;
                             }
 
@@ -2562,20 +2554,23 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
                 }
             }
 
-            // Wrap in a button for click-to-navigate (directories)
+            // Unified row: directories are clickable buttons, files are containers
+            // Both use identical padding and width for alignment
             if entry.is_dir {
                 let entry_clone = entry.clone();
                 let sid_clone = sid.clone();
-                let nav_btn = button(entry_row)
-                    .on_press(Message::FileClicked(sid_clone, entry_clone))
-                    .padding(Padding::from([3, 10]))
-                    .width(Fill)
-                    .style(sidebar_item_style);
-                file_col = file_col.push(nav_btn);
-            } else {
-                // Non-directory files: just show the row with action buttons
                 file_col = file_col.push(
-                    container(entry_row).padding(Padding::from([3, 10])).width(Fill),
+                    button(entry_row)
+                        .on_press(Message::FileClicked(sid_clone, entry_clone))
+                        .padding(Padding::from([3, 8]))
+                        .width(Fill)
+                        .style(sidebar_item_style),
+                );
+            } else {
+                file_col = file_col.push(
+                    container(entry_row)
+                        .padding(Padding::from([3, 8]))
+                        .width(Fill),
                 );
             }
         }

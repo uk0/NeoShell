@@ -9,6 +9,7 @@ use iced::{
 };
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
@@ -106,6 +107,7 @@ enum Screen {
     Main,
 }
 
+#[allow(dead_code)]
 struct TerminalTab {
     id: String,
     session_id: String,
@@ -132,6 +134,7 @@ struct ConnectionFormData {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Message {
     // Password
     PasswordChanged(String),
@@ -2270,101 +2273,207 @@ struct TerminalView {
     grid: Arc<parking_lot::Mutex<TerminalGrid>>,
 }
 
+/// Persistent state for the terminal canvas. Created once by iced and reused
+/// across frames. The `cache` uses interior mutability so `clear()` / `draw()`
+/// work through `&self`. `last_generation` is an `AtomicU64` so we can
+/// compare-and-store without `&mut`.
+struct TerminalViewState {
+    cache: canvas::Cache,
+    last_generation: AtomicU64,
+}
+
+impl Default for TerminalViewState {
+    fn default() -> Self {
+        Self {
+            cache: canvas::Cache::new(),
+            last_generation: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Check whether a row consists entirely of default-background blank cells
+/// (space or NUL, no inverse). Such rows need no rendering at all.
+#[inline]
+fn is_row_empty(row: &[crate::terminal::Cell]) -> bool {
+    row.iter().all(|cell| {
+        (cell.c == ' ' || cell.c == '\0')
+            && cell.style.bg.r == 26
+            && cell.style.bg.g == 27
+            && cell.style.bg.b == 46
+            && !cell.style.inverse
+    })
+}
+
 impl<Message> canvas::Program<Message> for TerminalView {
-    type State = ();
+    type State = TerminalViewState;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Self::State,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let grid = self.grid.lock();
-        let font_size: f32 = 14.0;
-        let cell_w = font_size * 0.6;
-        let cell_h = font_size * 1.5;
+        let current_gen = grid.generation;
 
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        // Invalidate the geometry cache when the terminal content changes.
+        let last_gen = state.last_generation.load(Ordering::Relaxed);
+        if current_gen != last_gen {
+            state.cache.clear();
+            state.last_generation.store(current_gen, Ordering::Relaxed);
+        }
 
-        // Background fill
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::BG_PRIMARY);
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            let font_size: f32 = 14.0;
+            let cell_w = font_size * 0.6;
+            let cell_h = font_size * 1.5;
 
-        // Draw cells with wide character support.
-        // Wide (CJK) chars span 2 columns; their right half is marked wide_cont.
-        for y in 0..grid.rows {
-            let mut x = 0;
-            while x < grid.cols {
-                let cell = &grid.cells[y][x];
+            // Background fill
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::BG_PRIMARY);
 
-                // Skip continuation cells (right half of wide chars)
-                if cell.wide_cont {
-                    x += 1;
-                    continue;
-                }
+            // Pre-allocated buffer for batching consecutive same-style ASCII
+            // characters into single fill_text calls.
+            let mut run_buf = String::with_capacity(256);
+            let mut run_start_x: usize = 0;
+            let mut run_fg = Color::TRANSPARENT;
+            #[allow(unused_assignments)]
+            let mut run_y: usize = 0;
 
-                let char_cols: usize = if cell.wide { 2 } else { 1 };
-
-                // Skip empty cells with default background
-                if (cell.c == ' ' || cell.c == '\0')
-                    && cell.style.bg.r == 26
-                    && cell.style.bg.g == 27
-                    && cell.style.bg.b == 46
-                    && !cell.style.inverse
-                {
-                    x += char_cols;
-                    continue;
-                }
-
-                let is_inv = cell.style.inverse;
-                let bg = cell_color_to_iced(if is_inv { cell.style.fg } else { cell.style.bg });
-                let fg = cell_color_to_iced(if is_inv { cell.style.bg } else { cell.style.fg });
-
-                // Draw background if non-default
-                if bg != theme::BG_PRIMARY {
-                    frame.fill_rectangle(
-                        Point::new(x as f32 * cell_w, y as f32 * cell_h),
-                        Size::new(char_cols as f32 * cell_w, cell_h),
-                        bg,
-                    );
-                }
-
-                // Draw character
-                if cell.c != ' ' && cell.c != '\0' {
-                    let (char_font, char_size, x_offset) = if cell.wide {
-                        (CJK_FONT, Pixels(font_size * 1.3), cell_w * 0.1)
-                    } else {
-                        (Font::MONOSPACE, Pixels(font_size), 0.0)
-                    };
-
+            // Flush the current ASCII text run as a single fill_text call.
+            let flush_run = |frame: &mut canvas::Frame,
+                             buf: &mut String,
+                             start_x: usize,
+                             y: usize,
+                             fg: Color,
+                             cell_w: f32,
+                             cell_h: f32,
+                             font_size: f32| {
+                if !buf.is_empty() {
                     frame.fill_text(canvas::Text {
-                        content: cell.c.to_string(),
-                        position: Point::new(x as f32 * cell_w + x_offset, y as f32 * cell_h),
+                        content: buf.clone(),
+                        position: Point::new(start_x as f32 * cell_w, y as f32 * cell_h),
                         color: fg,
-                        size: char_size,
-                        font: char_font,
+                        size: Pixels(font_size),
+                        font: Font::MONOSPACE,
                         ..canvas::Text::default()
                     });
+                    buf.clear();
+                }
+            };
+
+            for y in 0..grid.rows {
+                let row = &grid.cells[y];
+
+                // Skip entirely empty rows — no iteration needed.
+                if is_row_empty(row) {
+                    continue;
                 }
 
-                x += char_cols;
+                run_buf.clear();
+                run_y = y;
+
+                let mut x = 0;
+                while x < grid.cols {
+                    let cell = &row[x];
+
+                    // Skip continuation cells (right half of wide chars)
+                    if cell.wide_cont {
+                        x += 1;
+                        continue;
+                    }
+
+                    let char_cols: usize = if cell.wide { 2 } else { 1 };
+
+                    // Skip empty cells with default background
+                    if (cell.c == ' ' || cell.c == '\0')
+                        && cell.style.bg.r == 26
+                        && cell.style.bg.g == 27
+                        && cell.style.bg.b == 46
+                        && !cell.style.inverse
+                    {
+                        // Flush any pending ASCII run before the gap
+                        flush_run(frame, &mut run_buf, run_start_x, run_y, run_fg, cell_w, cell_h, font_size);
+                        x += char_cols;
+                        continue;
+                    }
+
+                    let is_inv = cell.style.inverse;
+                    let bg = cell_color_to_iced(if is_inv { cell.style.fg } else { cell.style.bg });
+                    let fg = cell_color_to_iced(if is_inv { cell.style.bg } else { cell.style.fg });
+
+                    // Draw background if non-default (cheap GPU op, always per-cell)
+                    if bg != theme::BG_PRIMARY {
+                        frame.fill_rectangle(
+                            Point::new(x as f32 * cell_w, y as f32 * cell_h),
+                            Size::new(char_cols as f32 * cell_w, cell_h),
+                            bg,
+                        );
+                    }
+
+                    // Draw character
+                    if cell.c != ' ' && cell.c != '\0' {
+                        if cell.wide {
+                            // Wide (CJK) characters: flush any ASCII run, then
+                            // draw individually with the CJK font.
+                            flush_run(frame, &mut run_buf, run_start_x, run_y, run_fg, cell_w, cell_h, font_size);
+
+                            frame.fill_text(canvas::Text {
+                                content: cell.c.to_string(),
+                                position: Point::new(
+                                    x as f32 * cell_w + cell_w * 0.1,
+                                    y as f32 * cell_h,
+                                ),
+                                color: fg,
+                                size: Pixels(font_size * 1.3),
+                                font: CJK_FONT,
+                                ..canvas::Text::default()
+                            });
+                        } else {
+                            // Narrow ASCII: try to batch into a text run.
+                            if run_buf.is_empty() {
+                                // Start a new run
+                                run_start_x = x;
+                                run_fg = fg;
+                                run_buf.push(cell.c);
+                            } else if fg == run_fg {
+                                // Continue the run — same foreground color
+                                run_buf.push(cell.c);
+                            } else {
+                                // Foreground changed — flush old run, start new
+                                flush_run(frame, &mut run_buf, run_start_x, run_y, run_fg, cell_w, cell_h, font_size);
+                                run_start_x = x;
+                                run_fg = fg;
+                                run_buf.push(cell.c);
+                            }
+                        }
+                    } else {
+                        // Space/NUL with non-default bg: flush run (bg was drawn above)
+                        flush_run(frame, &mut run_buf, run_start_x, run_y, run_fg, cell_w, cell_h, font_size);
+                    }
+
+                    x += char_cols;
+                }
+
+                // Flush any remaining run at end of row
+                flush_run(frame, &mut run_buf, run_start_x, run_y, run_fg, cell_w, cell_h, font_size);
             }
-        }
 
-        // Cursor
-        if grid.cursor_visible && grid.cursor_y < grid.rows && grid.cursor_x < grid.cols {
-            frame.fill_rectangle(
-                Point::new(
-                    grid.cursor_x as f32 * cell_w,
-                    grid.cursor_y as f32 * cell_h,
-                ),
-                Size::new(2.0, cell_h),
-                theme::ACCENT,
-            );
-        }
+            // Cursor
+            if grid.cursor_visible && grid.cursor_y < grid.rows && grid.cursor_x < grid.cols {
+                frame.fill_rectangle(
+                    Point::new(
+                        grid.cursor_x as f32 * cell_w,
+                        grid.cursor_y as f32 * cell_h,
+                    ),
+                    Size::new(2.0, cell_h),
+                    theme::ACCENT,
+                );
+            }
+        });
 
-        vec![frame.into_geometry()]
+        vec![geometry]
     }
 }
 

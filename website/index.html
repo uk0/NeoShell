@@ -133,7 +133,7 @@ footer p{color:var(--text3);font-size:13px}
   <div class="hero-buttons">
     <a href="#download" class="btn btn-primary">
       <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-      Download v0.1.0
+      Download v0.2.0
     </a>
     <a href="#features" class="btn btn-outline">
       <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
@@ -142,7 +142,7 @@ footer p{color:var(--text3);font-size:13px}
   </div>
 
   <div class="term-demo">
-    <div class="out" style="color:var(--accent2)">NeoShell v0.1.0 &mdash; Native Desktop GUI</div>
+    <div class="out" style="color:var(--accent2)">NeoShell v0.2.0 &mdash; Native Desktop GUI</div>
     <div class="out">&bull; Sidebar: System Load / CPU / Memory / Disk / Network</div>
     <div class="out">&bull; Center: Multi-tab SSH Terminal (VTE + GPU rendering)</div>
     <div class="out">&bull; Bottom: SFTP File Browser with Upload / Download / Edit</div>
@@ -259,26 +259,26 @@ footer p{color:var(--text3);font-size:13px}
 <section class="download" id="download">
   <div class="download-inner">
     <h2 class="section-title">Download NeoShell</h2>
-    <p class="section-sub">v0.1.0 &mdash; Single binary, no dependencies</p>
+    <p class="section-sub">v0.2.0 &mdash; Single binary, no dependencies</p>
     <div class="download-grid">
       <div class="download-card">
         <div class="os-icon">&#63743;</div>
         <div class="os-name">macOS</div>
         <div class="os-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.1.0-macos-aarch64.dmg" class="btn btn-primary" style="margin-bottom:8px">ARM64 .dmg (5.1 MB)</a>
-        <a href="downloads/NeoShell-0.1.0-macos-x86_64.dmg" class="btn btn-outline" style="font-size:12px">Intel x86_64 .dmg (5.4 MB)</a>
+        <a href="downloads/NeoShell-0.2.0-macos-aarch64.dmg" class="btn btn-primary" style="margin-bottom:8px">ARM64 .dmg (5.1 MB)</a>
+        <a href="downloads/NeoShell-0.2.0-macos-x86_64.dmg" class="btn btn-outline" style="font-size:12px">Intel x86_64 .dmg (5.4 MB)</a>
       </div>
       <div class="download-card">
         <div class="os-icon">&#128187;</div>
         <div class="os-name">Windows</div>
         <div class="os-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.1.0-windows-x64.zip" class="btn btn-primary">Download .zip (5.1 MB)</a>
+        <a href="downloads/NeoShell-0.2.0-windows-x64.zip" class="btn btn-primary">Download .zip (5.1 MB)</a>
       </div>
       <div class="download-card">
         <div class="os-icon">&#128039;</div>
         <div class="os-name">Linux</div>
         <div class="os-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.1.0-linux-x86_64.AppImage" class="btn btn-primary">Download .AppImage (8.5 MB)</a>
+        <a href="downloads/NeoShell-0.2.0-linux-x86_64.AppImage" class="btn btn-primary">Download .AppImage (8.5 MB)</a>
       </div>
     </div>
     <p style="margin-top:24px;color:var(--text3);font-size:13px">NeoShell is proprietary software. Contact us for enterprise licensing.</p>
@@ -290,47 +290,57 @@ footer p{color:var(--text3);font-size:13px}
     <h2 class="section-title">Changelog</h2>
     <p class="section-sub">What's new in each release</p>
 
-    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:left">
+    <!-- v0.2.0 -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:left;margin-bottom:20px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
-        <span style="background:var(--accent);color:#fff;padding:4px 12px;border-radius:6px;font-size:14px;font-weight:700">v0.1.0</span>
+        <span style="background:var(--accent);color:#fff;padding:4px 12px;border-radius:6px;font-size:14px;font-weight:700">v0.2.0</span>
         <span style="color:var(--text3);font-size:14px">2026-04-13</span>
         <span style="background:rgba(34,197,94,.15);color:var(--success);padding:2px 8px;border-radius:4px;font-size:12px">Latest</span>
       </div>
 
       <h4 style="color:var(--cyan);font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Added</h4>
       <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0 0 20px;padding-left:20px">
-        <li>Pure Rust native GUI (iced 0.13, wgpu GPU-accelerated)</li>
-        <li>VTE terminal emulator — 256-color, truecolor, CJK wide character support</li>
-        <li>AES-256-GCM encrypted vault with Argon2id key derivation (KEK → DEK)</li>
-        <li>Multi-tab SSH sessions with dual-connection architecture</li>
-        <li>Real-time server monitoring — CPU, memory, all disk partitions, per-interface network, top 15 processes</li>
-        <li>SFTP file browser — upload/download with progress bars, click-to-navigate</li>
-        <li>Quick file editor for text files (sh, json, yaml, toml, conf, csv, py…)</li>
-        <li>Connection manager with encrypted credential storage</li>
-        <li>Cross-platform: macOS (.dmg), Windows (.zip), Linux (.AppImage)</li>
-        <li>CI/CD — tag-triggered GitHub Actions multi-platform release</li>
-      </ul>
-
-      <h4 style="color:var(--success);font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Security</h4>
-      <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0 0 20px;padding-left:20px">
-        <li>Master password never stored — only derived key used</li>
-        <li>Each connection encrypted with unique nonce</li>
-        <li>Dedicated exec SSH session prevents terminal lock contention</li>
-        <li>Windows: no CMD window in release mode</li>
+        <li>Eternal SSH — auto-reconnect with session persistence (tmux transparent wrapping)</li>
+        <li>Multi-tab: open multiple SSH sessions simultaneously, Cmd+1-9 quick switch</li>
+        <li>Quick-connect dialog (Cmd+T) — one-click connect to saved servers</li>
+        <li>SSH config import — auto-parse ~/.ssh/config hosts with IdentityFile</li>
+        <li>Private key file picker (Browse button, no extension filter)</li>
+        <li>Clipboard paste (Cmd+V) into terminal</li>
+        <li>Full VIM support: Shift+: command mode, ESC instant (tmux escape-time=10ms)</li>
+        <li>CJK rendering with PingFang SC / Microsoft YaHei / Noto Sans CJK</li>
+        <li>DNS hostname resolution for SSH connections (not just IP addresses)</li>
       </ul>
 
       <h4 style="color:var(--accent2);font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Performance</h4>
       <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0 0 20px;padding-left:20px">
-        <li>Batched canvas rendering (~100 draw calls/frame vs ~1920)</li>
-        <li>Lock-free SSH exec — zero contention with interactive terminal</li>
-        <li>32KB chunked SFTP transfers with atomic progress tracking</li>
+        <li>Canvas geometry caching — zero draw calls when terminal idle</li>
+        <li>ASCII text run batching — ~100 draw calls/frame (was ~1920)</li>
+        <li>Release profile: opt-level=3, LTO=fat, strip=true — 6MB binary</li>
+        <li>Lock-free exec sessions — SFTP/monitoring auto-reconnect on failure</li>
       </ul>
 
       <h4 style="color:#f59e0b;font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Fixed</h4>
       <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0;padding-left:20px">
-        <li>CJK/Chinese character rendering (wide char detection)</li>
-        <li>Duplicate SSH tab creation on rapid clicks</li>
-        <li>libssh2 session deadlock (dual SSH connection architecture)</li>
+        <li>CJK/Chinese characters: persistent VTE parser + system CJK font</li>
+        <li>VIM ESC key: tmux escape-time + raw keyboard event capture</li>
+        <li>Shift+: and all shifted characters via KeyPressed.text field</li>
+        <li>Private key auth: pubkey_file fallback to pubkey_memory (ed25519)</li>
+        <li>DNS hostname resolution (was IP-only, hostnames failed)</li>
+        <li>Duplicate tab spam on connection error</li>
+        <li>Windows: no CMD window, embedded icon in exe</li>
+      </ul>
+    </div>
+
+    <!-- v0.1.0 -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:left">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
+        <span style="background:var(--bg4);color:var(--text2);padding:4px 12px;border-radius:6px;font-size:14px;font-weight:700">v0.1.0</span>
+        <span style="color:var(--text3);font-size:14px">2026-04-13</span>
+      </div>
+      <ul style="color:var(--text3);font-size:13px;line-height:2;margin:0;padding-left:20px">
+        <li>Initial release: pure Rust native GUI with iced + wgpu</li>
+        <li>SSH terminal, encrypted vault, server monitoring, SFTP browser</li>
+        <li>Cross-platform: macOS, Windows, Linux</li>
       </ul>
     </div>
   </div>

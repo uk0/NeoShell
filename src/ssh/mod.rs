@@ -313,7 +313,9 @@ impl SshManager {
         // same Session will deadlock.  A dedicated exec session avoids this.
         let exec_session = {
             let tcp2 = TcpStream::connect_timeout(
-                &addr.parse().map_err(|e| format!("Invalid address: {}", e))?,
+                &addr.to_socket_addrs()
+                    .map_err(|e| format!("DNS resolve failed: {}", e))?
+                    .next().ok_or("No address found")?,
                 Duration::from_secs(10),
             )
             .map_err(|e| format!("Exec TCP connect failed: {}", e))?;
@@ -1119,7 +1121,9 @@ impl SshManager {
 fn create_exec_connection(params: &ConnectParams) -> Result<Session, String> {
     let addr = format!("{}:{}", params.host, params.port);
     let tcp = TcpStream::connect_timeout(
-        &addr.parse().map_err(|e| format!("Invalid address: {}", e))?,
+        &addr.to_socket_addrs()
+            .map_err(|e| format!("DNS resolve failed: {}", e))?
+            .next().ok_or("No address found")?,
         Duration::from_secs(10),
     )
     .map_err(|e| format!("Exec TCP connect failed: {}", e))?;

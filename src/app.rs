@@ -8,7 +8,7 @@ use iced::{
     Task, Theme,
 };
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
@@ -68,6 +68,9 @@ pub struct NeoShell {
 
     // Network detail popup
     selected_interface: Option<crate::ssh::NetInterface>,
+
+    // Prevent duplicate tab creation during async connect
+    connecting_ids: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +222,7 @@ impl Default for NeoShell {
             editor_dirty: false,
             transfer_progress: None,
             selected_interface: None,
+            connecting_ids: HashSet::new(),
         }
     }
 }
@@ -313,14 +317,16 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ConnectTo(id) => {
-            // Prevent duplicate connections to the same server
-            if state.tabs.iter().any(|t| t.connection_id == id) {
-                // Already connected — just switch to existing tab
-                if let Some(idx) = state.tabs.iter().position(|t| t.connection_id == id) {
-                    state.active_tab = Some(idx);
-                }
+            // Prevent duplicate: already connected — switch to tab
+            if let Some(idx) = state.tabs.iter().position(|t| t.connection_id == id) {
+                state.active_tab = Some(idx);
                 return Task::none();
             }
+            // Prevent duplicate: already connecting (async in flight)
+            if state.connecting_ids.contains(&id) {
+                return Task::none();
+            }
+            state.connecting_ids.insert(id.clone());
             let store = state.store.clone();
             let ssh = state.ssh_manager.clone();
             let tab_id = uuid::Uuid::new_v4().to_string();
@@ -474,6 +480,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
 
         // ---- terminal --------------------------------------------------------
         Message::SshConnected(tab_id, session_id, title, connection_id) => {
+            state.connecting_ids.remove(&connection_id);
             let terminal = Arc::new(parking_lot::Mutex::new(TerminalGrid::new(80, 24)));
             let sid_for_fetch = session_id.clone();
             state.tabs.push(TerminalTab {
@@ -849,6 +856,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::Error(e) => {
             state.error_message = e;
             state.transfer_progress = None;
+            state.connecting_ids.clear();
             Task::none()
         }
     }
@@ -2217,90 +2225,58 @@ impl<Message> canvas::Program<Message> for TerminalView {
         // Background fill
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::BG_PRIMARY);
 
-        // Draw cells as batched text runs — consecutive same-styled characters
-        // are drawn as a single string, reducing draw calls from ~1920 to ~24-100.
+        // Draw cells with wide character support.
+        // Wide (CJK) chars span 2 columns; their right half is marked wide_cont.
         for y in 0..grid.rows {
             let mut x = 0;
             while x < grid.cols {
                 let cell = &grid.cells[y][x];
+
+                // Skip continuation cells (right half of wide chars)
+                if cell.wide_cont {
+                    x += 1;
+                    continue;
+                }
+
+                let char_cols: usize = if cell.wide { 2 } else { 1 };
 
                 // Skip empty cells with default background
                 if (cell.c == ' ' || cell.c == '\0')
                     && cell.style.bg.r == 26
                     && cell.style.bg.g == 27
                     && cell.style.bg.b == 46
+                    && !cell.style.inverse
                 {
-                    x += 1;
+                    x += char_cols;
                     continue;
                 }
 
-                // Start a run of same-styled characters
-                let run_fg = cell.style.fg;
-                let run_bg = cell.style.bg;
-                let run_bold = cell.style.bold;
-                let run_inverse = cell.style.inverse;
-                let start_x = x;
-                let mut run = String::new();
+                let is_inv = cell.style.inverse;
+                let bg = cell_color_to_iced(if is_inv { cell.style.fg } else { cell.style.bg });
+                let fg = cell_color_to_iced(if is_inv { cell.style.bg } else { cell.style.fg });
 
-                while x < grid.cols {
-                    let c = &grid.cells[y][x];
-                    // Space/null with same bg can be included in run
-                    if (c.c == ' ' || c.c == '\0')
-                        && c.style.bg == run_bg
-                        && !run_inverse
-                        && !c.style.inverse
-                    {
-                        run.push(' ');
-                        x += 1;
-                        continue;
-                    }
-                    // Style changed — end this run
-                    if c.style.fg != run_fg
-                        || c.style.bg != run_bg
-                        || c.style.bold != run_bold
-                        || c.style.inverse != run_inverse
-                    {
-                        break;
-                    }
-                    run.push(c.c);
-                    x += 1;
-                }
-
-                // Trim trailing spaces for the text draw
-                let trimmed = run.trim_end();
-                if trimmed.is_empty() {
-                    // Only spaces — still draw bg if non-default
-                    let bg_color = cell_color_to_iced(if run_inverse { run_fg } else { run_bg });
-                    if bg_color != theme::BG_PRIMARY {
-                        frame.fill_rectangle(
-                            Point::new(start_x as f32 * cell_w, y as f32 * cell_h),
-                            Size::new(run.len() as f32 * cell_w, cell_h),
-                            bg_color,
-                        );
-                    }
-                    continue;
-                }
-
-                // Draw background for the entire run if non-default
-                let bg_color = cell_color_to_iced(if run_inverse { run_fg } else { run_bg });
-                if bg_color != theme::BG_PRIMARY {
+                // Draw background if non-default
+                if bg != theme::BG_PRIMARY {
                     frame.fill_rectangle(
-                        Point::new(start_x as f32 * cell_w, y as f32 * cell_h),
-                        Size::new(run.len() as f32 * cell_w, cell_h),
-                        bg_color,
+                        Point::new(x as f32 * cell_w, y as f32 * cell_h),
+                        Size::new(char_cols as f32 * cell_w, cell_h),
+                        bg,
                     );
                 }
 
-                // Draw the text run as a single string
-                let fg_color = cell_color_to_iced(if run_inverse { run_bg } else { run_fg });
-                frame.fill_text(canvas::Text {
-                    content: trimmed.to_string(),
-                    position: Point::new(start_x as f32 * cell_w, y as f32 * cell_h),
-                    color: fg_color,
-                    size: Pixels(font_size),
-                    font: Font::MONOSPACE,
-                    ..canvas::Text::default()
-                });
+                // Draw character
+                if cell.c != ' ' && cell.c != '\0' {
+                    frame.fill_text(canvas::Text {
+                        content: cell.c.to_string(),
+                        position: Point::new(x as f32 * cell_w, y as f32 * cell_h),
+                        color: fg,
+                        size: Pixels(font_size),
+                        font: Font::MONOSPACE,
+                        ..canvas::Text::default()
+                    });
+                }
+
+                x += char_cols;
             }
         }
 

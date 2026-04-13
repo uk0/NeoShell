@@ -135,6 +135,10 @@ impl Default for CellStyle {
 pub struct Cell {
     pub c: char,
     pub style: CellStyle,
+    /// True if this is a wide (CJK) character occupying 2 columns.
+    pub wide: bool,
+    /// True if this cell is the right half of a wide character.
+    pub wide_cont: bool,
 }
 
 impl Default for Cell {
@@ -142,8 +146,40 @@ impl Default for Cell {
         Cell {
             c: ' ',
             style: CellStyle::default(),
+            wide: false,
+            wide_cont: false,
         }
     }
+}
+
+/// Check if a character is a wide (double-width) character (CJK, fullwidth, etc).
+fn is_wide_char(c: char) -> bool {
+    let cp = c as u32;
+    // CJK Unified Ideographs
+    (0x4E00..=0x9FFF).contains(&cp)
+    // CJK Extension A
+    || (0x3400..=0x4DBF).contains(&cp)
+    // CJK Extension B+
+    || (0x20000..=0x2FA1F).contains(&cp)
+    // CJK Compatibility Ideographs
+    || (0xF900..=0xFAFF).contains(&cp)
+    // Hangul Syllables
+    || (0xAC00..=0xD7AF).contains(&cp)
+    // Fullwidth Forms
+    || (0xFF01..=0xFF60).contains(&cp)
+    || (0xFFE0..=0xFFE6).contains(&cp)
+    // CJK Symbols and Punctuation
+    || (0x3000..=0x303F).contains(&cp)
+    // Hiragana, Katakana
+    || (0x3040..=0x30FF).contains(&cp)
+    || (0x31F0..=0x31FF).contains(&cp)
+    // Bopomofo
+    || (0x3100..=0x312F).contains(&cp)
+    // Enclosed CJK
+    || (0x3200..=0x33FF).contains(&cp)
+    // CJK Radicals
+    || (0x2E80..=0x2EFF).contains(&cp)
+    || (0x2F00..=0x2FDF).contains(&cp)
 }
 
 /// Convert a 256-color index to an RGB Color.
@@ -392,7 +428,11 @@ impl TerminalGrid {
 
 impl Perform for TerminalGrid {
     fn print(&mut self, c: char) {
-        if self.cursor_x >= self.cols {
+        let wide = is_wide_char(c);
+        let char_width = if wide { 2 } else { 1 };
+
+        // Wrap if character won't fit on current line
+        if self.cursor_x + char_width > self.cols {
             self.cursor_x = 0;
             self.cursor_y += 1;
             if self.cursor_y > self.scroll_bottom {
@@ -400,13 +440,26 @@ impl Perform for TerminalGrid {
                 self.scroll_up();
             }
         }
+
         if self.cursor_y < self.rows && self.cursor_x < self.cols {
             self.cells[self.cursor_y][self.cursor_x] = Cell {
                 c,
                 style: self.style,
+                wide,
+                wide_cont: false,
             };
+
+            // For wide chars, mark the next cell as continuation
+            if wide && self.cursor_x + 1 < self.cols {
+                self.cells[self.cursor_y][self.cursor_x + 1] = Cell {
+                    c: ' ',
+                    style: self.style,
+                    wide: false,
+                    wide_cont: true,
+                };
+            }
         }
-        self.cursor_x += 1;
+        self.cursor_x += char_width;
     }
 
     fn execute(&mut self, byte: u8) {

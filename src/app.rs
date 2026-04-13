@@ -2295,57 +2295,49 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
             }
         }
 
-        // Show physical interfaces
+        // Show physical interfaces (column-aligned)
         for iface in &physical {
             let iface_clone = (*iface).clone();
-            let label = format!(
-                "{}: \u{2193}{} \u{2191}{}",
-                truncate_str(&iface.name, 8),
-                format_bytes(iface.rx_bytes),
-                format_bytes(iface.tx_bytes),
-            );
+            let net_row = row![
+                container(text(truncate_str(&iface.name, 10)).color(theme::ACCENT).size(10)).width(Fill),
+                container(text(format!("\u{2193}{}", format_bytes(iface.rx_bytes))).color(theme::TEXT_MUTED).size(9))
+                    .width(80).align_x(alignment::Horizontal::Right),
+                container(text(format!("\u{2191}{}", format_bytes(iface.tx_bytes))).color(theme::TEXT_MUTED).size(9))
+                    .width(80).align_x(alignment::Horizontal::Right),
+            ].spacing(2).align_y(alignment::Vertical::Center);
+
             col = col.push(
-                button(
-                    text(label).color(theme::ACCENT).size(10).font(Font::MONOSPACE)
-                )
-                .on_press(Message::ShowNetworkDetail(iface_clone))
-                .padding(Padding::from([3, 10]))
-                .width(Fill)
-                .style(sidebar_item_style)
+                button(net_row)
+                    .on_press(Message::ShowNetworkDetail(iface_clone))
+                    .padding(Padding::from([2, 10]))
+                    .width(Fill)
+                    .style(sidebar_item_style)
             );
         }
 
-        // Show virtual count as summary if many
+        // Show virtual count as summary
         if !virtual_ifs.is_empty() {
             let virt_rx: u64 = virtual_ifs.iter().map(|i| i.rx_bytes).sum();
             let virt_tx: u64 = virtual_ifs.iter().map(|i| i.tx_bytes).sum();
-            let label = format!(
-                "virtual({}): \u{2193}{} \u{2191}{}",
-                virtual_ifs.len(),
-                format_bytes(virt_rx),
-                format_bytes(virt_tx),
-            );
-            col = col.push(
-                container(
-                    text(label).color(theme::TEXT_MUTED).size(10).font(Font::MONOSPACE)
-                ).padding(Padding::from([3, 10]))
-            );
+            let virt_row = row![
+                container(text(format!("virtual({})", virtual_ifs.len())).color(theme::TEXT_MUTED).size(10)).width(Fill),
+                container(text(format!("\u{2193}{}", format_bytes(virt_rx))).color(theme::TEXT_MUTED).size(9))
+                    .width(80).align_x(alignment::Horizontal::Right),
+                container(text(format!("\u{2191}{}", format_bytes(virt_tx))).color(theme::TEXT_MUTED).size(9))
+                    .width(80).align_x(alignment::Horizontal::Right),
+            ].spacing(2).align_y(alignment::Vertical::Center);
+            col = col.push(container(virt_row).padding(Padding::from([2, 10])));
         }
 
         // Total
-        col = col.push(
-            container(
-                text(format!(
-                    "Total: \u{2193}{} \u{2191}{}",
-                    format_bytes(stats.net_rx_bytes),
-                    format_bytes(stats.net_tx_bytes),
-                ))
-                .color(theme::TEXT_SECONDARY)
-                .size(10)
-
-            )
-            .padding(Padding::from([3, 10]))
-        );
+        let total_row = row![
+            container(text("Total").color(theme::TEXT_SECONDARY).size(10)).width(Fill),
+            container(text(format!("\u{2193}{}", format_bytes(stats.net_rx_bytes))).color(theme::TEXT_SECONDARY).size(9))
+                .width(80).align_x(alignment::Horizontal::Right),
+            container(text(format!("\u{2191}{}", format_bytes(stats.net_tx_bytes))).color(theme::TEXT_SECONDARY).size(9))
+                .width(80).align_x(alignment::Horizontal::Right),
+        ].spacing(2).align_y(alignment::Vertical::Center);
+        col = col.push(container(total_row).padding(Padding::from([2, 10])));
 
         // Network speed (bytes/sec)
         if let Some(sid) = active_session {
@@ -2675,7 +2667,8 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
                     .width(80).align_x(alignment::Horizontal::Right),
                 container(text(date_str).color(theme::TEXT_MUTED).size(10))
                     .width(120).align_x(alignment::Horizontal::Center),
-                container(actions).width(50).align_x(alignment::Horizontal::Right),
+                container(actions).width(70).align_x(alignment::Horizontal::Right)
+                    .padding(Padding::new(0.0).right(14.0)),
             ]
             .spacing(4)
             .align_y(alignment::Vertical::Center);

@@ -21,6 +21,20 @@ pub enum SshEvent {
     Data { session_id: String, data: Vec<u8> },
     Closed { session_id: String },
     Error { session_id: String, error: String },
+    Reconnecting { session_id: String, attempt: u32 },
+    Reconnected { session_id: String },
+}
+
+/// Credentials and connection parameters stored for automatic reconnection.
+#[derive(Clone)]
+pub struct ConnectParams {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_type: String,
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub passphrase: Option<String>,
 }
 
 /// Per-interface network statistics.
@@ -133,6 +147,10 @@ pub struct SshSession {
     /// This avoids deadlocking the interactive session — libssh2 is not thread-safe
     /// for concurrent operations on a single session.
     pub exec_session: Arc<Mutex<Session>>,
+    /// Connection parameters stored for automatic reconnection.
+    pub params: ConnectParams,
+    /// tmux session name on the remote host (None if tmux unavailable).
+    pub tmux_session_name: Option<String>,
 }
 
 /// Manages multiple concurrent SSH sessions.
@@ -238,6 +256,20 @@ impl SshManager {
             return Err("Authentication failed".to_string());
         }
 
+        // --- Enable SSH keepalive (detect dead connections within ~15s) ----
+        session.set_keepalive(true, 15);
+
+        // --- Build ConnectParams for reconnection -------------------------
+        let params = ConnectParams {
+            host: host.to_string(),
+            port,
+            username: username.to_string(),
+            auth_type: auth_type.to_string(),
+            password: password.map(|s| s.to_string()),
+            private_key: private_key.map(|s| s.to_string()),
+            passphrase: passphrase.map(|s| s.to_string()),
+        };
+
         // --- Open a SECOND independent SSH connection for exec commands ----
         // libssh2 is not thread-safe: concurrent channel operations on the
         // same Session will deadlock.  A dedicated exec session avoids this.
@@ -270,10 +302,32 @@ impl SshManager {
                 _ => return Err(format!("Unknown auth type: {}", auth_type)),
             }
 
+            sess2.set_keepalive(true, 15);
+
             Arc::new(Mutex::new(sess2))
         };
 
-        // --- Open channel, request PTY, start shell ------------------------
+        // --- Open channel, request PTY, wrap in tmux if available ----------
+        let tmux_name = format!("neo-{}", &session_id[..8]);
+
+        // Check if tmux is available on the remote host
+        let has_tmux = {
+            session.set_blocking(true);
+            let check_result = (|| -> Result<bool, String> {
+                let mut check_ch = session
+                    .channel_session()
+                    .map_err(|e| format!("Channel error: {}", e))?;
+                check_ch
+                    .exec("command -v tmux")
+                    .map_err(|e| format!("Exec error: {}", e))?;
+                let mut out = String::new();
+                let _ = check_ch.read_to_string(&mut out);
+                let _ = check_ch.wait_close();
+                Ok(!out.trim().is_empty())
+            })();
+            check_result.unwrap_or(false)
+        };
+
         let mut channel = session
             .channel_session()
             .map_err(|e| format!("Failed to open channel: {}", e))?;
@@ -281,9 +335,22 @@ impl SshManager {
         channel
             .request_pty("xterm-256color", None, Some((80, 24, 0, 0)))
             .map_err(|e| format!("PTY request failed: {}", e))?;
-        channel
-            .shell()
-            .map_err(|e| format!("Shell request failed: {}", e))?;
+
+        let tmux_session_name = if has_tmux {
+            let cmd = format!(
+                "tmux new-session -As {} || exec $SHELL -l",
+                tmux_name
+            );
+            channel
+                .exec(&cmd)
+                .map_err(|e| format!("tmux exec failed: {}", e))?;
+            Some(tmux_name)
+        } else {
+            channel
+                .shell()
+                .map_err(|e| format!("Shell request failed: {}", e))?;
+            None
+        };
 
         // Make the session non-blocking for reading
         session.set_blocking(false);
@@ -303,41 +370,103 @@ impl SshManager {
         // Wrap session in Arc so we can share it between reader & writer.
         let session = Arc::new(Mutex::new(session));
         let session_writer = Arc::clone(&session);
+        let session_reader = Arc::clone(&session);
+
+        // Clone reconnection context for the reader thread.
+        let reader_params = params.clone();
+        let reader_tmux = tmux_session_name.clone();
+        let reader_exec = Arc::clone(&exec_session);
 
         // --- Reader thread: reads from SSH channel, emits SshEvent ---------
+        // On EOF or error (not WouldBlock), attempts auto-reconnect with
+        // exponential backoff before giving up and sending Closed.
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
-            loop {
+            'outer: loop {
                 let result = {
                     let mut ch = channel_reader.lock();
                     ch.read(&mut buf)
                 };
                 match result {
-                    Ok(0) => {
-                        // Channel closed by remote
-                        let _ = event_tx.send(SshEvent::Closed { session_id: sid_reader.clone() });
-                        break;
-                    }
-                    Ok(n) => {
+                    Ok(n) if n > 0 => {
                         let data = buf[..n].to_vec();
                         if event_tx
-                            .send(SshEvent::Data { session_id: sid_reader.clone(), data })
+                            .send(SshEvent::Data {
+                                session_id: sid_reader.clone(),
+                                data,
+                            })
                             .is_err()
                         {
                             break; // receiver dropped
                         }
+                        continue 'outer;
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // Non-blocking read: nothing available yet, sleep briefly.
+                        // Non-blocking read: nothing available yet.
                         std::thread::sleep(Duration::from_millis(10));
+                        continue 'outer;
                     }
-                    Err(e) => {
+                    Ok(_zero) => {
+                        // EOF — remote closed the channel
+                    }
+                    Err(ref e) => {
                         let _ = event_tx.send(SshEvent::Error {
                             session_id: sid_reader.clone(),
                             error: format!("Read error: {}", e),
                         });
-                        let _ = event_tx.send(SshEvent::Closed { session_id: sid_reader.clone() });
-                        break;
+                    }
+                }
+
+                // --- Reconnection logic (reached on EOF or real error) ----
+                let max_retries: u32 = 10;
+                let mut retry: u32 = 0;
+                let mut backoff_ms: u64 = 1000;
+
+                loop {
+                    retry += 1;
+                    if retry > max_retries {
+                        let _ = event_tx.send(SshEvent::Closed {
+                            session_id: sid_reader.clone(),
+                        });
+                        break 'outer;
+                    }
+
+                    let _ = event_tx.send(SshEvent::Reconnecting {
+                        session_id: sid_reader.clone(),
+                        attempt: retry,
+                    });
+
+                    std::thread::sleep(Duration::from_millis(backoff_ms));
+                    backoff_ms = (backoff_ms * 2).min(30_000);
+
+                    match reconnect_ssh(&reader_params, &reader_tmux) {
+                        Ok((new_session, new_channel, new_exec)) => {
+                            // Replace channel first (writer shares this Arc)
+                            {
+                                let mut ch = channel_reader.lock();
+                                *ch = new_channel;
+                            }
+                            // Replace interactive session
+                            {
+                                let mut sess = session_reader.lock();
+                                *sess = new_session;
+                            }
+                            // Replace exec session for monitoring/SFTP
+                            {
+                                let mut es = reader_exec.lock();
+                                *es = new_exec;
+                            }
+
+                            let _ = event_tx.send(SshEvent::Reconnected {
+                                session_id: sid_reader.clone(),
+                            });
+
+                            // Resume reading from the new channel
+                            continue 'outer;
+                        }
+                        Err(_) => {
+                            continue; // next retry
+                        }
                     }
                 }
             }
@@ -419,6 +548,8 @@ impl SshManager {
             connection_id,
             writer: cmd_tx,
             exec_session,
+            params,
+            tmux_session_name,
         };
 
         self.sessions.write().insert(session_id.clone(), ssh_session);
@@ -918,6 +1049,130 @@ impl SshManager {
 
         Ok(())
     }
+}
+
+/// Re-establish an SSH connection for auto-reconnect.
+///
+/// Returns the interactive session (already set to non-blocking), the channel
+/// (with PTY + tmux or shell), and a fresh exec session for monitoring.
+fn reconnect_ssh(
+    params: &ConnectParams,
+    tmux_name: &Option<String>,
+) -> Result<(Session, ssh2::Channel, Session), String> {
+    let addr = format!("{}:{}", params.host, params.port);
+    let tcp = TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .map_err(|e| format!("Invalid address: {}", e))?,
+        Duration::from_secs(10),
+    )
+    .map_err(|e| format!("TCP reconnect failed: {}", e))?;
+
+    tcp.set_nonblocking(false).ok();
+
+    let mut session =
+        Session::new().map_err(|e| format!("Session create failed: {}", e))?;
+    session.set_tcp_stream(tcp);
+    session
+        .handshake()
+        .map_err(|e| format!("Handshake failed: {}", e))?;
+    session.set_keepalive(true, 15);
+
+    // Authenticate
+    match params.auth_type.as_str() {
+        "password" => {
+            let pw = params.password.as_deref().ok_or("No password stored")?;
+            session
+                .userauth_password(&params.username, pw)
+                .map_err(|e| format!("Auth failed: {}", e))?;
+        }
+        "key" => {
+            let key = params
+                .private_key
+                .as_deref()
+                .ok_or("No key path stored")?;
+            let path = std::path::Path::new(key);
+            session
+                .userauth_pubkey_file(
+                    &params.username,
+                    None,
+                    path,
+                    params.passphrase.as_deref(),
+                )
+                .map_err(|e| format!("Key auth failed: {}", e))?;
+        }
+        _ => return Err("Unknown auth type".into()),
+    }
+
+    if !session.authenticated() {
+        return Err("Authentication failed on reconnect".into());
+    }
+
+    // Open interactive channel with PTY
+    let mut channel = session
+        .channel_session()
+        .map_err(|e| format!("Channel failed: {}", e))?;
+    channel
+        .request_pty("xterm-256color", None, Some((80, 24, 0, 0)))
+        .map_err(|e| format!("PTY failed: {}", e))?;
+
+    if let Some(name) = tmux_name {
+        let cmd = format!(
+            "tmux attach-session -t {} 2>/dev/null || tmux new-session -s {}",
+            name, name
+        );
+        channel
+            .exec(&cmd)
+            .map_err(|e| format!("tmux attach failed: {}", e))?;
+    } else {
+        channel
+            .shell()
+            .map_err(|e| format!("Shell failed: {}", e))?;
+    }
+
+    // Set non-blocking for the reader thread
+    session.set_blocking(false);
+
+    // --- Create a fresh exec session (independent connection) -------------
+    let exec_tcp = TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .map_err(|e| format!("Invalid address: {}", e))?,
+        Duration::from_secs(10),
+    )
+    .map_err(|e| format!("Exec TCP reconnect failed: {}", e))?;
+
+    let mut exec_sess =
+        Session::new().map_err(|e| format!("Exec session create failed: {}", e))?;
+    exec_sess.set_tcp_stream(exec_tcp);
+    exec_sess
+        .handshake()
+        .map_err(|e| format!("Exec handshake failed: {}", e))?;
+    exec_sess.set_keepalive(true, 15);
+
+    match params.auth_type.as_str() {
+        "password" => {
+            let pw = params.password.as_deref().ok_or("No password")?;
+            exec_sess
+                .userauth_password(&params.username, pw)
+                .map_err(|e| format!("Exec auth failed: {}", e))?;
+        }
+        "key" => {
+            let key = params.private_key.as_deref().ok_or("No key")?;
+            let path = std::path::Path::new(key);
+            exec_sess
+                .userauth_pubkey_file(
+                    &params.username,
+                    None,
+                    path,
+                    params.passphrase.as_deref(),
+                )
+                .map_err(|e| format!("Exec key auth failed: {}", e))?;
+        }
+        _ => return Err("Unknown auth type".into()),
+    }
+
+    Ok((session, channel, exec_sess))
 }
 
 /// Check if a file can be quick-edited based on its extension.

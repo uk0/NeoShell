@@ -595,6 +595,27 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         SshEvent::Error { session_id, error } => {
                             log::error!("SSH error for {}: {}", session_id, error);
                         }
+                        SshEvent::Reconnecting { session_id, attempt } => {
+                            if let Some(tab) =
+                                state.tabs.iter().find(|t| t.session_id == session_id)
+                            {
+                                let msg = format!(
+                                    "\r\n\x1b[33m[Reconnecting... attempt {}]\x1b[0m\r\n",
+                                    attempt
+                                );
+                                let mut grid = tab.terminal.lock();
+                                grid.write(msg.as_bytes());
+                            }
+                        }
+                        SshEvent::Reconnected { session_id } => {
+                            if let Some(tab) =
+                                state.tabs.iter().find(|t| t.session_id == session_id)
+                            {
+                                let msg = b"\r\n\x1b[32m[Reconnected]\x1b[0m\r\n";
+                                let mut grid = tab.terminal.lock();
+                                grid.write(msg);
+                            }
+                        }
                     }
                 }
             }

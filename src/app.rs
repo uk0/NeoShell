@@ -283,7 +283,7 @@ pub fn run() -> iced::Result {
         .theme(|_state| Theme::Dark)
         .window_size(Size::new(1200.0, 800.0))
         .antialiasing(true)
-        .default_font(Font::MONOSPACE)
+        .default_font(CJK_FONT)
         .run()
 }
 
@@ -1684,7 +1684,7 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     if let Some(procs) = processes {
         let hdr = format!("{:>6} {:>5} {:>5}  {}", "PID", "CPU%", "MEM%", "CMD");
         let mut proc_col = column![
-            container(text(hdr).color(theme::TEXT_MUTED).size(9).font(Font::MONOSPACE))
+            container(text(hdr).color(theme::TEXT_MUTED).size(9))
                 .padding(Padding::from([4, 8])),
             sidebar_divider(),
         ].spacing(0);
@@ -1707,7 +1707,7 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
             proc_col = proc_col.push(
                 container(
                     row![
-                        text(line).color(color).size(9).font(Font::MONOSPACE),
+                        text(line).color(color).size(9),
                         horizontal_space(),
                         text(format!("{}{}", bar, pad)).color(color).size(7).font(Font::MONOSPACE),
                     ].align_y(alignment::Vertical::Center)
@@ -1796,7 +1796,7 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
                 ))
                 .color(theme::TEXT_SECONDARY)
                 .size(10)
-                .font(Font::MONOSPACE)
+        
             )
             .padding(Padding::from([3, 10]))
         );
@@ -2000,8 +2000,7 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
     // Header with path and upload button
     let path_label = text(format!("[DIR] {}", current_path))
         .color(theme::TEXT_PRIMARY)
-        .size(12)
-        .font(Font::MONOSPACE);
+        .size(12);
 
     let upload_btn = button(text("^ Upload").color(theme::SUCCESS).size(11))
         .on_press(Message::UploadFile)
@@ -2041,7 +2040,7 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
             text("  ..  (parent)")
                 .color(theme::ACCENT)
                 .size(11)
-                .font(Font::MONOSPACE),
+                ,
         )
         .on_press(Message::FileClicked(parent_sid, parent_entry))
         .padding(Padding::from([3, 10]))
@@ -2060,15 +2059,15 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
             let name_text = text(format!("{} {}", icon, truncate_str(&entry.name, 20)))
                 .color(name_color)
                 .size(11)
-                .font(Font::MONOSPACE);
+                ;
             let size_text = text(&entry.size)
                 .color(theme::TEXT_MUTED)
                 .size(10)
-                .font(Font::MONOSPACE);
+                ;
             let date_text = text(&entry.modified)
                 .color(theme::TEXT_MUTED)
                 .size(10)
-                .font(Font::MONOSPACE);
+                ;
 
             let mut entry_row = row![name_text]
                 .spacing(6)
@@ -2412,7 +2411,7 @@ fn view_editor(state: &NeoShell) -> Element<'_, Message> {
 
     let editor = text_editor(&state.editor_content)
         .on_action(Message::EditorAction)
-        .font(Font::MONOSPACE)
+
         .size(13)
         .height(Fill);
 

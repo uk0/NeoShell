@@ -219,6 +219,9 @@ pub struct TerminalGrid {
     scroll_top: usize,
     scroll_bottom: usize,
     alt_screen: Option<Vec<Vec<Cell>>>,
+    /// Persistent VTE parser — survives across write() calls so multi-byte
+    /// UTF-8 sequences split across SSH packets are handled correctly.
+    persistent_parser: Option<Parser>,
 }
 
 impl TerminalGrid {
@@ -239,16 +242,19 @@ impl TerminalGrid {
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
             alt_screen: None,
+            persistent_parser: Some(Parser::new()),
         }
     }
 
-    /// Feed raw bytes through an internal parser (convenience method).
-    /// Creates a temporary parser for each call.
+    /// Feed raw bytes through the persistent parser.
+    /// The parser is kept across calls so multi-byte UTF-8 sequences
+    /// split across SSH data packets are decoded correctly.
     pub fn write(&mut self, data: &[u8]) {
-        let mut parser = Parser::new();
+        let mut parser = self.persistent_parser.take().unwrap_or_else(Parser::new);
         for &byte in data {
             parser.advance(self, byte);
         }
+        self.persistent_parser = Some(parser);
         self.generation = self.generation.wrapping_add(1);
     }
 

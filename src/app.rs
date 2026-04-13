@@ -597,23 +597,19 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         }
                         SshEvent::Reconnecting { session_id, attempt } => {
                             if let Some(tab) =
-                                state.tabs.iter().find(|t| t.session_id == session_id)
+                                state.tabs.iter_mut().find(|t| t.session_id == session_id)
                             {
-                                let msg = format!(
-                                    "\r\n\x1b[33m[Reconnecting... attempt {}]\x1b[0m\r\n",
-                                    attempt
-                                );
-                                let mut grid = tab.terminal.lock();
-                                grid.write(msg.as_bytes());
+                                let base = tab.title.split(" [").next().unwrap_or(&tab.title).to_string();
+                                tab.title = format!("{} [Reconnecting...{}]", base, attempt);
                             }
                         }
                         SshEvent::Reconnected { session_id } => {
                             if let Some(tab) =
-                                state.tabs.iter().find(|t| t.session_id == session_id)
+                                state.tabs.iter_mut().find(|t| t.session_id == session_id)
                             {
-                                let msg = b"\r\n\x1b[32m[Reconnected]\x1b[0m\r\n";
-                                let mut grid = tab.terminal.lock();
-                                grid.write(msg);
+                                // Restore original title
+                                let base = tab.title.split(" [").next().unwrap_or(&tab.title).to_string();
+                                tab.title = base;
                             }
                         }
                     }
@@ -914,15 +910,50 @@ fn handle_event(
     status: event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
-    if status == event::Status::Captured {
-        return None;
-    }
     match evt {
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
-            key,
+            ref key,
             modifiers,
             ..
-        }) => Some(Message::KeyboardEvent(key, modifiers)),
+        }) => {
+            // Always forward special keys (ESC, arrows, F-keys, etc.)
+            // even if a widget "captured" them — the terminal needs these.
+            let is_special = matches!(
+                key,
+                keyboard::Key::Named(
+                    keyboard::key::Named::Escape
+                    | keyboard::key::Named::ArrowUp
+                    | keyboard::key::Named::ArrowDown
+                    | keyboard::key::Named::ArrowLeft
+                    | keyboard::key::Named::ArrowRight
+                    | keyboard::key::Named::Home
+                    | keyboard::key::Named::End
+                    | keyboard::key::Named::PageUp
+                    | keyboard::key::Named::PageDown
+                    | keyboard::key::Named::Insert
+                    | keyboard::key::Named::Delete
+                    | keyboard::key::Named::F1
+                    | keyboard::key::Named::F2
+                    | keyboard::key::Named::F3
+                    | keyboard::key::Named::F4
+                    | keyboard::key::Named::F5
+                    | keyboard::key::Named::F6
+                    | keyboard::key::Named::F7
+                    | keyboard::key::Named::F8
+                    | keyboard::key::Named::F9
+                    | keyboard::key::Named::F10
+                    | keyboard::key::Named::F11
+                    | keyboard::key::Named::F12
+                )
+            );
+
+            // For normal characters: only forward if not captured by a widget
+            if !is_special && status == event::Status::Captured {
+                return None;
+            }
+
+            Some(Message::KeyboardEvent(key.clone(), modifiers))
+        }
         _ => None,
     }
 }

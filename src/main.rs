@@ -3,6 +3,7 @@
 mod app;
 mod crypto;
 mod ssh;
+mod sshconfig;
 mod storage;
 mod terminal;
 mod ui;

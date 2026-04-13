@@ -216,6 +216,11 @@ pub enum Message {
     EditorSaved,
     CloseEditor,
 
+    // SSH Config / Key file picker
+    BrowseKeyFile,
+    KeyFileSelected(String),
+    ImportSshConfig(crate::sshconfig::SshHostConfig),
+
     // Misc
     Tick,
     None,
@@ -1009,6 +1014,54 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.editor_file_path = None;
             state.editor_session_id = None;
             state.editor_dirty = false;
+            Task::none()
+        }
+
+        // ---- SSH config / key file picker --------------------------------------
+        Message::BrowseKeyFile => {
+            Task::perform(
+                async {
+                    let file = rfd::AsyncFileDialog::new()
+                        .set_title("Select Private Key")
+                        .add_filter("All files", &["*"])
+                        .add_filter("PEM files", &["pem", "key"])
+                        .set_directory(dirs::home_dir().unwrap_or_default().join(".ssh"))
+                        .pick_file()
+                        .await;
+                    file.map(|f| f.path().to_string_lossy().to_string())
+                },
+                |path| match path {
+                    Some(p) => Message::KeyFileSelected(p),
+                    None => Message::None,
+                },
+            )
+        }
+        Message::KeyFileSelected(path) => {
+            state.form.private_key = path;
+            Task::none()
+        }
+        Message::ImportSshConfig(config) => {
+            state.show_form = true;
+            state.show_connect_dialog = false;
+            state.edit_id = None;
+            state.form = ConnectionFormData {
+                name: config.alias.clone(),
+                host: if config.hostname.is_empty() {
+                    config.alias
+                } else {
+                    config.hostname
+                },
+                port: config.port.to_string(),
+                username: config.user,
+                auth_type: if config.identity_file.is_empty() {
+                    "password".to_string()
+                } else {
+                    "key".to_string()
+                },
+                private_key: config.identity_file,
+                group: "SSH Config".to_string(),
+                ..Default::default()
+            };
             Task::none()
         }
 
@@ -2063,6 +2116,55 @@ fn view_connect_dialog(state: &NeoShell) -> Element<'_, Message> {
         }
     }
 
+    // SSH config hosts
+    let ssh_configs = crate::sshconfig::parse_ssh_config();
+    if !ssh_configs.is_empty() {
+        list_col = list_col.push(
+            container(
+                text("From ~/.ssh/config")
+                    .color(theme::TEXT_MUTED)
+                    .size(11),
+            )
+            .padding(Padding::from([8, 12])),
+        );
+
+        for config in ssh_configs {
+            let display_host = if config.hostname.is_empty() {
+                config.alias.clone()
+            } else {
+                config.hostname.clone()
+            };
+            let alias_text = config.alias.clone();
+            let user_display = if config.user.is_empty() {
+                "?".to_string()
+            } else {
+                config.user.clone()
+            };
+            let detail = format!("{}@{}:{}", user_display, display_host, config.port);
+
+            let config_row = row![
+                text("\u{25CB} ").color(theme::ACCENT).size(10),
+                column![
+                    text(alias_text).color(theme::TEXT_SECONDARY).size(13),
+                    text(detail).color(theme::TEXT_MUTED).size(11),
+                ]
+                .spacing(2),
+                horizontal_space(),
+                text("ssh config").color(theme::TEXT_MUTED).size(9),
+            ]
+            .align_y(alignment::Vertical::Center)
+            .spacing(8);
+
+            list_col = list_col.push(
+                button(config_row)
+                    .on_press(Message::ImportSshConfig(config))
+                    .padding(Padding::from([6, 12]))
+                    .width(Fill)
+                    .style(sidebar_item_style),
+            );
+        }
+    }
+
     let hint = text("Cmd+T open | Cmd+1-9 switch tabs | Ctrl+Tab next | Cmd+W close")
         .color(theme::TEXT_MUTED)
         .size(10);
@@ -2356,12 +2458,26 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
     let auth_label = text("Auth Type").color(theme::TEXT_SECONDARY).size(12);
 
     let auth_fields: Element<'_, Message> = if state.form.auth_type == "key" {
+        let key_label = text("Private Key Path").color(theme::TEXT_SECONDARY).size(12);
+        let key_input = text_input("", &state.form.private_key)
+            .on_input(Message::FormPrivateKeyChanged)
+            .padding(8)
+            .size(14);
+        let browse_btn = button(text("Browse...").color(theme::ACCENT).size(12))
+            .on_press(Message::BrowseKeyFile)
+            .padding(Padding::from([6, 12]))
+            .style(transparent_button_style);
+        let key_field: Element<'_, Message> = column![
+            key_label,
+            row![key_input, browse_btn]
+                .spacing(8)
+                .align_y(alignment::Vertical::Center),
+        ]
+        .spacing(4)
+        .into();
+
         column![
-            labeled_input(
-                "Private Key Path",
-                &state.form.private_key,
-                Message::FormPrivateKeyChanged
-            ),
+            key_field,
             labeled_input(
                 "Passphrase (optional)",
                 &state.form.passphrase,

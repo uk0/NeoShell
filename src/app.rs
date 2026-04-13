@@ -125,6 +125,11 @@ pub struct NeoShell {
 
     // ZMODEM: suppress residual binary data for ~2s after detection
     zmodem_active: HashMap<String, std::time::Instant>,
+
+    // Terminal text selection
+    selection_start: Option<(usize, usize)>,  // (col, row) in grid coords
+    selection_end: Option<(usize, usize)>,
+    selecting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,6 +256,14 @@ pub enum Message {
     SzDetected(String),      // session_id — sz wants to send a file
     RzUploadDone(String),    // session_id — upload finished
 
+    // Terminal scrollback & selection
+    TerminalScrollUp(usize),
+    TerminalScrollDown(usize),
+    TerminalMouseDown,
+    TerminalMouseUp,
+    TerminalMouseMove(f32, f32),
+    CopySelection,
+
     // Misc
     Tick,
     None,
@@ -305,6 +318,9 @@ impl Default for NeoShell {
             net_rx_rate: HashMap::new(),
             net_tx_rate: HashMap::new(),
             zmodem_active: HashMap::new(),
+            selection_start: None,
+            selection_end: None,
+            selecting: false,
         }
     }
 }
@@ -648,6 +664,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
                 let mut grid = tab.terminal.lock();
                 grid.write(&data);
+                grid.scroll_offset = 0; // Auto-scroll to bottom on new data
             }
             Task::none()
         }
@@ -769,6 +786,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                             {
                                 let mut grid = tab.terminal.lock();
                                 grid.write(&data);
+                                grid.scroll_offset = 0; // Auto-scroll to bottom on new data
                             }
                         }
                         SshEvent::Closed { session_id } => {
@@ -1313,6 +1331,87 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::done(Message::ChangeDir(sid, path))
         }
 
+        // ---- terminal scrollback & selection ------------------------------------
+        Message::TerminalScrollUp(lines) => {
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    tab.terminal.lock().scroll_view_up(lines);
+                }
+            }
+            Task::none()
+        }
+        Message::TerminalScrollDown(lines) => {
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    tab.terminal.lock().scroll_view_down(lines);
+                }
+            }
+            Task::none()
+        }
+        Message::TerminalMouseDown => {
+            state.selecting = true;
+            state.selection_start = None;
+            state.selection_end = None;
+            // Invalidate canvas cache so old selection is cleared
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    let mut grid = tab.terminal.lock();
+                    grid.generation = grid.generation.wrapping_add(1);
+                }
+            }
+            Task::none()
+        }
+        Message::TerminalMouseMove(x, y) => {
+            if state.selecting {
+                if let Some(pos) = pixel_to_grid(x, y) {
+                    if state.selection_start.is_none() {
+                        state.selection_start = Some(pos);
+                    }
+                    state.selection_end = Some(pos);
+                    // Invalidate canvas cache to update selection highlight
+                    if let Some(idx) = state.active_tab {
+                        if let Some(tab) = state.tabs.get(idx) {
+                            let mut grid = tab.terminal.lock();
+                            grid.generation = grid.generation.wrapping_add(1);
+                        }
+                    }
+                }
+            }
+            Task::none()
+        }
+        Message::TerminalMouseUp => {
+            state.selecting = false;
+            if state.selection_start.is_some() && state.selection_end.is_some() {
+                return Task::done(Message::CopySelection);
+            }
+            Task::none()
+        }
+        Message::CopySelection => {
+            if let (Some(start), Some(end)) = (state.selection_start, state.selection_end) {
+                if let Some(idx) = state.active_tab {
+                    if let Some(tab) = state.tabs.get(idx) {
+                        let grid = tab.terminal.lock();
+                        let text = extract_selection(&grid, start, end);
+                        if !text.is_empty() {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                let _ = clipboard.set_text(&text);
+                            }
+                        }
+                    }
+                }
+            }
+            state.selection_start = None;
+            state.selection_end = None;
+            // Invalidate canvas cache to clear selection highlight
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    let mut grid = tab.terminal.lock();
+                    grid.generation = grid.generation.wrapping_add(1);
+                }
+            }
+            Task::none()
+        }
+
         // ---- misc ------------------------------------------------------------
         Message::Tick => Task::none(),
         Message::None => Task::none(),
@@ -1366,6 +1465,37 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
                     key, modifiers, text, ..
                 }) => {
                     Message::KeyboardEvent(key, modifiers, text.map(|s| s.to_string()))
+                }
+                iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                    match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => {
+                            if y > 0.0 {
+                                Message::TerminalScrollUp(3)
+                            } else if y < 0.0 {
+                                Message::TerminalScrollDown(3)
+                            } else {
+                                Message::None
+                            }
+                        }
+                        mouse::ScrollDelta::Pixels { y, .. } => {
+                            if y > 0.0 {
+                                Message::TerminalScrollUp(1)
+                            } else if y < 0.0 {
+                                Message::TerminalScrollDown(1)
+                            } else {
+                                Message::None
+                            }
+                        }
+                    }
+                }
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    Message::TerminalMouseDown
+                }
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    Message::TerminalMouseUp
+                }
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Message::TerminalMouseMove(position.x, position.y)
                 }
                 _ => Message::None,
             }
@@ -2127,6 +2257,8 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
         if let Some(tab) = state.tabs.get(idx) {
             let term_view = TerminalView {
                 grid: tab.terminal.clone(),
+                selection_start: state.selection_start,
+                selection_end: state.selection_end,
             };
 
             return canvas(term_view).width(Fill).height(Fill).into();
@@ -2916,6 +3048,8 @@ fn labeled_input<'a>(
 
 struct TerminalView {
     grid: Arc<parking_lot::Mutex<TerminalGrid>>,
+    selection_start: Option<(usize, usize)>,
+    selection_end: Option<(usize, usize)>,
 }
 
 /// Persistent state for the terminal canvas. Created once by iced and reused
@@ -3009,10 +3143,14 @@ impl<Message> canvas::Program<Message> for TerminalView {
             };
 
             for y in 0..grid.rows {
-                let row = &grid.cells[y];
+                let line = if grid.scroll_offset > 0 {
+                    grid.get_visible_line(y)
+                } else {
+                    &grid.cells[y]
+                };
 
                 // Skip entirely empty rows — no iteration needed.
-                if is_row_empty(row) {
+                if is_row_empty(line) {
                     continue;
                 }
 
@@ -3021,7 +3159,7 @@ impl<Message> canvas::Program<Message> for TerminalView {
 
                 let mut x = 0;
                 while x < grid.cols {
-                    let cell = &row[x];
+                    let cell = if x < line.len() { &line[x] } else { break };
 
                     // Skip continuation cells (right half of wide chars)
                     if cell.wide_cont {
@@ -3105,8 +3243,33 @@ impl<Message> canvas::Program<Message> for TerminalView {
                 flush_run(frame, &mut run_buf, run_start_x, run_y, run_fg, cell_w, cell_h, font_size);
             }
 
-            // Cursor
-            if grid.cursor_visible && grid.cursor_y < grid.rows && grid.cursor_x < grid.cols {
+            // Draw selection highlight
+            if let (Some(sel_start), Some(sel_end)) = (self.selection_start, self.selection_end) {
+                let (mut sc, mut sr) = sel_start;
+                let (mut ec, mut er) = sel_end;
+                if sr > er || (sr == er && sc > ec) {
+                    std::mem::swap(&mut sr, &mut er);
+                    std::mem::swap(&mut sc, &mut ec);
+                }
+
+                let highlight_color = Color::from_rgba(0.39, 0.40, 0.95, 0.3);
+
+                for row in sr..=er.min(grid.rows.saturating_sub(1)) {
+                    let start_col = if row == sr { sc } else { 0 };
+                    let end_col = if row == er { ec } else { grid.cols.saturating_sub(1) };
+
+                    if end_col >= start_col {
+                        frame.fill_rectangle(
+                            Point::new(start_col as f32 * cell_w, row as f32 * cell_h),
+                            Size::new((end_col - start_col + 1) as f32 * cell_w, cell_h),
+                            highlight_color,
+                        );
+                    }
+                }
+            }
+
+            // Cursor (only when not scrolled into history)
+            if grid.scroll_offset == 0 && grid.cursor_visible && grid.cursor_y < grid.rows && grid.cursor_x < grid.cols {
                 frame.fill_rectangle(
                     Point::new(
                         grid.cursor_x as f32 * cell_w,
@@ -3115,6 +3278,28 @@ impl<Message> canvas::Program<Message> for TerminalView {
                     Size::new(2.0, cell_h),
                     theme::ACCENT,
                 );
+            }
+
+            // Scroll indicator when viewing history
+            if grid.scroll_offset > 0 {
+                let indicator = format!("\u{2191} {} lines", grid.scroll_offset);
+                let text_width = indicator.len() as f32 * cell_w;
+                let indicator_x = bounds.size().width - text_width - 8.0;
+
+                // Background for readability
+                frame.fill_rectangle(
+                    Point::new(indicator_x - 4.0, 2.0),
+                    Size::new(text_width + 8.0, cell_h + 2.0),
+                    Color::from_rgba(0.1, 0.1, 0.2, 0.85),
+                );
+                frame.fill_text(canvas::Text {
+                    content: indicator,
+                    position: Point::new(indicator_x, 2.0),
+                    color: Color::from_rgb(0.6, 0.65, 0.95),
+                    size: Pixels(font_size),
+                    font: Font::MONOSPACE,
+                    ..canvas::Text::default()
+                });
             }
         });
 
@@ -3125,6 +3310,62 @@ impl<Message> canvas::Program<Message> for TerminalView {
 /// Convert our terminal color (r, g, b fields) to an iced Color.
 fn cell_color_to_iced(c: crate::terminal::Color) -> Color {
     Color::from_rgb(c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0)
+}
+
+/// Convert pixel position to terminal grid coordinates (col, row).
+/// The terminal canvas starts after the sidebar (280px) and tab bar (34px).
+fn pixel_to_grid(x: f32, y: f32) -> Option<(usize, usize)> {
+    let term_x = x - 280.0;  // sidebar width
+    let term_y = y - 34.0;   // tab bar height
+    if term_x < 0.0 || term_y < 0.0 {
+        return None;
+    }
+
+    let font_size = 14.0_f32;
+    let cell_w = font_size * 0.6;
+    let cell_h = font_size * 1.5;
+
+    let col = (term_x / cell_w) as usize;
+    let row = (term_y / cell_h) as usize;
+    Some((col, row))
+}
+
+/// Extract selected text from the terminal grid given start and end positions
+/// in (col, row) format.
+fn extract_selection(grid: &TerminalGrid, start: (usize, usize), end: (usize, usize)) -> String {
+    let (mut sc, mut sr) = start;
+    let (mut ec, mut er) = end;
+
+    // Normalize: start should be before end
+    if sr > er || (sr == er && sc > ec) {
+        std::mem::swap(&mut sc, &mut ec);
+        std::mem::swap(&mut sr, &mut er);
+    }
+
+    let mut result = String::new();
+    for row in sr..=er.min(grid.rows.saturating_sub(1)) {
+        let start_col = if row == sr { sc.min(grid.cols.saturating_sub(1)) } else { 0 };
+        let end_col = if row == er { ec.min(grid.cols.saturating_sub(1)) } else { grid.cols.saturating_sub(1) };
+
+        let line = if grid.scroll_offset > 0 {
+            grid.get_visible_line(row)
+        } else {
+            &grid.cells[row]
+        };
+
+        for col in start_col..=end_col {
+            if col < line.len() && !line[col].wide_cont {
+                result.push(line[col].c);
+            }
+        }
+        // Trim trailing spaces per line
+        if row < er {
+            let trimmed = result.trim_end_matches(' ');
+            result = trimmed.to_string();
+            result.push('\n');
+        }
+    }
+    result.trim_end().to_string()
 }
 
 // ---------------------------------------------------------------------------

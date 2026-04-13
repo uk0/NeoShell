@@ -231,7 +231,7 @@ impl TerminalGrid {
             cols,
             rows,
             cells,
-            scrollback: VecDeque::with_capacity(5000),
+            scrollback: VecDeque::with_capacity(10000),
             scroll_offset: 0,
             cursor_x: 0,
             cursor_y: 0,
@@ -291,7 +291,7 @@ impl TerminalGrid {
     fn scroll_up(&mut self) {
         if self.scroll_top == 0 {
             self.scrollback.push_back(self.cells[0].clone());
-            if self.scrollback.len() > 5000 {
+            if self.scrollback.len() > 10000 {
                 self.scrollback.pop_front();
             }
         }
@@ -334,10 +334,12 @@ impl TerminalGrid {
     pub fn scroll_view_up(&mut self, lines: usize) {
         let max = self.scrollback.len();
         self.scroll_offset = (self.scroll_offset + lines).min(max);
+        self.generation = self.generation.wrapping_add(1);
     }
 
     pub fn scroll_view_down(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Handle SGR (Select Graphic Rendition) escape parameters.

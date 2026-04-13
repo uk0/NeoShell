@@ -119,6 +119,7 @@ footer p{color:var(--text3);font-size:13px}
       <a href="#features">Features</a>
       <a href="#tech">Tech Stack</a>
       <a href="#security">Security</a>
+      <a href="#changelog">Changelog</a>
       <a href="#download" class="btn btn-primary">Download</a>
     </div>
   </div>
@@ -280,6 +281,57 @@ footer p{color:var(--text3);font-size:13px}
       </div>
     </div>
     <p style="margin-top:24px;color:var(--text3);font-size:13px">NeoShell is proprietary software. Contact us for enterprise licensing.</p>
+  </div>
+</section>
+
+<section class="changelog" id="changelog" style="padding:80px 32px">
+  <div style="max-width:800px;margin:0 auto">
+    <h2 class="section-title">Changelog</h2>
+    <p class="section-sub">What's new in each release</p>
+
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:left">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
+        <span style="background:var(--accent);color:#fff;padding:4px 12px;border-radius:6px;font-size:14px;font-weight:700">v0.1.0</span>
+        <span style="color:var(--text3);font-size:14px">2026-04-13</span>
+        <span style="background:rgba(34,197,94,.15);color:var(--success);padding:2px 8px;border-radius:4px;font-size:12px">Latest</span>
+      </div>
+
+      <h4 style="color:var(--cyan);font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Added</h4>
+      <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0 0 20px;padding-left:20px">
+        <li>Pure Rust native GUI (iced 0.13, wgpu GPU-accelerated)</li>
+        <li>VTE terminal emulator — 256-color, truecolor, CJK wide character support</li>
+        <li>AES-256-GCM encrypted vault with Argon2id key derivation (KEK → DEK)</li>
+        <li>Multi-tab SSH sessions with dual-connection architecture</li>
+        <li>Real-time server monitoring — CPU, memory, all disk partitions, per-interface network, top 15 processes</li>
+        <li>SFTP file browser — upload/download with progress bars, click-to-navigate</li>
+        <li>Quick file editor for text files (sh, json, yaml, toml, conf, csv, py…)</li>
+        <li>Connection manager with encrypted credential storage</li>
+        <li>Cross-platform: macOS (.dmg), Windows (.zip), Linux (.AppImage)</li>
+        <li>CI/CD — tag-triggered GitHub Actions multi-platform release</li>
+      </ul>
+
+      <h4 style="color:var(--success);font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Security</h4>
+      <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0 0 20px;padding-left:20px">
+        <li>Master password never stored — only derived key used</li>
+        <li>Each connection encrypted with unique nonce</li>
+        <li>Dedicated exec SSH session prevents terminal lock contention</li>
+        <li>Windows: no CMD window in release mode</li>
+      </ul>
+
+      <h4 style="color:var(--accent2);font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Performance</h4>
+      <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0 0 20px;padding-left:20px">
+        <li>Batched canvas rendering (~100 draw calls/frame vs ~1920)</li>
+        <li>Lock-free SSH exec — zero contention with interactive terminal</li>
+        <li>32KB chunked SFTP transfers with atomic progress tracking</li>
+      </ul>
+
+      <h4 style="color:#f59e0b;font-size:14px;margin:0 0 12px;text-transform:uppercase;letter-spacing:.06em">Fixed</h4>
+      <ul style="color:var(--text2);font-size:14px;line-height:2;margin:0;padding-left:20px">
+        <li>CJK/Chinese character rendering (wide char detection)</li>
+        <li>Duplicate SSH tab creation on rapid clicks</li>
+        <li>libssh2 session deadlock (dual SSH connection architecture)</li>
+      </ul>
+    </div>
   </div>
 </section>
 

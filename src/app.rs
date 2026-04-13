@@ -58,6 +58,37 @@ fn detect_zmodem_rz(data: &[u8]) -> bool {
         || data.windows(22).any(|w| w.starts_with(b"rz waiting to receive"))
 }
 
+/// Extract "sz filename" from the terminal grid (shell echo already rendered).
+/// Scans recent lines bottom-up for "sz " pattern.
+fn extract_sz_from_grid(grid: &TerminalGrid) -> Option<String> {
+    for y in (0..grid.rows).rev() {
+        let line: String = grid.cells[y].iter()
+            .filter(|c| !c.wide_cont)
+            .map(|c| c.c)
+            .collect();
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        // Stop if we hit ZMODEM garbage or NeoShell messages
+        if trimmed.starts_with("**") || trimmed.contains("[NeoShell]") { continue; }
+
+        if let Some(pos) = trimmed.rfind("sz ") {
+            let after = trimmed[pos + 3..].trim();
+            // Take filename (everything before ZMODEM or control chars)
+            let fname: String = after
+                .chars()
+                .take_while(|&c| c != '*' && c != '\r' && c != '\n' && c.is_ascii_graphic() || c == ' ' || c > '\x7f')
+                .collect();
+            let fname = fname.trim().to_string();
+            if !fname.is_empty() && fname.len() > 1 {
+                return Some(fname);
+            }
+        }
+        // Only check the last few non-empty lines
+        break;
+    }
+    None
+}
+
 /// Extract filename from "sz filename" echo in SSH data stream.
 /// Handles: "sz file.txt\r\n", "$ sz  my file.tar\r\n", ANSI escape codes stripped.
 fn extract_sz_filename(data: &str) -> Option<String> {
@@ -802,12 +833,20 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                 let _ = state.ssh_manager.send_data(&session_id, ZMODEM_CANCEL);
                                 state.zmodem_active.insert(session_id.clone(), std::time::Instant::now());
 
-                                // Try to extract "sz filename" from the data stream echo
-                                let data_str = String::from_utf8_lossy(&data);
-                                let sz_from_echo = extract_sz_filename(&data_str);
+                                // Extract sz filename from:
+                                // 1. Terminal grid (shell echo already rendered)
+                                // 2. Current data packet echo
+                                // 3. Keyboard buffer fallback
+                                let sz_from_grid = state.tabs.iter()
+                                    .find(|t| t.session_id == session_id)
+                                    .and_then(|tab| {
+                                        let grid = tab.terminal.lock();
+                                        extract_sz_from_grid(&grid)
+                                    });
 
-                                // Use data echo first, then keyboard buffer as fallback
-                                let sz_fname = sz_from_echo
+                                let data_str = String::from_utf8_lossy(&data);
+                                let sz_fname = sz_from_grid
+                                    .or_else(|| extract_sz_filename(&data_str))
                                     .or_else(|| state.sz_filename.remove(&session_id));
 
                                 if let Some(fname) = sz_fname {
@@ -816,10 +855,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                             format!("\r\n\x1b[36m[NeoShell] sz: downloading {} via SFTP...\x1b[0m\r\n", fname).as_bytes(),
                                         );
                                     }
-                                    // Store filename for the handler
                                     state.sz_filename.insert(session_id.clone(), fname);
                                     sz_sessions.push(session_id.clone());
-                                } else if data_str.contains("rz waiting") || !data_str.contains("sz") {
+                                } else if data_str.contains("rz waiting") {
                                     if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
                                         tab.terminal.lock().write(
                                             b"\r\n\x1b[36m[NeoShell] rz detected - opening file picker...\x1b[0m\r\n",
@@ -827,7 +865,12 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                     }
                                     rz_sessions.push(session_id.clone());
                                 } else {
-                                    // Ambiguous — default to rz (upload)
+                                    // Default: rz upload
+                                    if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
+                                        tab.terminal.lock().write(
+                                            b"\r\n\x1b[36m[NeoShell] rz detected - opening file picker...\x1b[0m\r\n",
+                                        );
+                                    }
                                     rz_sessions.push(session_id.clone());
                                 }
                                 continue;

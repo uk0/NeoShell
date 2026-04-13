@@ -296,6 +296,7 @@ pub fn run() -> iced::Result {
         .theme(|_state| Theme::Dark)
         .window_size(Size::new(1200.0, 800.0))
         .antialiasing(true)
+        .decorations(true)
         .default_font(CJK_FONT)
         .run()
 }
@@ -410,15 +411,13 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         ($($arg:tt)*) => { if let Some(ref mut f) = log { let _ = writeln!(f, $($arg)*); } }
                     }
 
-                    dbg_log!("[{}] ConnectTo: id={}", chrono_now(), id);
-                    let config = store.get_connection(&id)?;
-                    dbg_log!("[{}] Config: {}@{}:{} auth={} key={:?}",
-                        chrono_now(), config.username, config.host, config.port,
-                        config.auth_type, config.private_key.as_deref().unwrap_or("none"));
-                    let session_id = ssh.connect_config(&config)?;
-                    dbg_log!("[{}] Connected: session={}", chrono_now(), session_id);
-                    let title = format!("{}@{}:{}", config.username, config.host, config.port);
-                    Ok((tab_id2, session_id, title, id))
+                    // Run blocking SSH connect on dedicated thread
+                    tokio::task::spawn_blocking(move || {
+                        let config = store.get_connection(&id)?;
+                        let session_id = ssh.connect_config(&config)?;
+                        let title = format!("{}@{}:{}", config.username, config.host, config.port);
+                        Ok((tab_id2, session_id, title, id))
+                    }).await.map_err(|e| format!("Task: {}", e))?
                 },
                 |result: Result<(String, String, String, String), String>| match result {
                     Ok((tab_id, session_id, title, conn_id)) => {
@@ -871,9 +870,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                     let sid = tab.session_id.clone();
                     return Task::perform(
                         async move {
-                            let stats = ssh.fetch_server_stats(&sid)?;
-                            let procs = ssh.fetch_top_processes(&sid, 15)?;
-                            Ok((sid, stats, procs))
+                            tokio::task::spawn_blocking(move || {
+                                let stats = ssh.fetch_server_stats(&sid)?;
+                                let procs = ssh.fetch_top_processes(&sid, 15)?;
+                                Ok((sid, stats, procs))
+                            }).await.map_err(|e| format!("{}", e))?
                         },
                         |r: Result<(String, ServerStats, Vec<ProcessInfo>), String>| match r {
                             Ok((sid, stats, procs)) => {
@@ -934,7 +935,10 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             let path_async = path.clone();
             state.current_dir.insert(sid_for_state, path);
             Task::perform(
-                async move { ssh.list_files(&sid_for_async, &path_async) },
+                async move {
+                    tokio::task::spawn_blocking(move || ssh.list_files(&sid_for_async, &path_async))
+                        .await.map_err(|e| format!("{}", e))?
+                },
                 move |result: Result<(String, Vec<FileEntry>), String>| match result {
                     Ok((real_path, entries)) => Message::FilesReceived(sid.clone(), real_path, entries),
                     Err(e) => Message::Error(e),
@@ -992,8 +996,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                             let file_name = file.file_name();
                             let remote_path = format!("{}/{}", current.trim_end_matches('/'), file_name);
 
-                            ssh.upload_file_with_progress(&sid, &local_path, &remote_path, progress)?;
-                            Ok(sid)
+                            // Run blocking SFTP on dedicated thread to avoid starving tokio runtime
+                            tokio::task::spawn_blocking(move || {
+                                ssh.upload_file_with_progress(&sid, &local_path, &remote_path, progress)
+                                    .map(|_| sid)
+                            }).await.map_err(|e| format!("Task: {}", e))?
                         } else {
                             Err("cancelled".to_string())
                         }
@@ -1038,8 +1045,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         if local_path.is_empty() {
                             return Err("Empty save path".to_string());
                         }
-                        ssh.download_file_with_progress(&sid, &remote_path, &local_path, progress)?;
-                        Ok(format!("Downloaded to {}", local_path))
+                        // Run blocking SFTP on dedicated thread
+                        tokio::task::spawn_blocking(move || {
+                            ssh.download_file_with_progress(&sid, &remote_path, &local_path, progress)
+                                .map(|_| format!("Downloaded"))
+                        }).await.map_err(|e| format!("Task: {}", e))?
                     } else {
                         Err("cancelled".to_string())
                     }

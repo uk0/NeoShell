@@ -929,8 +929,12 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 state.transfer_progress = Some(progress.clone());
                 Task::perform(
                     async move {
+                        let default_dir = dirs::download_dir()
+                            .or_else(dirs::desktop_dir)
+                            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
                         let file = rfd::AsyncFileDialog::new()
                             .set_title("Select file to upload")
+                            .set_directory(&default_dir)
                             .pick_file()
                             .await;
 
@@ -967,14 +971,24 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.transfer_progress = Some(progress.clone());
             Task::perform(
                 async move {
+                    // Default to user's Downloads or Desktop directory
+                    let default_dir = dirs::download_dir()
+                        .or_else(dirs::desktop_dir)
+                        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
+
                     let save_path = rfd::AsyncFileDialog::new()
                         .set_title("Save file as")
                         .set_file_name(&filename)
+                        .set_directory(&default_dir)
                         .save_file()
                         .await;
 
-                    if let Some(save_path) = save_path {
-                        let local_path = save_path.path().to_string_lossy().to_string();
+                    if let Some(save_handle) = save_path {
+                        // Use the full canonical path
+                        let local_path = save_handle.path().to_string_lossy().to_string();
+                        if local_path.is_empty() {
+                            return Err("Empty save path".to_string());
+                        }
                         ssh.download_file_with_progress(&sid, &remote_path, &local_path, progress)?;
                         Ok(format!("Downloaded to {}", local_path))
                     } else {

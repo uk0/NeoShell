@@ -30,6 +30,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: macos-${{ matrix.arch }}-cargo-
+
       - name: Install dependencies
         run: brew install libssh2 openssl@3
 
@@ -88,6 +98,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-cargo-
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -144,6 +164,16 @@ jobs:
 
       - name: Install NASM (for openssl vendored build)
         uses: ilammy/setup-nasm@v1
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-cargo-
 
       - name: Build release
         env:

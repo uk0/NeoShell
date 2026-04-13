@@ -101,6 +101,13 @@ pub struct NeoShell {
 
     // Quick-connect dialog (shows saved connections list)
     show_connect_dialog: bool,
+
+    // Network rate tracking (bytes/sec)
+    prev_net_rx: HashMap<String, u64>,
+    prev_net_tx: HashMap<String, u64>,
+    prev_net_time: HashMap<String, std::time::Instant>,
+    net_rx_rate: HashMap<String, f64>,
+    net_tx_rate: HashMap<String, f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -269,6 +276,11 @@ impl Default for NeoShell {
             selected_interface: None,
             connecting_ids: HashSet::new(),
             show_connect_dialog: false,
+            prev_net_rx: HashMap::new(),
+            prev_net_tx: HashMap::new(),
+            prev_net_time: HashMap::new(),
+            net_rx_rate: HashMap::new(),
+            net_tx_rate: HashMap::new(),
         }
     }
 }
@@ -765,6 +777,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                 return Task::done(Message::SwitchToTab(state.tabs.len() - 1));
                             }
                         }
+                        "+" | "=" | "-" | "0" => return Task::none(), // Block zoom
                         _ => {}
                     }
                 }
@@ -855,6 +868,23 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::MonitorDataReceived(sid, stats, procs) => {
+            // Calculate network speed (bytes/sec) from deltas
+            let now = std::time::Instant::now();
+            if let Some(prev_time) = state.prev_net_time.get(&sid) {
+                let elapsed = now.duration_since(*prev_time).as_secs_f64();
+                if elapsed > 0.5 {
+                    let prev_rx = state.prev_net_rx.get(&sid).copied().unwrap_or(0);
+                    let prev_tx = state.prev_net_tx.get(&sid).copied().unwrap_or(0);
+                    if prev_rx > 0 && stats.net_rx_bytes >= prev_rx {
+                        state.net_rx_rate.insert(sid.clone(), (stats.net_rx_bytes - prev_rx) as f64 / elapsed);
+                        state.net_tx_rate.insert(sid.clone(), (stats.net_tx_bytes - prev_tx) as f64 / elapsed);
+                    }
+                }
+            }
+            state.prev_net_rx.insert(sid.clone(), stats.net_rx_bytes);
+            state.prev_net_tx.insert(sid.clone(), stats.net_tx_bytes);
+            state.prev_net_time.insert(sid.clone(), now);
+
             state.server_stats.insert(sid.clone(), stats);
             state.top_processes.insert(sid, procs);
             Task::none()
@@ -1796,10 +1826,28 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
                 ))
                 .color(theme::TEXT_SECONDARY)
                 .size(10)
-        
+
             )
             .padding(Padding::from([3, 10]))
         );
+
+        // Network speed (bytes/sec)
+        if let Some(sid) = active_session {
+            let rx_rate = state.net_rx_rate.get(sid).copied().unwrap_or(0.0);
+            let tx_rate = state.net_tx_rate.get(sid).copied().unwrap_or(0.0);
+            col = col.push(
+                container(
+                    text(format!(
+                        "Speed: \u{2193}{}/s \u{2191}{}/s",
+                        format_bytes(rx_rate as u64),
+                        format_bytes(tx_rate as u64),
+                    ))
+                    .color(theme::SUCCESS)
+                    .size(10)
+                )
+                .padding(Padding::from([3, 10]))
+            );
+        }
     }
 
     // Wrap everything in a scrollable
@@ -2884,22 +2932,41 @@ fn key_to_terminal_bytes(
     use keyboard::key::Named;
     use keyboard::Key;
 
-    // Ctrl+letter → control character (0x01..0x1A)
+    // Ctrl+key → control characters
     if modifiers.control() {
-        if let Key::Character(c) = key {
-            let ch = c.as_str().chars().next()?;
+        // Extract the base letter from various sources
+        let base_char = match key {
+            Key::Character(c) => c.as_str().chars().next(),
+            Key::Named(Named::Space) => return Some("\x00".to_string()),
+            _ => None,
+        };
+
+        if let Some(ch) = base_char {
             if ch.is_ascii_alphabetic() {
                 let ctrl_byte = (ch.to_ascii_uppercase() as u8) - b'A' + 1;
                 return Some(String::from(ctrl_byte as char));
             }
-            return match ch {
-                '[' => Some("\x1b".to_string()),
-                '\\' => Some("\x1c".to_string()),
-                ']' => Some("\x1d".to_string()),
-                '2' | '@' => Some("\x00".to_string()),
-                '6' | '^' => Some("\x1e".to_string()),
-                _ => None,
-            };
+            // Special ctrl combos
+            match ch {
+                '[' | '3' => return Some("\x1b".to_string()), // ESC
+                '\\' | '4' => return Some("\x1c".to_string()),
+                ']' | '5' => return Some("\x1d".to_string()),
+                '2' | '@' | '`' => return Some("\x00".to_string()),
+                '6' | '^' | '~' => return Some("\x1e".to_string()),
+                '7' | '?' => return Some("\x1f".to_string()),
+                '8' => return Some("\x7f".to_string()), // DEL
+                _ => {}
+            }
+        }
+
+        // If text field has a control character, send it directly
+        if let Some(t) = text {
+            if t.len() == 1 {
+                let ch = t.chars().next().unwrap();
+                if (ch as u32) < 32 {
+                    return Some(t.to_string());
+                }
+            }
         }
     }
 
@@ -3002,9 +3069,11 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() > max_len {
-        format!("{}...", &s[..max_len])
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}...", truncated)
     } else {
         s.to_string()
     }

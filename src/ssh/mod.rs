@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
@@ -22,6 +23,14 @@ pub enum SshEvent {
     Error { session_id: String, error: String },
 }
 
+/// Per-interface network statistics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NetInterface {
+    pub name: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
 /// Server resource statistics collected via SSH exec.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerStats {
@@ -40,6 +49,7 @@ pub struct ServerStats {
     pub net_rx_rate: String,
     pub net_tx_rate: String,
     pub uptime: String,
+    pub interfaces: Vec<NetInterface>,
 }
 
 /// A single process entry from `ps aux`.
@@ -61,6 +71,41 @@ pub struct FileEntry {
     pub permissions: String,
     pub modified: String,
     pub owner: String,
+}
+
+/// Shared progress state for SFTP file transfers.
+#[derive(Debug)]
+pub struct TransferProgress {
+    pub transferred: AtomicU64,
+    pub total: AtomicU64,
+    pub finished: AtomicBool,
+    pub error: parking_lot::Mutex<Option<String>>,
+    pub filename: parking_lot::Mutex<String>,
+}
+
+impl TransferProgress {
+    pub fn new() -> Self {
+        Self {
+            transferred: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            finished: AtomicBool::new(false),
+            error: parking_lot::Mutex::new(None),
+            filename: parking_lot::Mutex::new(String::new()),
+        }
+    }
+
+    pub fn percent(&self) -> f64 {
+        let total = self.total.load(Ordering::Relaxed);
+        if total == 0 {
+            return 0.0;
+        }
+        let transferred = self.transferred.load(Ordering::Relaxed);
+        (transferred as f64 / total as f64 * 100.0).min(100.0)
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Relaxed)
+    }
 }
 
 /// A handle to a single active SSH session.
@@ -491,18 +536,31 @@ impl SshManager {
             }
         }
 
-        // Parse /proc/net/dev (sum all interfaces except lo)
+        // Parse /proc/net/dev (per-interface)
         if let Some(net_output) = sections.get(3) {
             for line in net_output.lines() {
                 let line = line.trim();
-                if line.starts_with("lo:") || !line.contains(':') {
+                if !line.contains(':') || line.starts_with("Inter") || line.starts_with("face") {
                     continue;
                 }
-                let after_colon = line.split(':').nth(1).unwrap_or("");
-                let parts: Vec<&str> = after_colon.split_whitespace().collect();
-                if parts.len() >= 9 {
-                    stats.net_rx_bytes += parts[0].parse::<u64>().unwrap_or(0);
-                    stats.net_tx_bytes += parts[8].parse::<u64>().unwrap_or(0);
+                let parts_split: Vec<&str> = line.splitn(2, ':').collect();
+                if parts_split.len() < 2 {
+                    continue;
+                }
+                let iface_name = parts_split[0].trim().to_string();
+                let values: Vec<&str> = parts_split[1].split_whitespace().collect();
+                if values.len() >= 9 {
+                    let rx = values[0].parse::<u64>().unwrap_or(0);
+                    let tx = values[8].parse::<u64>().unwrap_or(0);
+                    if iface_name != "lo" {
+                        stats.net_rx_bytes += rx;
+                        stats.net_tx_bytes += tx;
+                    }
+                    stats.interfaces.push(NetInterface {
+                        name: iface_name,
+                        rx_bytes: rx,
+                        tx_bytes: tx,
+                    });
                 }
             }
         }
@@ -636,6 +694,113 @@ impl SshManager {
         remote_file.write_all(&contents)
             .map_err(|e| format!("Failed to write remote file: {}", e))?;
 
+        Ok(())
+    }
+
+    /// Upload a local file with progress reporting (Arc<TransferProgress>).
+    pub fn upload_file_with_progress(
+        &self,
+        session_id: &str,
+        local_path: &str,
+        remote_path: &str,
+        progress: Arc<TransferProgress>,
+    ) -> Result<(), String> {
+        let sessions = self.sessions.read();
+        let ssh_session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+
+        let contents = std::fs::read(local_path)
+            .map_err(|e| format!("Failed to read local file: {}", e))?;
+
+        let filename = std::path::Path::new(local_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        *progress.filename.lock() = filename;
+        progress.total.store(contents.len() as u64, Ordering::Relaxed);
+        progress.transferred.store(0, Ordering::Relaxed);
+        progress.finished.store(false, Ordering::Relaxed);
+
+        let sess = ssh_session.exec_session.lock();
+        sess.set_blocking(true);
+        let sftp = sess.sftp().map_err(|e| format!("SFTP init failed: {}", e))?;
+        let mut remote_file = sftp
+            .create(std::path::Path::new(remote_path))
+            .map_err(|e| format!("Failed to create remote file: {}", e))?;
+
+        let chunk_size = 32768; // 32KB chunks
+        let mut offset = 0usize;
+        while offset < contents.len() {
+            let end = (offset + chunk_size).min(contents.len());
+            remote_file
+                .write_all(&contents[offset..end])
+                .map_err(|e| format!("Write error: {}", e))?;
+            offset = end;
+            progress.transferred.store(offset as u64, Ordering::Relaxed);
+        }
+
+        progress.finished.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Download a remote file with progress reporting (Arc<TransferProgress>).
+    pub fn download_file_with_progress(
+        &self,
+        session_id: &str,
+        remote_path: &str,
+        local_path: &str,
+        progress: Arc<TransferProgress>,
+    ) -> Result<(), String> {
+        let sessions = self.sessions.read();
+        let ssh_session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+
+        let filename = std::path::Path::new(remote_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        *progress.filename.lock() = filename;
+        progress.transferred.store(0, Ordering::Relaxed);
+        progress.finished.store(false, Ordering::Relaxed);
+
+        let sess = ssh_session.exec_session.lock();
+        sess.set_blocking(true);
+        let sftp = sess.sftp().map_err(|e| format!("SFTP init failed: {}", e))?;
+
+        // Get file size
+        let file_stat = sftp
+            .stat(std::path::Path::new(remote_path))
+            .map_err(|e| format!("Failed to stat remote file: {}", e))?;
+        let total_size = file_stat.size.unwrap_or(0);
+        progress.total.store(total_size, Ordering::Relaxed);
+
+        let mut remote_file = sftp
+            .open(std::path::Path::new(remote_path))
+            .map_err(|e| format!("Failed to open remote file: {}", e))?;
+
+        let mut contents = Vec::with_capacity(total_size as usize);
+        let mut buf = [0u8; 32768];
+        loop {
+            let n = remote_file
+                .read(&mut buf)
+                .map_err(|e| format!("Read error: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            contents.extend_from_slice(&buf[..n]);
+            progress
+                .transferred
+                .store(contents.len() as u64, Ordering::Relaxed);
+        }
+
+        std::fs::write(local_path, &contents)
+            .map_err(|e| format!("Failed to write local file: {}", e))?;
+
+        progress.finished.store(true, Ordering::Relaxed);
         Ok(())
     }
 

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use crate::ssh::{FileEntry, ProcessInfo, ServerStats, SshEvent, SshManager};
+use crate::ssh::{FileEntry, ProcessInfo, ServerStats, SshEvent, SshManager, TransferProgress};
 use crate::storage::{ConnectionConfig, ConnectionInfo, ConnectionStore};
 use crate::terminal::TerminalGrid;
 use crate::ui::theme;
@@ -62,6 +62,9 @@ pub struct NeoShell {
     editor_file_path: Option<String>,
     editor_session_id: Option<String>,
     editor_dirty: bool,
+
+    // Transfer progress tracking
+    transfer_progress: Option<Arc<TransferProgress>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -209,6 +212,7 @@ impl Default for NeoShell {
             editor_file_path: None,
             editor_session_id: None,
             editor_dirty: false,
+            transfer_progress: None,
         }
     }
 }
@@ -696,6 +700,8 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
 
             if let Some(sid) = sid {
                 let ssh = state.ssh_manager.clone();
+                let progress = Arc::new(TransferProgress::new());
+                state.transfer_progress = Some(progress.clone());
                 Task::perform(
                     async move {
                         let file = rfd::AsyncFileDialog::new()
@@ -708,17 +714,16 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                             let file_name = file.file_name();
                             let remote_path = format!("{}/{}", current.trim_end_matches('/'), file_name);
 
-                            ssh.upload_file(&sid, &local_path, &remote_path)?;
+                            ssh.upload_file_with_progress(&sid, &local_path, &remote_path, progress)?;
                             Ok(sid)
                         } else {
-                            Err("Upload cancelled".to_string())
+                            Err("cancelled".to_string())
                         }
                     },
                     |result: Result<String, String>| match result {
                         Ok(sid) => Message::UploadComplete(sid),
-                        Err(e) => {
-                            if e == "Upload cancelled" { Message::None } else { Message::Error(e) }
-                        }
+                        Err(e) if e == "cancelled" => Message::None,
+                        Err(e) => Message::Error(e),
                     },
                 )
             } else {
@@ -726,12 +731,15 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
         }
         Message::UploadComplete(sid) => {
+            state.transfer_progress = None;
             let path = state.current_dir.get(&sid).cloned().unwrap_or("~".to_string());
             Task::done(Message::ChangeDir(sid, path))
         }
         Message::DownloadFile(sid, remote_path) => {
             let ssh = state.ssh_manager.clone();
             let filename = remote_path.split('/').last().unwrap_or("file").to_string();
+            let progress = Arc::new(TransferProgress::new());
+            state.transfer_progress = Some(progress.clone());
             Task::perform(
                 async move {
                     let save_path = rfd::AsyncFileDialog::new()
@@ -742,21 +750,21 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
 
                     if let Some(save_path) = save_path {
                         let local_path = save_path.path().to_string_lossy().to_string();
-                        ssh.download_file(&sid, &remote_path, &local_path)?;
+                        ssh.download_file_with_progress(&sid, &remote_path, &local_path, progress)?;
                         Ok(format!("Downloaded to {}", local_path))
                     } else {
-                        Err("Download cancelled".to_string())
+                        Err("cancelled".to_string())
                     }
                 },
                 |result: Result<String, String>| match result {
                     Ok(msg) => Message::DownloadComplete(msg),
-                    Err(e) => {
-                        if e == "Download cancelled" { Message::None } else { Message::Error(e) }
-                    }
+                    Err(e) if e == "cancelled" => Message::None,
+                    Err(e) => Message::Error(e),
                 },
             )
         }
         Message::DownloadComplete(_msg) => {
+            state.transfer_progress = None;
             Task::none()
         }
 
@@ -826,6 +834,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::None => Task::none(),
         Message::Error(e) => {
             state.error_message = e;
+            state.transfer_progress = None;
             Task::none()
         }
     }
@@ -994,13 +1003,20 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
         let terminal = view_terminal_area(state);
         let file_browser = view_file_browser(state);
 
-        let right_panel: Element<'_, Message> = column![
+        let mut right_col = column![
             container(terminal).height(Fill),
-            file_browser,
-        ]
-        .width(Fill)
-        .height(Fill)
-        .into();
+        ];
+        if let Some(progress) = &state.transfer_progress {
+            if !progress.is_finished() {
+                right_col = right_col.push(view_transfer_progress(progress));
+            }
+        }
+        right_col = right_col.push(file_browser);
+
+        let right_panel: Element<'_, Message> = right_col
+            .width(Fill)
+            .height(Fill)
+            .into();
 
         row![
             container(sidebar).width(220).height(Fill),
@@ -1321,14 +1337,43 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
         col = col.push(stat_row(">", &disk_text));
         col = col.push(progress_bar_widget(stats.disk_percent));
 
-        // Network
-        col = col.push(stat_row("v", &format!("Rx: {}", format_bytes(stats.net_rx_bytes))));
-        col = col.push(stat_row("^", &format!("Tx: {}", format_bytes(stats.net_tx_bytes))));
+        // Network section header
+        col = col.push(
+            container(Space::new(Fill, 1)).style(|_| container::Style {
+                background: Some(theme::BORDER.into()), ..Default::default()
+            }).width(Fill).height(1)
+        );
+        col = col.push(
+            container(text("Network").color(theme::TEXT_PRIMARY).size(11))
+                .padding(Padding::from([4, 10]))
+                .style(|_| container::Style {
+                    background: Some(theme::BG_TERTIARY.into()), ..Default::default()
+                }).width(Fill)
+        );
 
-        // Rates
-        if !stats.net_rx_rate.is_empty() {
-            col = col.push(stat_row(" ", &format!("  {}/s | {}/s", stats.net_rx_rate, stats.net_tx_rate)));
+        // Per-interface display
+        for iface in &stats.interfaces {
+            if iface.name == "lo" { continue; }
+            let iface_text = format!("{}:", iface.name);
+            col = col.push(
+                container(
+                    text(iface_text).color(theme::ACCENT).size(10).font(Font::MONOSPACE)
+                ).padding(Padding::from([2, 10]))
+            );
+            col = col.push(
+                container(
+                    text(format!("  \u{2193}{} \u{2191}{}", format_bytes(iface.rx_bytes), format_bytes(iface.tx_bytes)))
+                        .color(theme::TEXT_MUTED).size(10).font(Font::MONOSPACE)
+                ).padding(Padding::from([0, 10]))
+            );
         }
+        // Total
+        col = col.push(
+            container(
+                text(format!("Total: \u{2193}{} \u{2191}{}", format_bytes(stats.net_rx_bytes), format_bytes(stats.net_tx_bytes)))
+                    .color(theme::TEXT_SECONDARY).size(10).font(Font::MONOSPACE)
+            ).padding(Padding::from([2, 10]))
+        );
 
         // Uptime
         if !stats.uptime.is_empty() {
@@ -1365,29 +1410,60 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     col = col.push(proc_header);
 
     if let Some(procs) = processes {
-        let mut proc_col = column![].spacing(0);
-        for proc_info in procs.iter().take(15) {
+        // Table header
+        let header_text = format!("{:>6} {:>5} {:>5}  {}", "PID", "CPU%", "MEM%", "COMMAND");
+        let mut proc_col = column![
+            container(
+                text(header_text).color(theme::TEXT_MUTED).size(9).font(Font::MONOSPACE)
+            ).padding(Padding::from([4, 10]))
+        ].spacing(0);
+
+        // Divider under header
+        proc_col = proc_col.push(
+            container(Space::new(Fill, 1)).style(|_| container::Style {
+                background: Some(theme::BORDER.into()), ..Default::default()
+            }).width(Fill).height(1)
+        );
+
+        for (i, proc_info) in procs.iter().take(15).enumerate() {
+            let cpu_bar_len = ((proc_info.cpu / 100.0) * 8.0).ceil() as usize;
+            let cpu_bar: String = "\u{2588}".repeat(cpu_bar_len.min(8));
+            let cpu_pad: String = "\u{2591}".repeat(8_usize.saturating_sub(cpu_bar_len));
+
             let line = format!(
-                "{:>5} {:>5.1}% {}",
+                "{:>6} {:>5.1} {:>5.1}  {}",
                 proc_info.pid,
                 proc_info.cpu,
-                truncate_str(&proc_info.command, 18)
+                proc_info.mem,
+                truncate_str(&proc_info.command, 14)
             );
+
             let color = if proc_info.cpu > 50.0 {
                 theme::DANGER
             } else if proc_info.cpu > 20.0 {
                 theme::WARNING
             } else {
-                theme::TEXT_MUTED
+                theme::TEXT_SECONDARY
             };
+
+            // Alternate row background
+            let row_bg = if i % 2 == 0 { theme::BG_SECONDARY } else { theme::BG_TERTIARY };
+
             proc_col = proc_col.push(
                 container(
-                    text(line)
-                        .color(color)
-                        .size(10)
-                        .font(Font::MONOSPACE),
+                    row![
+                        text(line).color(color).size(10).font(Font::MONOSPACE),
+                        horizontal_space(),
+                        text(format!("{}{}", cpu_bar, cpu_pad))
+                            .color(color).size(8).font(Font::MONOSPACE),
+                    ].align_y(alignment::Vertical::Center)
                 )
-                .padding(Padding::from([2, 10])),
+                .padding(Padding::from([3, 10]))
+                .width(Fill)
+                .style(move |_| container::Style {
+                    background: Some(row_bg.into()),
+                    ..Default::default()
+                })
             );
         }
         col = col.push(scrollable(proc_col).height(Fill));
@@ -1489,6 +1565,62 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
             ..Default::default()
         })
         .into()
+}
+
+// ---- Transfer progress bar -----------------------------------------------
+
+fn view_transfer_progress(progress: &TransferProgress) -> Element<'static, Message> {
+    use std::sync::atomic::Ordering;
+    let pct = progress.percent();
+    let transferred = progress.transferred.load(Ordering::Relaxed);
+    let total = progress.total.load(Ordering::Relaxed);
+    let filename = progress.filename.lock().clone();
+
+    let label = if total > 0 {
+        format!("{} -- {} / {} ({:.0}%)", filename, format_bytes(transferred), format_bytes(total), pct)
+    } else {
+        format!("{} -- preparing...", filename)
+    };
+
+    let bar_width_fraction = (pct / 100.0).min(1.0).max(0.0);
+    let filled = (bar_width_fraction * 1000.0) as u16;
+    let empty = 1000_u16.saturating_sub(filled);
+
+    let progress_text = text(label).color(theme::TEXT_PRIMARY).size(11);
+
+    // Progress bar using FillPortion: filled portion + empty portion in a row
+    let bar_inner = row![
+        container(Space::new(Length::FillPortion(filled.max(1)), 4))
+            .style(|_| container::Style {
+                background: Some(theme::ACCENT.into()),
+                border: iced::Border { radius: 2.0.into(), ..Default::default() },
+                ..Default::default()
+            }),
+        container(Space::new(Length::FillPortion(empty.max(1)), 4))
+            .style(|_| container::Style {
+                background: Some(Color::TRANSPARENT.into()),
+                ..Default::default()
+            }),
+    ].width(Fill);
+
+    let bar_bg = container(bar_inner)
+        .width(Fill)
+        .style(|_| container::Style {
+            background: Some(theme::BG_TERTIARY.into()),
+            border: iced::Border { radius: 2.0.into(), ..Default::default() },
+            ..Default::default()
+        });
+
+    container(
+        column![progress_text, bar_bg].spacing(4).padding(Padding::from([6, 10]))
+    )
+    .width(Fill)
+    .style(|_| container::Style {
+        background: Some(theme::BG_SECONDARY.into()),
+        border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    })
+    .into()
 }
 
 // ---- File browser --------------------------------------------------------

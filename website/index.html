@@ -126,33 +126,32 @@ footer p{color:var(--text3);font-size:13px}
 
 <section class="hero">
   <img src="icon.png" alt="NeoShell" class="hero-icon">
-  <div class="badge">Pure Rust &bull; Native GPU-Accelerated</div>
+  <div class="badge">Pure Rust &bull; Native GUI &bull; GPU-Accelerated</div>
   <h1>The Modern SSH Manager</h1>
-  <p>NeoShell is a blazing-fast, cross-platform SSH terminal manager built entirely in Rust. Encrypted credential vault, real-time server monitoring, multi-tab sessions &mdash; all in a single native binary.</p>
+  <p>NeoShell is a native desktop GUI application for SSH server management, built entirely in Rust. Encrypted credential vault, real-time server monitoring, SFTP file browser, multi-tab terminals &mdash; all in a single lightweight binary.</p>
   <div class="hero-buttons">
     <a href="#download" class="btn btn-primary">
       <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
       Download v0.1.0
     </a>
-    <a href="https://github.com/uk0/NeoShell" class="btn btn-outline" target="_blank">
-      <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-      GitHub
+    <a href="#features" class="btn btn-outline">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      Learn More
     </a>
   </div>
 
   <div class="term-demo">
-    <div><span class="prompt">$</span> <span class="cmd">neoshell</span></div>
-    <div class="out">NeoShell v0.1.0 &mdash; loading vault...</div>
-    <div class="out">Vault unlocked. 3 connections loaded.</div>
-    <div><span class="prompt">Connected</span> <span class="hl">nas@10.88.66.222:22</span></div>
-    <div class="out">System: 48 cores | Mem: 57GB/128GB (45%) | Load: 5.39</div>
-    <div class="out">Terminal ready. Type to begin.</div>
+    <div class="out" style="color:var(--accent2)">NeoShell v0.1.0 &mdash; Native Desktop GUI</div>
+    <div class="out">&bull; Sidebar: System Load / CPU / Memory / Disk / Network</div>
+    <div class="out">&bull; Center: Multi-tab SSH Terminal (VTE + GPU rendering)</div>
+    <div class="out">&bull; Bottom: SFTP File Browser with Upload / Download / Edit</div>
+    <div><span class="prompt">Connected</span> <span class="hl">nas@10.88.66.222:22</span> <span class="out">&mdash; 48 cores | 128GB RAM</span></div>
   </div>
 </section>
 
 <section class="features" id="features">
   <h2 class="section-title">Everything You Need</h2>
-  <p class="section-sub">A complete SSH workstation in a single ~8MB binary</p>
+  <p class="section-sub">A native desktop GUI application &mdash; not a CLI, not Electron</p>
   <div class="features-grid">
     <div class="feature-card">
       <div class="feature-icon">&#9002;_</div>
@@ -250,7 +249,7 @@ footer p{color:var(--text3);font-size:13px}
         <li>Vault file unreadable without correct master password</li>
         <li>Dedicated SSH session for monitoring — no interference with terminal</li>
         <li>Private keys encrypted at rest, decrypted only in memory during use</li>
-        <li>Open source — audit the code yourself</li>
+        <li>Closed-source proprietary software — no code exposure risk</li>
       </ul>
     </div>
   </div>
@@ -265,34 +264,27 @@ footer p{color:var(--text3);font-size:13px}
         <div class="os-icon">&#63743;</div>
         <div class="os-name">macOS</div>
         <div class="os-arch">Apple Silicon &amp; Intel</div>
-        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — build from source for now')">Download .dmg</a>
+        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — stay tuned!')">Download .dmg</a>
       </div>
       <div class="download-card">
         <div class="os-icon">&#128187;</div>
         <div class="os-name">Windows</div>
         <div class="os-arch">x86_64</div>
-        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — build from source for now')">Download .msi</a>
+        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — stay tuned!')">Download .msi</a>
       </div>
       <div class="download-card">
         <div class="os-icon">&#128039;</div>
         <div class="os-name">Linux</div>
         <div class="os-arch">x86_64 &amp; ARM64</div>
-        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — build from source for now')">Download .AppImage</a>
+        <a href="#" class="btn btn-primary" onclick="alert('Coming soon — stay tuned!')">Download .AppImage</a>
       </div>
     </div>
-    <div style="margin-top:32px">
-      <p style="color:var(--text3);font-size:14px;margin-bottom:12px">Or build from source:</p>
-      <div class="term-demo" style="max-width:500px;font-size:12px;line-height:1.6">
-        <div><span class="prompt">$</span> <span class="cmd">git clone https://github.com/uk0/NeoShell</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">cd NeoShell && cargo build --release</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">./target/release/neoshell</span></div>
-      </div>
-    </div>
+    <p style="margin-top:24px;color:var(--text3);font-size:13px">NeoShell is proprietary software. Contact us for enterprise licensing.</p>
   </div>
 </section>
 
 <footer>
-  <p>&copy; 2026 NeoShell &mdash; Built with Rust &hearts; &mdash; <a href="https://github.com/uk0/NeoShell">GitHub</a></p>
+  <p>&copy; 2026 NeoShell &mdash; Built with Rust &hearts; &mdash; All Rights Reserved</p>
 </footer>
 
 </body>

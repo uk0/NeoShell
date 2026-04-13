@@ -2639,63 +2639,62 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
             let display_name = if entry.name == ".." {
                 "..".to_string()
             } else {
-                format!("{} {}", icon, truncate_str(&entry.name, 22))
+                format!("{} {}", icon, truncate_str(&entry.name, 24))
             };
 
-            let human_size = if entry.size.is_empty() { "-".to_string() } else { humanize_file_size(&entry.size) };
+            let human_size = if entry.size.is_empty() { "".to_string() } else { humanize_file_size(&entry.size) };
             let date_str = if entry.modified.is_empty() { "".to_string() } else { entry.modified.clone() };
 
-            // Unified row: name(fill) | size(right, 80px) | date(right, 110px)
-            let mut entry_row = row![
+            // Build action buttons (fixed 50px column, always present for alignment)
+            let actions: Element<'_, Message> = if !entry.is_dir && entry.name != ".." {
+                let current = state.current_dir.get(&sid).cloned().unwrap_or("~".to_string());
+                let full_path = format!("{}/{}", current.trim_end_matches('/'), entry.name);
+
+                let dl_btn = button(text("v").color(theme::ACCENT).size(10))
+                    .on_press(Message::DownloadFile(sid.clone(), full_path.clone()))
+                    .padding(Padding::from([1, 3]))
+                    .style(transparent_button_style);
+
+                if crate::ssh::is_editable_file(&entry.name) {
+                    let edit_btn = button(text("E").color(theme::SUCCESS).size(10))
+                        .on_press(Message::OpenEditor(sid.clone(), full_path))
+                        .padding(Padding::from([1, 3]))
+                        .style(transparent_button_style);
+                    row![dl_btn, edit_btn].spacing(2).into()
+                } else {
+                    dl_btn.into()
+                }
+            } else {
+                Space::new(0, 0).into()
+            };
+
+            // Unified columns: Name(left,fill) | Size(right,80) | Date(center,110) | Actions(right,50)
+            let entry_row = row![
                 container(text(display_name).color(name_color).size(11)).width(Fill),
-                container(
-                    text(human_size).color(theme::TEXT_MUTED).size(10)
-                ).width(80).align_x(alignment::Horizontal::Right),
-                container(
-                    text(date_str).color(theme::TEXT_MUTED).size(10)
-                ).width(110).align_x(alignment::Horizontal::Right),
+                container(text(human_size).color(theme::TEXT_MUTED).size(10))
+                    .width(80).align_x(alignment::Horizontal::Right),
+                container(text(date_str).color(theme::TEXT_MUTED).size(10))
+                    .width(120).align_x(alignment::Horizontal::Center),
+                container(actions).width(50).align_x(alignment::Horizontal::Right),
             ]
             .spacing(4)
             .align_y(alignment::Vertical::Center);
 
-            // Action buttons for files (not directories)
-            if !entry.is_dir {
-                let current = state.current_dir.get(&sid).cloned().unwrap_or("~".to_string());
-                let full_path = format!("{}/{}", current.trim_end_matches('/'), entry.name);
-
-                // Download button
-                let dl_btn = button(text("v").color(theme::ACCENT).size(11))
-                    .on_press(Message::DownloadFile(sid.clone(), full_path.clone()))
-                    .padding(Padding::from([2, 4]))
-                    .style(transparent_button_style);
-                entry_row = entry_row.push(dl_btn);
-
-                // Edit button (only for editable files)
-                if crate::ssh::is_editable_file(&entry.name) {
-                    let edit_btn = button(text("E").color(theme::SUCCESS).size(11))
-                        .on_press(Message::OpenEditor(sid.clone(), full_path))
-                        .padding(Padding::from([2, 4]))
-                        .style(transparent_button_style);
-                    entry_row = entry_row.push(edit_btn);
-                }
-            }
-
-            // Unified row: directories are clickable buttons, files are containers
-            // Both use identical padding and width for alignment
+            // All entries use same wrapper (button for dirs, container for files)
             if entry.is_dir {
                 let entry_clone = (*entry).clone();
                 let sid_clone = sid.clone();
                 file_col = file_col.push(
                     button(entry_row)
                         .on_press(Message::FileClicked(sid_clone, entry_clone))
-                        .padding(Padding::from([3, 8]))
+                        .padding(Padding::from([2, 8]))
                         .width(Fill)
                         .style(sidebar_item_style),
                 );
             } else {
                 file_col = file_col.push(
                     container(entry_row)
-                        .padding(Padding::from([3, 8]))
+                        .padding(Padding::from([2, 8]))
                         .width(Fill),
                 );
             }

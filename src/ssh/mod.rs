@@ -352,9 +352,13 @@ impl SshManager {
                     .map_err(|e| format!("Session setup failed: {}", e))?;
             }
             SessionMode::RawShell => {
+                // Start shell with forced UTF-8 locale
                 channel
-                    .shell()
-                    .map_err(|e| format!("Shell request failed: {}", e))?;
+                    .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
+                    .unwrap_or_else(|_| {
+                        // Fallback to plain shell if exec fails
+                        let _ = channel.shell();
+                    });
             }
         }
 
@@ -1221,8 +1225,8 @@ fn reconnect_ssh(
         }
         SessionMode::RawShell => {
             channel
-                .shell()
-                .map_err(|e| format!("Shell failed: {}", e))?;
+                .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
+                .unwrap_or_else(|_| { let _ = channel.shell(); });
         }
     }
 

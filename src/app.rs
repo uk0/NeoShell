@@ -907,52 +907,18 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
 /// Only forward key presses that were not captured by a widget (e.g. text_input).
 fn handle_event(
     evt: iced::Event,
-    status: event::Status,
+    _status: event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
     match evt {
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
-            ref key,
+            key,
             modifiers,
             ..
         }) => {
-            // Always forward special keys (ESC, arrows, F-keys, etc.)
-            // even if a widget "captured" them — the terminal needs these.
-            let is_special = matches!(
-                key,
-                keyboard::Key::Named(
-                    keyboard::key::Named::Escape
-                    | keyboard::key::Named::ArrowUp
-                    | keyboard::key::Named::ArrowDown
-                    | keyboard::key::Named::ArrowLeft
-                    | keyboard::key::Named::ArrowRight
-                    | keyboard::key::Named::Home
-                    | keyboard::key::Named::End
-                    | keyboard::key::Named::PageUp
-                    | keyboard::key::Named::PageDown
-                    | keyboard::key::Named::Insert
-                    | keyboard::key::Named::Delete
-                    | keyboard::key::Named::F1
-                    | keyboard::key::Named::F2
-                    | keyboard::key::Named::F3
-                    | keyboard::key::Named::F4
-                    | keyboard::key::Named::F5
-                    | keyboard::key::Named::F6
-                    | keyboard::key::Named::F7
-                    | keyboard::key::Named::F8
-                    | keyboard::key::Named::F9
-                    | keyboard::key::Named::F10
-                    | keyboard::key::Named::F11
-                    | keyboard::key::Named::F12
-                )
-            );
-
-            // For normal characters: only forward if not captured by a widget
-            if !is_special && status == event::Status::Captured {
-                return None;
-            }
-
-            Some(Message::KeyboardEvent(key.clone(), modifiers))
+            // Forward ALL keyboard events — filtering is done in update()
+            // based on app state (editor open, form open, etc.)
+            Some(Message::KeyboardEvent(key, modifiers))
         }
         _ => None,
     }
@@ -2402,10 +2368,38 @@ fn key_to_terminal_bytes(key: &keyboard::Key, modifiers: &keyboard::Modifiers) -
                 return None;
             }
 
+            // Shift/Ctrl/Alt modified arrow keys (vim, tmux, etc.)
+            if modifiers.shift() || modifiers.control() || modifiers.alt() {
+                let base = match named {
+                    Named::ArrowUp => "A",
+                    Named::ArrowDown => "B",
+                    Named::ArrowRight => "C",
+                    Named::ArrowLeft => "D",
+                    Named::Home => "H",
+                    Named::End => "F",
+                    _ => "",
+                };
+                if !base.is_empty() {
+                    let mod_code = match (modifiers.shift(), modifiers.alt(), modifiers.control()) {
+                        (true, false, false) => 2,   // Shift
+                        (false, true, false) => 3,    // Alt
+                        (true, true, false) => 4,     // Shift+Alt
+                        (false, false, true) => 5,    // Ctrl
+                        (true, false, true) => 6,     // Ctrl+Shift
+                        (false, true, true) => 7,     // Ctrl+Alt
+                        (true, true, true) => 8,      // Ctrl+Alt+Shift
+                        _ => 1,
+                    };
+                    if mod_code > 1 {
+                        return Some(format!("\x1b[1;{}{}", mod_code, base));
+                    }
+                }
+            }
+
             let seq = match named {
                 Named::Enter => "\r",
                 Named::Backspace => "\x7f",
-                Named::Tab if modifiers.shift() => return Some("\x1b[Z".to_string()), // Shift+Tab
+                Named::Tab if modifiers.shift() => return Some("\x1b[Z".to_string()),
                 Named::Tab => "\t",
                 Named::Escape => "\x1b",
                 Named::ArrowUp => "\x1b[A",
@@ -2430,7 +2424,12 @@ fn key_to_terminal_bytes(key: &keyboard::Key, modifiers: &keyboard::Modifiers) -
                 Named::F10 => "\x1b[21~",
                 Named::F11 => "\x1b[23~",
                 Named::F12 => "\x1b[24~",
-                Named::Space => " ",
+                Named::Space => {
+                    if modifiers.control() {
+                        return Some("\x00".to_string()); // Ctrl+Space = NUL
+                    }
+                    " "
+                }
                 _ => return None,
             };
             Some(seq.to_string())

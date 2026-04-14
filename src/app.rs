@@ -1731,13 +1731,16 @@ fn view_setup(state: &NeoShell) -> Element<'_, Message> {
         .on_input(Message::PasswordChanged)
         .secure(true)
         .padding(10)
-        .size(16);
+        .size(16)
+        .id(iced::widget::text_input::Id::new("setup_pw"));
 
     let confirm_input = text_input("Confirm password", &state.confirm_input)
         .on_input(Message::ConfirmChanged)
+        .on_submit(Message::CreateVault)
         .secure(true)
         .padding(10)
-        .size(16);
+        .size(16)
+        .id(iced::widget::text_input::Id::new("setup_confirm"));
 
     let create_btn = button(
         text("Create Vault").color(theme::TEXT_PRIMARY).size(16),
@@ -3165,11 +3168,15 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
         labeled_input("Password", &state.form.password, Message::FormPasswordChanged)
     };
 
-    let group_input = labeled_input(
-        "Group (optional)",
-        &state.form.group,
-        Message::FormGroupChanged,
-    );
+    let group_input: Element<'_, Message> = {
+        let label_text = text("Group (optional)").color(theme::TEXT_SECONDARY).size(12);
+        let input = text_input("", &state.form.group)
+            .on_input(Message::FormGroupChanged)
+            .on_submit(Message::SaveForm)
+            .padding(8)
+            .size(14);
+        column![label_text, input].spacing(4).into()
+    };
 
     let error_text = if state.error_message.is_empty() {
         text("").size(1)

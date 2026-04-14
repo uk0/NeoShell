@@ -136,6 +136,20 @@ jobs:
         with:
           files: dist/*.dmg
 
+      - name: Prepare core library artifact
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCH=${{ matrix.arch }}
+          DYLIB=$(find target -name "libneoshell_core.dylib" -path "*/release/*" | head -1)
+          [ -z "$DYLIB" ] && echo "ERROR: dylib not found" && exit 1
+          cp "$DYLIB" "dist/libneoshell_core-${VERSION}-macos-${ARCH}.dylib"
+
+      - name: Upload core library
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/libneoshell_core-*-macos-*.dylib
+
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -201,6 +215,19 @@ jobs:
             dist/*.AppImage
             dist/*.tar.gz
 
+      - name: Prepare core library artifact
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          SO=$(find target -name "libneoshell_core.so" -path "*/release/*" | head -1)
+          [ -z "$SO" ] && echo "ERROR: .so not found" && exit 1
+          cp "$SO" "dist/libneoshell_core-${VERSION}-linux-x86_64.so"
+
+      - name: Upload core library
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/libneoshell_core-*-linux-*.so
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -238,3 +265,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
+
+      - name: Prepare core library artifact
+        run: |
+          $VERSION = "${{ github.ref_name }}".TrimStart("v")
+          $DLL = Get-ChildItem -Path target -Recurse -Filter "neoshell_core.dll" | Where-Object { $_.DirectoryName -like "*release*" } | Select-Object -First 1
+          if (-not $DLL) { Write-Error "ERROR: neoshell_core.dll not found"; exit 1 }
+          Copy-Item $DLL.FullName "dist\neoshell_core-$VERSION-windows-x64.dll"
+
+      - name: Upload core library
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/neoshell_core-*-windows-*.dll

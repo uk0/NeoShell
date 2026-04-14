@@ -119,6 +119,13 @@ section{padding:100px 40px}
 footer{padding:40px;border-top:1px solid var(--rule);text-align:center}
 footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
+/* ═══ LANG SWITCH ═══ */
+.lang-switch{display:inline-flex;align-items:center;background:var(--glass);border:1px solid var(--glass-border);border-radius:100px;overflow:hidden;font-size:12px;font-weight:600;letter-spacing:.04em;cursor:pointer;flex-shrink:0}
+.lang-switch span{padding:6px 14px;transition:all .25s;color:var(--text-faint);user-select:none}
+.lang-switch span.active{background:var(--amber);color:var(--ink)}
+.lang-switch span:hover:not(.active){color:var(--text)}
+.lang-sep{width:1px;background:var(--glass-border);align-self:stretch;pointer-events:none}
+
 /* ═══ RESPONSIVE ═══ */
 @media(max-width:768px){
   .nav-links{display:none}
@@ -137,45 +144,50 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="nav-inner">
     <a href="#" class="nav-logo"><img src="icon.png" alt="">NeoShell</a>
     <div class="nav-links">
-      <a href="#features">Features</a>
-      <a href="#tech">Stack</a>
-      <a href="#security">Security</a>
-      <a href="#changelog">Log</a>
-      <a href="#download" class="nav-cta">Download</a>
+      <a href="#features" data-i18n="nav.features">Features</a>
+      <a href="#tech" data-i18n="nav.stack">Stack</a>
+      <a href="#security" data-i18n="nav.security">Security</a>
+      <a href="#changelog" data-i18n="nav.changelog">Log</a>
+      <a href="#download" class="nav-cta" data-i18n="nav.download">Download</a>
+    </div>
+    <div class="lang-switch" id="langSwitch" role="button" aria-label="Switch language">
+      <span id="langEN">EN</span>
+      <span class="lang-sep"></span>
+      <span id="langZH">中文</span>
     </div>
   </div>
 </nav>
 
 <!-- ═══ HERO ═══ -->
 <section class="hero">
-  <div class="hero-tag">Pure Rust &bull; Native GPU &bull; Zero Dependencies</div>
-  <h1>The terminal you<br>actually <em>want</em> to use.</h1>
-  <p class="hero-sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.</p>
+  <div class="hero-tag" data-i18n="hero.tag">Pure Rust &bull; Native GPU &bull; Zero Dependencies</div>
+  <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
+  <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill">Download v0.4.0</a>
-    <a href="#features" class="btn-hero btn-ghost">Explore features</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.4.0</a>
+    <a href="#features" class="btn-hero btn-ghost" data-i18n="hero.btn.explore">Explore features</a>
   </div>
   <div class="hero-metric">
-    <div class="metric"><div class="metric-num">6 MB</div><div class="metric-label">Binary size</div></div>
-    <div class="metric"><div class="metric-num">&lt;0.5s</div><div class="metric-label">Cold start</div></div>
-    <div class="metric"><div class="metric-num">~60 MB</div><div class="metric-label">Memory usage</div></div>
-    <div class="metric"><div class="metric-num">3</div><div class="metric-label">Platforms</div></div>
+    <div class="metric"><div class="metric-num">6 MB</div><div class="metric-label" data-i18n="hero.metric.binary">Binary size</div></div>
+    <div class="metric"><div class="metric-num">&lt;0.5s</div><div class="metric-label" data-i18n="hero.metric.start">Cold start</div></div>
+    <div class="metric"><div class="metric-num">~60 MB</div><div class="metric-label" data-i18n="hero.metric.memory">Memory usage</div></div>
+    <div class="metric"><div class="metric-num">3</div><div class="metric-label" data-i18n="hero.metric.platforms">Platforms</div></div>
   </div>
 </section>
 
 <!-- ═══ FEATURES ═══ -->
 <section id="features">
   <div class="wrap">
-    <div class="section-label">Capabilities</div>
-    <h2 class="section-title">Everything, nothing extra.</h2>
-    <p class="section-desc">A complete SSH workstation that doesn't need a JVM, an Electron runtime, or 800MB of RAM.</p>
+    <div class="section-label" data-i18n="features.label">Capabilities</div>
+    <h2 class="section-title" data-i18n="features.title">Everything, nothing extra.</h2>
+    <p class="section-desc" data-i18n="features.desc">A complete SSH workstation that doesn't need a JVM, an Electron runtime, or 800MB of RAM.</p>
     <div class="feat-grid">
-      <div class="feat"><div class="feat-icon">&gt;_</div><h3>Multi-Tab Terminal</h3><p>Full VTE emulator with 256-color, truecolor, CJK support. 10,000 lines scrollback. Cmd+1-9 tab switching.</p></div>
-      <div class="feat"><div class="feat-icon">&#128274;</div><h3>Encrypted Vault</h3><p>AES-256-GCM + Argon2id. Two-layer envelope encryption. Your passwords never touch disk unencrypted.</p></div>
-      <div class="feat"><div class="feat-icon">&#9889;</div><h3>Eternal SSH</h3><p>Auto-reconnect with tmux session persistence. WiFi drops, VPN resets, laptop sleep &mdash; your session survives.</p></div>
-      <div class="feat"><div class="feat-icon">&#128200;</div><h3>Live Monitoring</h3><p>CPU, memory, all disk partitions, per-interface network, top 15 processes. Updated every 3 seconds.</p></div>
-      <div class="feat"><div class="feat-icon">&#128193;</div><h3>SFTP Browser</h3><p>Navigate remote files, upload/download with progress bars and resume. Quick-edit configs directly in the app.</p></div>
-      <div class="feat"><div class="feat-icon">&#127760;</div><h3>Cross-Platform</h3><p>macOS (ARM64 + Intel), Windows, Linux. Same native experience everywhere. No web runtime.</p></div>
+      <div class="feat"><div class="feat-icon">&gt;_</div><h3 data-i18n="feat.terminal.title">Multi-Tab Terminal</h3><p data-i18n="feat.terminal.desc">Full VTE emulator with 256-color, truecolor, CJK support. 10,000 lines scrollback. Cmd+1-9 tab switching.</p></div>
+      <div class="feat"><div class="feat-icon">&#128274;</div><h3 data-i18n="feat.vault.title">Encrypted Vault</h3><p data-i18n="feat.vault.desc">AES-256-GCM + Argon2id. Two-layer envelope encryption. Your passwords never touch disk unencrypted.</p></div>
+      <div class="feat"><div class="feat-icon">&#9889;</div><h3 data-i18n="feat.ssh.title">Eternal SSH</h3><p data-i18n="feat.ssh.desc">Auto-reconnect with tmux session persistence. WiFi drops, VPN resets, laptop sleep &mdash; your session survives.</p></div>
+      <div class="feat"><div class="feat-icon">&#128200;</div><h3 data-i18n="feat.monitor.title">Live Monitoring</h3><p data-i18n="feat.monitor.desc">CPU, memory, all disk partitions, per-interface network, top 15 processes. Updated every 3 seconds.</p></div>
+      <div class="feat"><div class="feat-icon">&#128193;</div><h3 data-i18n="feat.sftp.title">SFTP Browser</h3><p data-i18n="feat.sftp.desc">Navigate remote files, upload/download with progress bars and resume. Quick-edit configs directly in the app.</p></div>
+      <div class="feat"><div class="feat-icon">&#127760;</div><h3 data-i18n="feat.cross.title">Cross-Platform</h3><p data-i18n="feat.cross.desc">macOS (ARM64 + Intel), Windows, Linux. Same native experience everywhere. No web runtime.</p></div>
     </div>
   </div>
 </section>
@@ -183,9 +195,9 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 <!-- ═══ TECH STACK ═══ -->
 <section id="tech" style="background:var(--surface)">
   <div class="wrap">
-    <div class="section-label">Under the hood</div>
-    <h2 class="section-title">100% Rust. Zero JavaScript.</h2>
-    <p class="section-desc">No Electron. No WebView. Hardware-accelerated rendering via wgpu.</p>
+    <div class="section-label" data-i18n="tech.label">Under the hood</div>
+    <h2 class="section-title" data-i18n="tech.title">100% Rust. Zero JavaScript.</h2>
+    <p class="section-desc" data-i18n="tech.desc">No Electron. No WebView. Hardware-accelerated rendering via wgpu.</p>
     <div class="tech-row">
       <div class="tech-pill"><span>&#129408;</span> Rust</div>
       <div class="tech-pill"><span>&#127912;</span> iced 0.13</div>
@@ -203,9 +215,9 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 <!-- ═══ SECURITY ═══ -->
 <section id="security">
   <div class="wrap">
-    <div class="section-label">Trust model</div>
-    <h2 class="section-title">Your credentials, your machine.</h2>
-    <p class="section-desc">Two-layer envelope encryption. Nothing leaves your device unencrypted.</p>
+    <div class="section-label" data-i18n="sec.label">Trust model</div>
+    <h2 class="section-title" data-i18n="sec.title">Your credentials, your machine.</h2>
+    <p class="section-desc" data-i18n="sec.desc">Two-layer envelope encryption. Nothing leaves your device unencrypted.</p>
     <div class="sec-card">
       <div class="sec-icon">&#128737;</div>
       <div>
@@ -214,12 +226,12 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
           KEK &rarr; AES-256-GCM &rarr; DEK &rarr; Your Data
         </p>
         <ul class="sec-list">
-          <li>Master password never stored &mdash; only the derived key is used</li>
-          <li>Each connection encrypted with a unique random nonce</li>
-          <li>Vault file is binary noise without the correct password</li>
-          <li>Dedicated exec SSH session &mdash; no lock contention with terminal</li>
-          <li>Private keys encrypted at rest, decrypted only in memory</li>
-          <li>Closed-source proprietary &mdash; no code exposure risk</li>
+          <li data-i18n="sec.item1">Master password never stored &mdash; only the derived key is used</li>
+          <li data-i18n="sec.item2">Each connection encrypted with a unique random nonce</li>
+          <li data-i18n="sec.item3">Vault file is binary noise without the correct password</li>
+          <li data-i18n="sec.item4">Dedicated exec SSH session &mdash; no lock contention with terminal</li>
+          <li data-i18n="sec.item5">Private keys encrypted at rest, decrypted only in memory</li>
+          <li data-i18n="sec.item6">Closed-source proprietary &mdash; no code exposure risk</li>
         </ul>
       </div>
     </div>
@@ -229,48 +241,48 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 <!-- ═══ DOWNLOAD ═══ -->
 <section id="download">
   <div class="wrap">
-    <div class="section-label">Get started</div>
-    <h2 class="section-title">Download NeoShell</h2>
-    <p class="section-desc">v0.4.0 &mdash; Single binary. No installer dependencies.</p>
+    <div class="section-label" data-i18n="dl.label">Get started</div>
+    <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
+    <p class="section-desc" data-i18n="dl.desc">v0.4.0 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
-        <div class="dl-name">macOS</div>
+        <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.4.0-macos-aarch64.dmg" class="dl-btn">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.4.0-macos-x86_64.dmg" class="dl-btn-alt">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.4.0-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.4.0-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
-        <div class="dl-name">Windows</div>
+        <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.4.0-windows-x64.zip" class="dl-btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.4.0-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
-        <div class="dl-name">Linux</div>
+        <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.4.0-linux-x86_64.AppImage" class="dl-btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.4.0-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
-    <p style="margin-top:28px;color:var(--text-faint);font-size:12px">Proprietary software. Contact us for enterprise licensing.</p>
+    <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n="dl.note">Proprietary software. Contact us for enterprise licensing.</p>
   </div>
 </section>
 
 <!-- ═══ CHANGELOG ═══ -->
 <section id="changelog" style="background:var(--surface)">
   <div class="wrap">
-    <div class="section-label">History</div>
-    <h2 class="section-title">Changelog</h2>
-    <p class="section-desc">What shipped and when.</p>
+    <div class="section-label" data-i18n="cl.label">History</div>
+    <h2 class="section-title" data-i18n="cl.title">Changelog</h2>
+    <p class="section-desc" data-i18n="cl.desc">What shipped and when.</p>
 
     <div class="cl-entry">
       <div class="cl-head">
         <span class="cl-ver">0.4.0</span>
         <span class="cl-date">2026-04-14</span>
-        <span class="cl-badge">Latest</span>
+        <span class="cl-badge" data-i18n="cl.latest">Latest</span>
       </div>
-      <div class="cl-cat cl-cat-add">Added</div>
+      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
       <ul class="cl-list">
         <li>Dynamic library architecture &mdash; thin launcher + hot-swappable core</li>
         <li>Network auto-update &mdash; check, download, MD5 verify, restart to apply</li>
@@ -278,7 +290,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
         <li>DMG installer with custom dark background</li>
         <li>New neon glow app icon (amber/teal shield)</li>
       </ul>
-      <div class="cl-cat cl-cat-perf">Architecture</div>
+      <div class="cl-cat cl-cat-perf" data-i18n="cl.cat.arch">Architecture</div>
       <ul class="cl-list">
         <li>Cargo workspace: launcher (600KB) + core dylib (6MB)</li>
         <li>Launcher: dlopen, restart loop, update swap, rollback on failure</li>
@@ -300,7 +312,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
         <span class="cl-ver cl-ver-old">0.3.0</span>
         <span class="cl-date">2026-04-13</span>
       </div>
-      <div class="cl-cat cl-cat-add">Added</div>
+      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
       <ul class="cl-list">
         <li>rz/sz ZMODEM detection &mdash; auto file transfer via SFTP</li>
         <li>Terminal scrollback: 10,000 lines with mouse wheel</li>
@@ -310,12 +322,12 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
         <li>Transfer speed in progress bar + cancel button</li>
         <li>Cmd+S editor save, connection edit/delete, tab status dots</li>
       </ul>
-      <div class="cl-cat cl-cat-perf">Performance</div>
+      <div class="cl-cat cl-cat-perf" data-i18n="cl.cat.perf">Performance</div>
       <ul class="cl-list">
         <li>spawn_blocking for all SSH/SFTP &mdash; UI never freezes</li>
         <li>Streaming SFTP I/O &mdash; large files don't load into memory</li>
       </ul>
-      <div class="cl-cat cl-cat-fix">Fixed</div>
+      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
       <ul class="cl-list">
         <li>Progress bar rendering, Ctrl+L, file sizes, CJK in all UI</li>
         <li>System/Network/Process/File browser column alignment</li>
@@ -337,8 +349,8 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 <!-- ═══ CONTACT ═══ -->
 <section>
   <div class="wrap contact-wrap">
-    <div class="section-label">Stay in touch</div>
-    <h2 class="section-title" style="margin-bottom:40px">Join the Community</h2>
+    <div class="section-label" data-i18n="contact.label">Stay in touch</div>
+    <h2 class="section-title" style="margin-bottom:40px" data-i18n="contact.title">Join the Community</h2>
     <div style="display:flex;justify-content:center;gap:64px;flex-wrap:wrap">
       <div>
         <img src="weixin.jpg" alt="WeChat" class="qr-img">
@@ -365,8 +377,218 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 </section>
 
 <footer>
-  <p>&copy; 2026 NeoShell &mdash; Built with Rust &hearts; &mdash; All Rights Reserved</p>
+  <p data-i18n="footer.text">&copy; 2026 NeoShell &mdash; Built with Rust &hearts; &mdash; All Rights Reserved</p>
 </footer>
 
+
+<script>
+/* ═══════════════════════════════════════════════
+   NeoShell i18n — language switcher
+   Supports: en (default), zh
+   ═══════════════════════════════════════════════ */
+const TRANSLATIONS = {
+  en: {
+    'page.title': 'NeoShell — The Terminal, Reimagined',
+    /* nav */
+    'nav.features': 'Features',
+    'nav.stack':    'Stack',
+    'nav.security': 'Security',
+    'nav.changelog':'Log',
+    'nav.download': 'Download',
+    /* hero */
+    'hero.tag':          'Pure Rust &bull; Native GPU &bull; Zero Dependencies',
+    'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
+    'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
+    'hero.btn.download': 'Download v0.4.0',
+    'hero.btn.explore':  'Explore features',
+    'hero.metric.binary':    'Binary size',
+    'hero.metric.start':     'Cold start',
+    'hero.metric.memory':    'Memory usage',
+    'hero.metric.platforms': 'Platforms',
+    /* features */
+    'features.label': 'Capabilities',
+    'features.title': 'Everything, nothing extra.',
+    'features.desc':  "A complete SSH workstation that doesn't need a JVM, an Electron runtime, or 800MB of RAM.",
+    'feat.terminal.title': 'Multi-Tab Terminal',
+    'feat.terminal.desc':  'Full VTE emulator with 256-color, truecolor, CJK support. 10,000 lines scrollback. Cmd+1-9 tab switching.',
+    'feat.vault.title':    'Encrypted Vault',
+    'feat.vault.desc':     'AES-256-GCM + Argon2id. Two-layer envelope encryption. Your passwords never touch disk unencrypted.',
+    'feat.ssh.title':      'Eternal SSH',
+    'feat.ssh.desc':       'Auto-reconnect with tmux session persistence. WiFi drops, VPN resets, laptop sleep &mdash; your session survives.',
+    'feat.monitor.title':  'Live Monitoring',
+    'feat.monitor.desc':   'CPU, memory, all disk partitions, per-interface network, top 15 processes. Updated every 3 seconds.',
+    'feat.sftp.title':     'SFTP Browser',
+    'feat.sftp.desc':      'Navigate remote files, upload/download with progress bars and resume. Quick-edit configs directly in the app.',
+    'feat.cross.title':    'Cross-Platform',
+    'feat.cross.desc':     'macOS (ARM64 + Intel), Windows, Linux. Same native experience everywhere. No web runtime.',
+    /* tech */
+    'tech.label': 'Under the hood',
+    'tech.title': '100% Rust. Zero JavaScript.',
+    'tech.desc':  'No Electron. No WebView. Hardware-accelerated rendering via wgpu.',
+    /* security */
+    'sec.label': 'Trust model',
+    'sec.title': 'Your credentials, your machine.',
+    'sec.desc':  'Two-layer envelope encryption. Nothing leaves your device unencrypted.',
+    'sec.item1': 'Master password never stored &mdash; only the derived key is used',
+    'sec.item2': 'Each connection encrypted with a unique random nonce',
+    'sec.item3': 'Vault file is binary noise without the correct password',
+    'sec.item4': 'Dedicated exec SSH session &mdash; no lock contention with terminal',
+    'sec.item5': 'Private keys encrypted at rest, decrypted only in memory',
+    'sec.item6': 'Closed-source proprietary &mdash; no code exposure risk',
+    /* download */
+    'dl.label':       'Get started',
+    'dl.title':       'Download NeoShell',
+    'dl.desc':        'v0.4.0 &mdash; Single binary. No installer dependencies.',
+    'dl.macos':       'macOS',
+    'dl.macos.arm':   'ARM64 .dmg &darr;',
+    'dl.macos.intel': 'Intel x86_64 .dmg',
+    'dl.windows':     'Windows',
+    'dl.windows.btn': 'Download .zip &darr;',
+    'dl.linux':       'Linux',
+    'dl.linux.btn':   'Download .AppImage &darr;',
+    'dl.note':        'Proprietary software. Contact us for enterprise licensing.',
+    /* changelog */
+    'cl.label':     'History',
+    'cl.title':     'Changelog',
+    'cl.desc':      'What shipped and when.',
+    'cl.latest':    'Latest',
+    'cl.cat.added': 'Added',
+    'cl.cat.arch':  'Architecture',
+    'cl.cat.perf':  'Performance',
+    'cl.cat.fixed': 'Fixed',
+    /* contact */
+    'contact.label': 'Stay in touch',
+    'contact.title': 'Join the Community',
+    /* footer */
+    'footer.text': '&copy; 2026 NeoShell &mdash; Built with Rust &hearts; &mdash; All Rights Reserved',
+  },
+
+  zh: {
+    'page.title': 'NeoShell — 重新定义终端',
+    /* nav */
+    'nav.features': '功能',
+    'nav.stack':    '技术栈',
+    'nav.security': '安全',
+    'nav.changelog':'更新日志',
+    'nav.download': '下载',
+    /* hero */
+    'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 零外部依赖',
+    'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
+    'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
+    'hero.btn.download': '下载 v0.4.0',
+    'hero.btn.explore':  '探索功能',
+    'hero.metric.binary':    '程序体积',
+    'hero.metric.start':     '冷启动时间',
+    'hero.metric.memory':    '内存占用',
+    'hero.metric.platforms': '支持平台',
+    /* features */
+    'features.label': '核心能力',
+    'features.title': '功能完整，没有冗余。',
+    'features.desc':  '一套完整的 SSH 工作台，无需 JVM、Electron 运行时或 800MB 的内存。',
+    'feat.terminal.title': '多标签终端',
+    'feat.terminal.desc':  '完整的 VTE 仿真器，支持 256 色、真彩色及 CJK 字符。10,000 行回滚缓冲，Cmd+1-9 快速切换标签。',
+    'feat.vault.title':    '加密凭据库',
+    'feat.vault.desc':     '采用 AES-256-GCM + Argon2id 双层信封加密。您的密码从不以明文形式落盘。',
+    'feat.ssh.title':      '永久 SSH 连接',
+    'feat.ssh.desc':       '基于 tmux 会话持久化的自动重连机制。断网、VPN 切换、合盖休眠——您的会话依然在线。',
+    'feat.monitor.title':  '实时系统监控',
+    'feat.monitor.desc':   '每 3 秒更新 CPU、内存、全部磁盘分区、各网卡流量及 Top 15 进程。',
+    'feat.sftp.title':     'SFTP 文件管理',
+    'feat.sftp.desc':      '浏览远程文件，支持带进度条与断点续传的上传/下载。可直接在应用内快速编辑远程配置文件。',
+    'feat.cross.title':    '跨平台支持',
+    'feat.cross.desc':     '原生支持 macOS（ARM64 + Intel）、Windows 与 Linux，无需任何 Web 运行时。',
+    /* tech */
+    'tech.label': '技术内核',
+    'tech.title': '100% Rust，零 JavaScript。',
+    'tech.desc':  '没有 Electron，没有 WebView，基于 wgpu 实现硬件加速渲染。',
+    /* security */
+    'sec.label': '信任模型',
+    'sec.title': '您的凭据，只在您的设备上。',
+    'sec.desc':  '双层信封加密架构，任何数据离开设备前均已加密。',
+    'sec.item1': '主密码从不存储——仅使用派生密钥',
+    'sec.item2': '每个连接使用独立的随机 Nonce 加密',
+    'sec.item3': '没有正确密码，Vault 文件形同随机噪声',
+    'sec.item4': '独立的 SSH exec 会话——与终端互不干扰',
+    'sec.item5': '私钥加密保存，仅在内存中解密使用',
+    'sec.item6': '闭源私有软件——无源码泄露风险',
+    /* download */
+    'dl.label':       '立即开始',
+    'dl.title':       '下载 NeoShell',
+    'dl.desc':        'v0.4.0 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.macos':       'macOS',
+    'dl.macos.arm':   'ARM64 .dmg &darr;',
+    'dl.macos.intel': 'Intel x86_64 .dmg',
+    'dl.windows':     'Windows',
+    'dl.windows.btn': '下载 .zip &darr;',
+    'dl.linux':       'Linux',
+    'dl.linux.btn':   '下载 .AppImage &darr;',
+    'dl.note':        '本软件为私有商业软件，企业授权请联系我们。',
+    /* changelog */
+    'cl.label':     '版本历史',
+    'cl.title':     '更新日志',
+    'cl.desc':      '记录每一次发布与变更。',
+    'cl.latest':    '最新版',
+    'cl.cat.added': '新增',
+    'cl.cat.arch':  '架构调整',
+    'cl.cat.perf':  '性能优化',
+    'cl.cat.fixed': '问题修复',
+    /* contact */
+    'contact.label': '保持联系',
+    'contact.title': '加入社区',
+    /* footer */
+    'footer.text': '&copy; 2026 NeoShell &mdash; 用 Rust &hearts; 构建 &mdash; 保留所有权利',
+  }
+};
+
+(function () {
+  const STORAGE_KEY = 'neoshell-lang';
+  const switchEl   = document.getElementById('langSwitch');
+  const btnEN      = document.getElementById('langEN');
+  const btnZH      = document.getElementById('langZH');
+
+  /* Detect initial language */
+  function detectLang() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved === 'en' || saved === 'zh') return saved;
+    const nav = (navigator.language || '').toLowerCase();
+    return nav.startsWith('zh') ? 'zh' : 'en';
+  }
+
+  /* Apply translations for a given language code */
+  function applyLang(lang) {
+    const t = TRANSLATIONS[lang] || TRANSLATIONS.en;
+
+    /* Update page title */
+    document.title = t['page.title'] || document.title;
+
+    /* Update html lang attribute */
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+
+    /* Update all data-i18n elements */
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      const key = el.getAttribute('data-i18n');
+      if (t[key] !== undefined) {
+        el.innerHTML = t[key];
+      }
+    });
+
+    /* Update switcher highlight */
+    btnEN.classList.toggle('active', lang === 'en');
+    btnZH.classList.toggle('active', lang === 'zh');
+
+    /* Persist */
+    localStorage.setItem(STORAGE_KEY, lang);
+  }
+
+  /* Toggle on click anywhere on the pill */
+  switchEl.addEventListener('click', function () {
+    const current = localStorage.getItem(STORAGE_KEY) || detectLang();
+    applyLang(current === 'zh' ? 'en' : 'zh');
+  });
+
+  /* Boot */
+  applyLang(detectLang());
+}());
+</script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 [package]
 name = "neoshell-core"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "NeoShell core library — all application logic"
 
@@ -10,7 +10,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # GUI
-iced = { version = "0.13", features = ["tokio", "canvas", "advanced"] }
+iced = { version = "0.13", features = ["tokio", "canvas", "advanced", "image"] }
+
+image = { version = "0.24", default-features = false, features = ["png"] }
 
 # Terminal emulation
 vte = "0.13"

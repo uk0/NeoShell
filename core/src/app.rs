@@ -552,10 +552,23 @@ impl Default for NeoShell {
 
 pub fn run() -> iced::Result {
     let initial_scale = load_ui_scale() as f64;
+
+    // Load window icon from embedded PNG
+    let window_icon = iced::window::icon::from_file_data(
+        include_bytes!("../../assets/icon_256.png"),
+        Some(image::ImageFormat::Png),
+    ).ok();
+
+    let win_settings = iced::window::Settings {
+        size: Size::new(1200.0, 800.0),
+        icon: window_icon,
+        ..Default::default()
+    };
+
     iced::application("NeoShell", update, view)
         .subscription(subscription)
         .theme(|_state| Theme::Dark)
-        .window_size(Size::new(1200.0, 800.0))
+        .window(win_settings)
         .scale_factor(move |_state| initial_scale)
         .antialiasing(true)
         .decorations(true)

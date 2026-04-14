@@ -172,12 +172,18 @@ cat > update.json << ENDJSON
       "url": "${UPDATE_URL}/libs/libneoshell_core-${VER_NUM}-linux-x86_64.so",
       "md5": "${MD5S[libneoshell_core-${VER_NUM}-linux-x86_64.so]:-placeholder}",
       "size": ${SIZES[libneoshell_core-${VER_NUM}-linux-x86_64.so]:-0}
+    },
+    "windows-win7-x64": {
+      "url": "${UPDATE_URL}/libs/neoshell_core-${VER_NUM}-windows-win7-x64.dll",
+      "md5": "${MD5S[neoshell_core-${VER_NUM}-windows-win7-x64.dll]:-placeholder}",
+      "size": ${SIZES[neoshell_core-${VER_NUM}-windows-win7-x64.dll]:-0}
     }
   },
   "installers": {
     "macos-aarch64": "${UPDATE_URL}/../downloads/NeoShell-${VER_NUM}-macos-aarch64.dmg",
     "macos-x86_64": "${UPDATE_URL}/../downloads/NeoShell-${VER_NUM}-macos-x86_64.dmg",
     "windows-x64": "${UPDATE_URL}/../downloads/NeoShell-${VER_NUM}-windows-x64.zip",
+    "windows-win7-x64": "${UPDATE_URL}/../downloads/NeoShell-${VER_NUM}-windows-win7-x64.zip",
     "linux-x86_64": "${UPDATE_URL}/../downloads/NeoShell-${VER_NUM}-linux-x86_64.AppImage"
   }
 }

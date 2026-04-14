@@ -292,3 +292,60 @@ jobs:
         with:
           files: |
             dist/neoshell_core-*-windows-*.dll
+
+  build-windows-win7:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install NASM (for openssl vendored build)
+        uses: ilammy/setup-nasm@v1
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-win7-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-win7-cargo-
+
+      - name: Build release (Win7 compatible)
+        env:
+          OPENSSL_STATIC: "1"
+          RUSTFLAGS: "-C target-feature=+crt-static"
+          WGPU_BACKEND: "gl"
+        run: cargo build --release --workspace
+
+      - name: Package zip
+        run: |
+          $VERSION = "${{ github.ref_name }}".TrimStart("v")
+          New-Item -ItemType Directory -Force -Path dist,"dist\NeoShell-Win7"
+          Copy-Item target\release\neoshell.exe "dist\NeoShell-Win7\"
+          Copy-Item target\release\neoshell_core.dll "dist\NeoShell-Win7\"
+          Copy-Item assets\icon.png "dist\NeoShell-Win7\"
+          # Add a readme for Win7 users
+          Set-Content "dist\NeoShell-Win7\README-Win7.txt" "NeoShell for Windows 7`nRequires: OpenGL 3.3+ or Vulkan GPU driver`nSet WGPU_BACKEND=gl if display issues occur"
+          Compress-Archive -Path "dist\NeoShell-Win7\*" -DestinationPath "dist\NeoShell-$VERSION-windows-win7-x64.zip"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*-win7-*.zip
+
+      - name: Prepare core library artifact
+        run: |
+          $VERSION = "${{ github.ref_name }}".TrimStart("v")
+          $DLL = Get-ChildItem -Path target -Recurse -Filter "neoshell_core.dll" | Where-Object { $_.DirectoryName -like "*release*" } | Select-Object -First 1
+          if (-not $DLL) { Write-Error "ERROR: neoshell_core.dll not found"; exit 1 }
+          Copy-Item $DLL.FullName "dist\neoshell_core-$VERSION-windows-win7-x64.dll"
+
+      - name: Upload core library
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/neoshell_core-*-windows-win7-*.dll

@@ -1,6 +1,6 @@
 [package]
 name = "neoshell"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "NeoShell launcher — thin binary that dlopen's neoshell-core"
 

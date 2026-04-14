@@ -7,7 +7,64 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use ssh2::Session;
+use ssh2::{MethodType, Session};
+
+/// Configure SSH session with broad algorithm support for maximum server compatibility.
+/// Must be called BEFORE session.handshake().
+fn configure_session_algorithms(session: &Session) {
+    // KEX: prefer modern curve25519, fallback to ECDH and classic DH
+    let _ = session.method_pref(MethodType::Kex, &[
+        "curve25519-sha256",
+        "curve25519-sha256@libssh.org",
+        "ecdh-sha2-nistp256",
+        "ecdh-sha2-nistp384",
+        "ecdh-sha2-nistp521",
+        "diffie-hellman-group-exchange-sha256",
+        "diffie-hellman-group16-sha512",
+        "diffie-hellman-group18-sha512",
+        "diffie-hellman-group14-sha256",
+        "diffie-hellman-group14-sha1",
+        "diffie-hellman-group-exchange-sha1",
+        "diffie-hellman-group1-sha1",
+    ].join(","));
+
+    // Host key types
+    let _ = session.method_pref(MethodType::HostKey, &[
+        "ssh-ed25519",
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp521",
+        "rsa-sha2-512",
+        "rsa-sha2-256",
+        "ssh-rsa",
+    ].join(","));
+
+    // Ciphers (client→server and server→client)
+    let ciphers = [
+        "aes256-gcm@openssh.com",
+        "chacha20-poly1305@openssh.com",
+        "aes128-gcm@openssh.com",
+        "aes256-ctr",
+        "aes192-ctr",
+        "aes128-ctr",
+        "aes256-cbc",
+        "aes192-cbc",
+        "aes128-cbc",
+    ].join(",");
+    let _ = session.method_pref(MethodType::CryptCs, &ciphers);
+    let _ = session.method_pref(MethodType::CryptSc, &ciphers);
+
+    // MACs
+    let macs = [
+        "hmac-sha2-256-etm@openssh.com",
+        "hmac-sha2-512-etm@openssh.com",
+        "hmac-sha2-256",
+        "hmac-sha2-512",
+        "hmac-sha1",
+    ].join(",");
+    let _ = session.method_pref(MethodType::MacCs, &macs);
+    let _ = session.method_pref(MethodType::MacSc, &macs);
+}
 
 /// Commands sent from the UI to an SSH session.
 pub enum SshCommand {
@@ -241,6 +298,7 @@ impl SshManager {
             Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
         session.set_tcp_stream(tcp);
         session.set_timeout(15000); // 15s timeout for handshake + auth
+        configure_session_algorithms(&session);
         session
             .handshake()
             .map_err(|e| format!("SSH handshake failed: {}", e))?;
@@ -322,6 +380,7 @@ impl SshManager {
             let mut sess2 = Session::new()
                 .map_err(|e| format!("Failed to create exec session: {}", e))?;
             sess2.set_tcp_stream(tcp2);
+            configure_session_algorithms(&sess2);
             sess2.handshake()
                 .map_err(|e| format!("Exec SSH handshake failed: {}", e))?;
 
@@ -1213,6 +1272,7 @@ fn create_exec_connection(params: &ConnectParams) -> Result<Session, String> {
     let mut session = Session::new()
         .map_err(|e| format!("Exec session create failed: {}", e))?;
     session.set_tcp_stream(tcp);
+    configure_session_algorithms(&session);
     session.handshake()
         .map_err(|e| format!("Exec handshake failed: {}", e))?;
     session.set_keepalive(true, 15);
@@ -1289,6 +1349,7 @@ fn reconnect_ssh(
     let mut session =
         Session::new().map_err(|e| format!("Session create failed: {}", e))?;
     session.set_tcp_stream(tcp);
+    configure_session_algorithms(&session);
     session
         .handshake()
         .map_err(|e| format!("Handshake failed: {}", e))?;

@@ -17,6 +17,7 @@ use crate::ssh::{FileEntry, ProcessInfo, ServerStats, SshEvent, SshManager, Tran
 use crate::storage::{ConnectionConfig, ConnectionInfo, ConnectionStore};
 use crate::terminal::TerminalGrid;
 use crate::ui::theme;
+use crate::updater::Updater;
 
 /// System CJK font for rendering Chinese/Japanese/Korean characters.
 /// iced canvas doesn't do font fallback, so we must specify explicitly.
@@ -228,6 +229,10 @@ pub struct NeoShell {
     selection_start: Option<(usize, usize)>,  // (col, row) in grid coords
     selection_end: Option<(usize, usize)>,
     selecting: bool,
+
+    // Auto-updater
+    updater: Updater,
+    last_update_check: std::time::Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -365,6 +370,12 @@ pub enum Message {
     TerminalMouseMove(f32, f32),
     CopySelection,
 
+    // Update
+    CheckForUpdate,
+    DownloadUpdate,
+    RestartForUpdate,
+    DismissUpdate,
+
     // Misc
     Tick,
     None,
@@ -424,6 +435,8 @@ impl Default for NeoShell {
             selection_start: None,
             selection_end: None,
             selecting: false,
+            updater: Updater::new(),
+            last_update_check: std::time::Instant::now(),
         }
     }
 }
@@ -500,7 +513,10 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.screen = Screen::Main;
             state.password_input.clear();
             state.error_message.clear();
-            Task::done(Message::LoadConnections)
+            Task::batch(vec![
+                Task::done(Message::LoadConnections),
+                Task::done(Message::CheckForUpdate),
+            ])
         }
 
         // ---- connections -----------------------------------------------------
@@ -1616,6 +1632,24 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        // ---- update ----------------------------------------------------------
+        Message::CheckForUpdate => {
+            state.updater.check_async();
+            Task::none()
+        }
+        Message::DownloadUpdate => {
+            state.updater.download_async();
+            Task::none()
+        }
+        Message::RestartForUpdate => {
+            // Exit code 42 signals the launcher to swap the new core library and restart
+            std::process::exit(42);
+        }
+        Message::DismissUpdate => {
+            state.updater.state.lock().available = false;
+            Task::none()
+        }
+
         // ---- misc ------------------------------------------------------------
         Message::Tick => Task::none(),
         Message::None => Task::none(),
@@ -1652,6 +1686,8 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
 fn subscription(state: &NeoShell) -> Subscription<Message> {
     let mut subs = vec![
         time::every(Duration::from_millis(50)).map(|_| Message::PollSshEvents),
+        // Check for updates every hour
+        time::every(Duration::from_secs(3600)).map(|_| Message::CheckForUpdate),
     ];
 
     // Monitor refresh every 3 seconds when there is an active tab
@@ -1881,7 +1917,16 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
         .into()
     };
 
-    let main_layout: Element<'_, Message> = column![tab_bar, body, status_bar]
+    let mut main_col = column![];
+    // Update notification bar (if any)
+    if let Some(update_bar) = view_update_bar(state) {
+        main_col = main_col.push(update_bar);
+    }
+    main_col = main_col.push(tab_bar);
+    main_col = main_col.push(body);
+    main_col = main_col.push(status_bar);
+
+    let main_layout: Element<'_, Message> = main_col
         .height(Fill)
         .into();
 
@@ -1963,6 +2008,105 @@ fn view_welcome() -> Element<'static, Message> {
             ..Default::default()
         })
         .into()
+}
+
+// ---- Update notification bar ---------------------------------------------
+
+fn view_update_bar(state: &NeoShell) -> Option<Element<'_, Message>> {
+    let (available, ready, version, progress) = {
+        let s = state.updater.state.lock();
+        (s.available, s.ready, s.version.clone(), s.download_progress)
+    };
+
+    if ready {
+        // Update downloaded and ready to install
+        Some(
+            container(
+                row![
+                    text(format!("NeoShell {} ready", version))
+                        .color(theme::SUCCESS)
+                        .size(12),
+                    horizontal_space(),
+                    button(text("Restart Now").color(Color::WHITE).size(11))
+                        .on_press(Message::RestartForUpdate)
+                        .padding(Padding::from([4, 14]))
+                        .style(accent_button_style),
+                    button(text("Later").color(theme::TEXT_MUTED).size(11))
+                        .on_press(Message::DismissUpdate)
+                        .padding(Padding::from([4, 8]))
+                        .style(transparent_button_style),
+                ]
+                .align_y(alignment::Vertical::Center)
+                .padding(Padding::from([6, 16])),
+            )
+            .width(Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgb(0.05, 0.15, 0.05).into()),
+                border: iced::Border {
+                    color: theme::SUCCESS,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into(),
+        )
+    } else if available && progress > 0.0 && progress < 1.0 {
+        // Download in progress
+        Some(
+            container(
+                row![text(format!(
+                    "Downloading v{}... {:.0}%",
+                    version,
+                    progress * 100.0
+                ))
+                .color(theme::ACCENT)
+                .size(12),]
+                .padding(Padding::from([6, 16])),
+            )
+            .width(Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgb(0.05, 0.05, 0.15).into()),
+                ..Default::default()
+            })
+            .into(),
+        )
+    } else if available {
+        // Update available, not yet downloading
+        Some(
+            container(
+                row![
+                    text(format!("Update available: v{}", version))
+                        .color(theme::ACCENT)
+                        .size(12),
+                    horizontal_space(),
+                    button(text("Download").color(Color::WHITE).size(11))
+                        .on_press(Message::DownloadUpdate)
+                        .padding(Padding::from([4, 14]))
+                        .style(accent_button_style),
+                    button(text("x").color(theme::TEXT_MUTED).size(11))
+                        .on_press(Message::DismissUpdate)
+                        .padding(Padding::from([4, 6]))
+                        .style(transparent_button_style),
+                ]
+                .align_y(alignment::Vertical::Center)
+                .padding(Padding::from([6, 16])),
+            )
+            .width(Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgb(0.05, 0.05, 0.15).into()),
+                border: iced::Border {
+                    color: theme::ACCENT,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .into(),
+        )
+    } else {
+        None
+    }
 }
 
 // ---- Tab bar -------------------------------------------------------------

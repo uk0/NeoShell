@@ -117,9 +117,13 @@ jobs:
           codesign --verify --deep --strict "$APP"
           echo "App signed with: $SIGN_IDENTITY"
 
-          # Create DMG
-          mkdir -p dist/dmg && cp -r dist/NeoShell.app dist/dmg/ && ln -s /Applications dist/dmg/Applications
-          hdiutil create -volname NeoShell -srcfolder dist/dmg -ov -format UDZO "dist/NeoShell-${VERSION}-macos-${ARCH}.dmg"
+          # Create DMG with custom background
+          DMG_DIR="dist/dmg"
+          mkdir -p "$DMG_DIR/.background"
+          cp scripts/dmg-background.png "$DMG_DIR/.background/background.png"
+          cp -r dist/NeoShell.app "$DMG_DIR/"
+          ln -s /Applications "$DMG_DIR/Applications"
+          hdiutil create -volname NeoShell -srcfolder "$DMG_DIR" -ov -format UDZO "dist/NeoShell-${VERSION}-macos-${ARCH}.dmg"
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2

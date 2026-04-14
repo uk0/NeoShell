@@ -274,6 +274,9 @@ pub enum Message {
     UnlockVault,
     VaultUnlocked,
 
+    // Form focus (Tab cycling)
+    FocusNext,
+
     // Connections
     LoadConnections,
     ConnectionsLoaded(Vec<ConnectionInfo>),
@@ -501,6 +504,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- connections -----------------------------------------------------
+        Message::FocusNext => {
+            return iced::widget::focus_next();
+        }
         Message::LoadConnections => {
             let store = state.store.clone();
             Task::perform(
@@ -1653,15 +1659,25 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
         subs.push(time::every(Duration::from_secs(3)).map(|_| Message::FetchMonitorData));
     }
 
-    // Listen for keyboard/mouse events ONLY when terminal is active and
-    // no modal is open. When forms/dialogs are open, let iced handle
-    // Tab focus switching and Enter submit natively.
+    // When a form/dialog is open, only listen for Tab (focus cycling)
+    let any_modal = state.show_form || state.show_connect_dialog
+        || state.editor_file_path.is_some() || state.selected_interface.is_some();
+
+    if any_modal {
+        subs.push(event::listen().map(|evt| {
+            match evt {
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Tab), ..
+                }) => Message::FocusNext,
+                _ => Message::None,
+            }
+        }));
+    }
+
+    // Listen for ALL keyboard/mouse events when terminal is active and no modal
     if state.screen == Screen::Main
         && state.active_tab.is_some()
-        && !state.show_form
-        && !state.show_connect_dialog
-        && state.editor_file_path.is_none()
-        && state.selected_interface.is_none()
+        && !any_modal
     {
         subs.push(event::listen().map(|evt| {
             match evt {

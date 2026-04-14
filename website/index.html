@@ -152,7 +152,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1>The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill">Download v0.3.1</a>
+    <a href="#download" class="btn-hero btn-fill">Download v0.4.0</a>
     <a href="#features" class="btn-hero btn-ghost">Explore features</a>
   </div>
   <div class="hero-metric">
@@ -231,26 +231,26 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label">Get started</div>
     <h2 class="section-title">Download NeoShell</h2>
-    <p class="section-desc">v0.3.1 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc">v0.4.0 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.3.1-macos-aarch64.dmg" class="dl-btn">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.3.1-macos-x86_64.dmg" class="dl-btn-alt">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.4.0-macos-aarch64.dmg" class="dl-btn">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.4.0-macos-x86_64.dmg" class="dl-btn-alt">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name">Windows</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.3.1-windows-x64.zip" class="dl-btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.4.0-windows-x64.zip" class="dl-btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.3.1-linux-x86_64.AppImage" class="dl-btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.4.0-linux-x86_64.AppImage" class="dl-btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px">Proprietary software. Contact us for enterprise licensing.</p>
@@ -266,26 +266,39 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
-        <span class="cl-ver">0.3.1</span>
+        <span class="cl-ver">0.4.0</span>
         <span class="cl-date">2026-04-14</span>
         <span class="cl-badge">Latest</span>
       </div>
-      <div class="cl-cat cl-cat-fix">Fixed</div>
+      <div class="cl-cat cl-cat-add">Added</div>
       <ul class="cl-list">
-        <li>Tab key cycles between input fields in all forms</li>
-        <li>Enter submits setup, unlock, and connection forms</li>
-        <li>macOS rounded corner app icon</li>
-        <li>Download buttons brighter and more visible</li>
-        <li>Website redesign: Terminal Noir editorial dark theme</li>
-        <li>Discord + QQ group community links</li>
+        <li>Dynamic library architecture &mdash; thin launcher + hot-swappable core</li>
+        <li>Network auto-update &mdash; check, download, MD5 verify, restart to apply</li>
+        <li>Update notification bar in UI (available / downloading / ready)</li>
+        <li>DMG installer with custom dark background</li>
+        <li>New neon glow app icon (amber/teal shield)</li>
+      </ul>
+      <div class="cl-cat cl-cat-perf">Architecture</div>
+      <ul class="cl-list">
+        <li>Cargo workspace: launcher (600KB) + core dylib (6MB)</li>
+        <li>Launcher: dlopen, restart loop, update swap, rollback on failure</li>
+        <li>Updater: background check every hour, staging dir, MD5 verification</li>
+        <li>Exit code 42 triggers library hot-swap without process kill</li>
       </ul>
     </div>
 
-    <div class="cl-entry">
+    <div class="cl-entry cl-old">
       <div class="cl-head">
-        <span class="cl-ver">0.3.0</span>
+        <span class="cl-ver cl-ver-old">0.3.1</span>
+        <span class="cl-date">2026-04-14</span>
+      </div>
+      <ul class="cl-list"><li>Tab focus cycling, Enter submit, rounded icon, website redesign, Discord/QQ</li></ul>
+    </div>
+
+    <div class="cl-entry cl-old">
+      <div class="cl-head">
+        <span class="cl-ver cl-ver-old">0.3.0</span>
         <span class="cl-date">2026-04-13</span>
-        
       </div>
       <div class="cl-cat cl-cat-add">Added</div>
       <ul class="cl-list">

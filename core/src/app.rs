@@ -3212,7 +3212,7 @@ fn view_editor(state: &NeoShell) -> Element<'_, Message> {
 // ---- Status bar ----------------------------------------------------------
 
 fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
-    let left = text("NeoShell v0.1.0").color(theme::TEXT_MUTED).size(12);
+    let left = text(format!("NeoShell v{}", env!("CARGO_PKG_VERSION"))).color(theme::TEXT_MUTED).size(12);
 
     let right = if let Some(idx) = state.active_tab {
         if let Some(tab) = state.tabs.get(idx) {

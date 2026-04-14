@@ -120,6 +120,25 @@ static EN: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("netdetail.title", "Interface: {name}");
     // File browser (with params)
     m.insert("filebrowser.dir", "[DIR] {path}");
+    // Settings menu
+    m.insert("settings.title", "Settings");
+    m.insert("settings.language", "Language");
+    m.insert("settings.scale", "UI Scale");
+    m.insert("settings.about", "About NeoShell");
+    m.insert("settings.sidebar", "Toggle Sidebar");
+    m.insert("settings.close", "Close");
+    // About
+    m.insert("about.title", "About NeoShell");
+    m.insert("about.version", "Version {version}");
+    m.insert("about.desc", "A cross-platform SSH terminal manager built with Rust.");
+    m.insert("about.tech", "Rust • iced • wgpu • AES-256-GCM • Argon2id");
+    m.insert("about.copyright", "© 2026 NeoShell — All Rights Reserved");
+    m.insert("about.close", "Close");
+    // History
+    m.insert("history.title", "Command History");
+    m.insert("history.filter", "Filter commands...");
+    m.insert("history.empty", "No commands yet");
+    m.insert("history.clear", "Clear");
     m
 });
 
@@ -220,6 +239,25 @@ static ZH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("monitor.speed", "速率: ↓{down}/s ↑{up}/s");
     m.insert("netdetail.title", "接口: {name}");
     m.insert("filebrowser.dir", "[目录] {path}");
+    // 设置菜单
+    m.insert("settings.title", "设置");
+    m.insert("settings.language", "语言");
+    m.insert("settings.scale", "界面缩放");
+    m.insert("settings.about", "关于 NeoShell");
+    m.insert("settings.sidebar", "切换侧边栏");
+    m.insert("settings.close", "关闭");
+    // 关于
+    m.insert("about.title", "关于 NeoShell");
+    m.insert("about.version", "版本 {version}");
+    m.insert("about.desc", "基于 Rust 构建的跨平台 SSH 终端管理工具。");
+    m.insert("about.tech", "Rust • iced • wgpu • AES-256-GCM • Argon2id");
+    m.insert("about.copyright", "© 2026 NeoShell — 保留所有权利");
+    m.insert("about.close", "关闭");
+    // 历史
+    m.insert("history.title", "命令历史");
+    m.insert("history.filter", "搜索命令...");
+    m.insert("history.empty", "暂无命令记录");
+    m.insert("history.clear", "清空");
     m
 });
 

@@ -162,7 +162,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.4.0</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.5.0</a>
     <a href="#features" class="btn-hero btn-ghost" data-i18n="hero.btn.explore">Explore features</a>
   </div>
   <div class="hero-metric">
@@ -241,26 +241,26 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label" data-i18n="dl.label">Get started</div>
     <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
-    <p class="section-desc" data-i18n="dl.desc">v0.4.0 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc" data-i18n="dl.desc">v0.5.0 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.4.0-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.4.0-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.5.0-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.5.0-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.4.0-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.5.0-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.4.0-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.5.0-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n="dl.note">Proprietary software. Contact us for enterprise licensing.</p>
@@ -276,24 +276,41 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
-        <span class="cl-ver">0.4.0</span>
+        <span class="cl-ver">0.5.0</span>
         <span class="cl-date">2026-04-14</span>
         <span class="cl-badge" data-i18n="cl.latest">Latest</span>
       </div>
       <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
       <ul class="cl-list">
-        <li>Dynamic library architecture &mdash; thin launcher + hot-swappable core</li>
-        <li>Network auto-update &mdash; check, download, MD5 verify, restart to apply</li>
-        <li>Update notification bar in UI (available / downloading / ready)</li>
-        <li>DMG installer with custom dark background</li>
-        <li>New neon glow app icon (amber/teal shield)</li>
+        <li>Internationalization (i18n) &mdash; EN / Chinese toggle, 85+ UI strings</li>
+        <li>Command history panel &mdash; search, filter, one-click replay (Cmd+H)</li>
+        <li>Collapsible sidebar &mdash; toggle from status bar</li>
+        <li>Settings menu &mdash; language, UI scale, sidebar, About</li>
+        <li>About dialog with version info and tech stack</li>
+        <li>UI scale adjustment (0.5x &ndash; 3.0x) with persistence</li>
+      </ul>
+      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
+      <ul class="cl-list">
+        <li>Linux GLIBC compatibility &mdash; build on Ubuntu 22.04 (GLIBC 2.35)</li>
+        <li>Linux vendored OpenSSL &mdash; no runtime libssl dependency</li>
+        <li>AppImage LD_LIBRARY_PATH for core .so loading</li>
+        <li>Unicode icon rendering &mdash; use ASCII-safe labels for all buttons</li>
       </ul>
       <div class="cl-cat cl-cat-perf" data-i18n="cl.cat.arch">Architecture</div>
       <ul class="cl-list">
-        <li>Cargo workspace: launcher (600KB) + core dylib (6MB)</li>
-        <li>Launcher: dlopen, restart loop, update swap, rollback on failure</li>
-        <li>Updater: background check every hour, staging dir, MD5 verification</li>
-        <li>Exit code 42 triggers library hot-swap without process kill</li>
+        <li>Custom i18n module with static HashMap (zero external deps)</li>
+        <li>Locale auto-detection from LANG/LC_ALL + persistent config</li>
+        <li>Separate core library artifacts in CI releases</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry cl-old">
+      <div class="cl-head">
+        <span class="cl-ver cl-ver-old">0.4.0</span>
+        <span class="cl-date">2026-04-14</span>
+      </div>
+      <ul class="cl-list">
+        <li>Dynamic library architecture, network auto-update, DMG installer, neon icon</li>
       </ul>
     </div>
 
@@ -397,7 +414,7 @@ const TRANSLATIONS = {
     'hero.tag':          'Pure Rust &bull; Native GPU &bull; Zero Dependencies',
     'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
     'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
-    'hero.btn.download': 'Download v0.4.0',
+    'hero.btn.download': 'Download v0.5.0',
     'hero.btn.explore':  'Explore features',
     'hero.metric.binary':    'Binary size',
     'hero.metric.start':     'Cold start',
@@ -436,7 +453,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       'Get started',
     'dl.title':       'Download NeoShell',
-    'dl.desc':        'v0.4.0 &mdash; Single binary. No installer dependencies.',
+    'dl.desc':        'v0.5.0 &mdash; Single binary. No installer dependencies.',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -473,7 +490,7 @@ const TRANSLATIONS = {
     'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 零外部依赖',
     'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
     'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
-    'hero.btn.download': '下载 v0.4.0',
+    'hero.btn.download': '下载 v0.5.0',
     'hero.btn.explore':  '探索功能',
     'hero.metric.binary':    '程序体积',
     'hero.metric.start':     '冷启动时间',
@@ -512,7 +529,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       '立即开始',
     'dl.title':       '下载 NeoShell',
-    'dl.desc':        'v0.4.0 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.desc':        'v0.5.0 &mdash; 单文件可执行，无需安装依赖。',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',

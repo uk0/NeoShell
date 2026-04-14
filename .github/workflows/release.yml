@@ -151,7 +151,7 @@ jobs:
             dist/libneoshell_core-*-macos-*.dylib
 
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -163,8 +163,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: linux-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: linux-cargo-
+          key: linux-22.04-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-22.04-cargo-
 
       - name: Install dependencies
         run: |
@@ -175,16 +175,25 @@ jobs:
       - name: Build release
         run: cargo build --release --workspace
 
+      - name: Verify GLIBC requirement
+        run: |
+          echo "=== GLIBC versions required ==="
+          objdump -T target/release/neoshell | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sort -uV
+          objdump -T target/release/libneoshell_core.so | grep GLIBC | sed 's/.*GLIBC_/GLIBC_/' | sort -uV
+          echo "Target: GLIBC <= 2.35 (Ubuntu 22.04)"
+
       - name: Package AppImage
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           APP="dist/NeoShell.AppDir"
-          mkdir -p "$APP/usr/bin" "$APP/usr/share/applications" "$APP/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "$APP/usr/bin" "$APP/usr/lib" \
+            "$APP/usr/share/applications" \
+            "$APP/usr/share/icons/hicolor/256x256/apps"
           cp target/release/neoshell "$APP/usr/bin/"
-          cp target/release/libneoshell_core.so "$APP/usr/bin/"
+          cp target/release/libneoshell_core.so "$APP/usr/lib/"
           cp assets/icon.png "$APP/neoshell.png"
           cp assets/icon.png "$APP/usr/share/icons/hicolor/256x256/apps/neoshell.png"
-          cat > "$APP/neoshell.desktop" <<'EOF'
+          cat > "$APP/neoshell.desktop" <<'DESKTOP'
           [Desktop Entry]
           Name=NeoShell
           Comment=Cross-Platform SSH Manager
@@ -193,9 +202,14 @@ jobs:
           Terminal=false
           Type=Application
           Categories=System;Network;
-          EOF
+          DESKTOP
           cp "$APP/neoshell.desktop" "$APP/usr/share/applications/"
-          printf '#!/bin/bash\nHERE=$(dirname "$(readlink -f "$0")")\nexec "$HERE/usr/bin/neoshell" "$@"\n' > "$APP/AppRun"
+          cat > "$APP/AppRun" <<'APPRUN'
+          #!/bin/bash
+          HERE=$(dirname "$(readlink -f "$0")")
+          export LD_LIBRARY_PATH="$HERE/usr/lib:${LD_LIBRARY_PATH}"
+          exec "$HERE/usr/bin/neoshell" "$@"
+          APPRUN
           chmod +x "$APP/AppRun"
           wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
           chmod +x appimagetool

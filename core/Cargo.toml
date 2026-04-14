@@ -1,6 +1,6 @@
 [package]
 name = "neoshell-core"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "NeoShell core library — all application logic"
 
@@ -45,7 +45,7 @@ arboard = "3"
 ureq = { version = "~2", features = ["json"] }
 md-5 = "0.10"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
 
 [target.'cfg(windows)'.build-dependencies]

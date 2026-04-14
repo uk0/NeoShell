@@ -237,6 +237,24 @@ pub struct NeoShell {
 
     // i18n locale
     locale: String,
+
+    // UI state
+    sidebar_collapsed: bool,
+    show_settings: bool,
+    show_about: bool,
+    ui_scale: f32,
+
+    // Command history (per session + global)
+    cmd_history: Vec<CmdRecord>,
+    show_history: bool,
+    history_filter: String,
+}
+
+#[derive(Debug, Clone)]
+struct CmdRecord {
+    cmd: String,
+    session_title: String,
+    timestamp: std::time::Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -380,8 +398,21 @@ pub enum Message {
     RestartForUpdate,
     DismissUpdate,
 
-    // Language
+    // Language & UI
     ToggleLanguage,
+    ToggleSidebar,
+    ShowSettings,
+    HideSettings,
+    ShowAbout,
+    HideAbout,
+    SetUiScale(f32),
+
+    // Command history
+    ShowHistory,
+    HideHistory,
+    HistoryFilterChanged(String),
+    ReplayCommand(String),   // re-send a command to active session
+    ClearHistory,
 
     // Misc
     Tick,
@@ -414,6 +445,30 @@ fn load_locale() -> String {
         }
     }
     "en".to_string()
+}
+
+/// Load persisted UI scale factor.
+fn load_ui_scale() -> f32 {
+    if let Some(config_dir) = dirs::config_dir() {
+        let scale_file = config_dir.join("neoshell").join("scale");
+        if let Ok(s) = std::fs::read_to_string(&scale_file) {
+            if let Ok(v) = s.trim().parse::<f32>() {
+                if (0.5..=3.0).contains(&v) {
+                    return v;
+                }
+            }
+        }
+    }
+    1.0
+}
+
+/// Persist UI scale factor.
+fn save_ui_scale(scale: f32) {
+    if let Some(config_dir) = dirs::config_dir() {
+        let neo_dir = config_dir.join("neoshell");
+        let _ = std::fs::create_dir_all(&neo_dir);
+        let _ = std::fs::write(neo_dir.join("scale"), format!("{:.2}", scale));
+    }
 }
 
 /// Persist locale choice to config dir.
@@ -480,6 +535,13 @@ impl Default for NeoShell {
             updater: Updater::new(),
             last_update_check: std::time::Instant::now(),
             locale,
+            sidebar_collapsed: false,
+            show_settings: false,
+            show_about: false,
+            ui_scale: load_ui_scale(),
+            cmd_history: Vec::new(),
+            show_history: false,
+            history_filter: String::new(),
         }
     }
 }
@@ -489,10 +551,12 @@ impl Default for NeoShell {
 // ---------------------------------------------------------------------------
 
 pub fn run() -> iced::Result {
+    let initial_scale = load_ui_scale() as f64;
     iced::application("NeoShell", update, view)
         .subscription(subscription)
         .theme(|_state| Theme::Dark)
         .window_size(Size::new(1200.0, 800.0))
+        .scale_factor(move |_state| initial_scale)
         .antialiasing(true)
         .decorations(true)
         .default_font(CJK_FONT)
@@ -853,8 +917,24 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             // Track typed commands to capture "sz filename"
             let buf = state.cmd_buffer.entry(session_id.clone()).or_default();
             if data == "\r" || data == "\n" {
-                // Enter pressed — check for sz command
+                // Enter pressed — record to history
                 let cmd = buf.trim().to_string();
+                if !cmd.is_empty() {
+                    // Find session title
+                    let title = state.tabs.iter()
+                        .find(|t| t.session_id == session_id)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default();
+                    state.cmd_history.push(CmdRecord {
+                        cmd: cmd.clone(),
+                        session_title: title,
+                        timestamp: std::time::Instant::now(),
+                    });
+                    // Cap at 500 entries
+                    if state.cmd_history.len() > 500 {
+                        state.cmd_history.drain(..state.cmd_history.len() - 500);
+                    }
+                }
                 if cmd.starts_with("sz ") {
                     let filename = cmd[3..].trim().to_string();
                     if !filename.is_empty() {
@@ -1099,12 +1179,33 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 }
             }
 
-            // Close connect dialog with ESC
-            if state.show_connect_dialog {
-                if let keyboard::Key::Named(keyboard::key::Named::Escape) = &key {
+            // ESC closes open dialogs
+            if let keyboard::Key::Named(keyboard::key::Named::Escape) = &key {
+                if state.show_history {
+                    state.show_history = false;
+                    return Task::none();
+                }
+                if state.show_settings {
+                    state.show_settings = false;
+                    return Task::none();
+                }
+                if state.show_about {
+                    state.show_about = false;
+                    return Task::none();
+                }
+                if state.show_connect_dialog {
                     state.show_connect_dialog = false;
                     return Task::none();
                 }
+            }
+
+            // Cmd+H or Ctrl+H = toggle command history
+            if (modifiers.command() || modifiers.control())
+                && matches!(&key, keyboard::Key::Character(c) if c.as_str() == "h")
+            {
+                state.show_history = !state.show_history;
+                state.history_filter.clear();
+                return Task::none();
             }
 
             if let Some(idx) = state.active_tab {
@@ -1693,6 +1794,76 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        // ---- UI state -------------------------------------------------------
+        Message::ToggleSidebar => {
+            state.sidebar_collapsed = !state.sidebar_collapsed;
+            Task::none()
+        }
+        Message::ShowSettings => {
+            state.show_settings = true;
+            Task::none()
+        }
+        Message::HideSettings => {
+            state.show_settings = false;
+            Task::none()
+        }
+        Message::ShowAbout => {
+            state.show_settings = false;
+            state.show_about = true;
+            Task::none()
+        }
+        Message::HideAbout => {
+            state.show_about = false;
+            Task::none()
+        }
+        Message::SetUiScale(scale) => {
+            state.ui_scale = scale;
+            save_ui_scale(scale);
+            Task::none()
+        }
+
+        // ---- command history -------------------------------------------------
+        Message::ShowHistory => {
+            state.show_history = true;
+            state.history_filter.clear();
+            Task::none()
+        }
+        Message::HideHistory => {
+            state.show_history = false;
+            state.history_filter.clear();
+            Task::none()
+        }
+        Message::HistoryFilterChanged(v) => {
+            state.history_filter = v;
+            Task::none()
+        }
+        Message::ReplayCommand(cmd) => {
+            state.show_history = false;
+            state.history_filter.clear();
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    let session_id = tab.session_id.clone();
+                    let ssh = state.ssh_manager.clone();
+                    let full_cmd = format!("{}\n", cmd);
+                    return Task::perform(
+                        async move {
+                            ssh.send_data(&session_id, full_cmd.as_bytes())?;
+                            Ok(())
+                        },
+                        |result: Result<(), String>| match result {
+                            Ok(()) => Message::None,
+                            Err(e) => Message::Error(e),
+                        },
+                    );
+                }
+            }
+            Task::none()
+        }
+        Message::ClearHistory => {
+            state.cmd_history.clear();
+            Task::none()
+        }
+
         // ---- language --------------------------------------------------------
         Message::ToggleLanguage => {
             state.locale = if state.locale == "zh-CN" {
@@ -1933,9 +2104,10 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
     let tab_bar = view_tab_bar(state);
     let status_bar = view_status_bar(state);
 
+    let sidebar_width: f32 = if state.sidebar_collapsed { 0.0 } else { 280.0 };
+
     let body: Element<'_, Message> = if state.active_tab.is_some() {
         // Connected view: monitor sidebar + (terminal + file browser)
-        let sidebar = view_monitor_sidebar(state);
         let terminal = view_terminal_area(state);
         let file_browser = view_file_browser(state);
 
@@ -1954,22 +2126,33 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
             .height(Fill)
             .into();
 
-        row![
-            container(sidebar).width(280).height(Fill),
-            right_panel,
-        ]
-        .height(Fill)
-        .into()
+        if state.sidebar_collapsed {
+            row![right_panel].height(Fill).into()
+        } else {
+            let sidebar = view_monitor_sidebar(state);
+            row![
+                container(sidebar).width(sidebar_width).height(Fill),
+                right_panel,
+            ]
+            .height(Fill)
+            .into()
+        }
     } else {
         // Not connected: connection list sidebar + welcome
-        let sidebar = view_sidebar(state);
         let welcome = view_welcome();
-        row![
-            container(sidebar).width(280).height(Fill),
-            container(welcome).width(Fill).height(Fill),
-        ]
-        .height(Fill)
-        .into()
+        if state.sidebar_collapsed {
+            row![container(welcome).width(Fill).height(Fill)]
+                .height(Fill)
+                .into()
+        } else {
+            let sidebar = view_sidebar(state);
+            row![
+                container(sidebar).width(sidebar_width).height(Fill),
+                container(welcome).width(Fill).height(Fill),
+            ]
+            .height(Fill)
+            .into()
+        }
     };
 
     let mut main_col = column![];
@@ -2015,6 +2198,42 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
         return container(stack([
             container(main_layout).width(Fill).height(Fill).into(),
             dialog,
+        ]))
+        .width(Fill)
+        .height(Fill)
+        .into();
+    }
+
+    // Command history panel
+    if state.show_history {
+        let history_overlay = view_history_panel(state);
+        return container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            history_overlay,
+        ]))
+        .width(Fill)
+        .height(Fill)
+        .into();
+    }
+
+    // About dialog
+    if state.show_about {
+        let about_overlay = view_about_dialog(state);
+        return container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            about_overlay,
+        ]))
+        .width(Fill)
+        .height(Fill)
+        .into();
+    }
+
+    // Settings menu
+    if state.show_settings {
+        let settings_overlay = view_settings_menu(state);
+        return container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            settings_overlay,
         ]))
         .width(Fill)
         .height(Fill)
@@ -2223,14 +2442,29 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
         );
     }
 
-    // "+" button to open new connection + fill remaining space
+    // "+" button to open new connection
     tabs_row = tabs_row.push(
         button(text("+").color(theme::TEXT_MUTED).size(14))
             .on_press(Message::ShowConnectDialog)
             .padding(Padding::from([6, 10]))
             .style(transparent_button_style),
     );
+
     tabs_row = tabs_row.push(horizontal_space());
+
+    // History button (right side of tab bar)
+    let history_count = state.cmd_history.len();
+    let history_label = if history_count > 0 {
+        format!("H:{}", history_count)
+    } else {
+        "H".to_string()
+    };
+    tabs_row = tabs_row.push(
+        button(text(history_label).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(11))
+            .on_press(Message::ShowHistory)
+            .padding(Padding::from([6, 10]))
+            .style(transparent_button_style),
+    );
 
     container(tabs_row)
         .width(Fill)
@@ -3274,7 +3508,312 @@ fn view_editor(state: &NeoShell) -> Element<'_, Message> {
 
 // ---- Status bar ----------------------------------------------------------
 
+// ---- Command history panel --------------------------------------------------
+
+fn view_history_panel(state: &NeoShell) -> Element<'_, Message> {
+    let title = text(i18n::t("history.title")).size(16).color(theme::TEXT_PRIMARY);
+    let close_btn = button(text("x").font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(14))
+        .on_press(Message::HideHistory)
+        .padding(Padding::from([2, 8]))
+        .style(transparent_button_style);
+    let clear_btn = button(text(i18n::t("history.clear")).font(Font::MONOSPACE).color(theme::DANGER).size(11))
+        .on_press(Message::ClearHistory)
+        .padding(Padding::from([4, 8]))
+        .style(transparent_button_style);
+
+    let header = row![title, horizontal_space(), clear_btn, close_btn]
+        .align_y(alignment::Vertical::Center);
+
+    let filter_input = text_input(i18n::t("history.filter"), &state.history_filter)
+        .on_input(Message::HistoryFilterChanged)
+        .padding(8)
+        .size(13);
+
+    let filter_lower = state.history_filter.to_lowercase();
+
+    // Build list (newest first), filtered
+    let mut list_col = column![].spacing(2);
+    let mut shown = 0;
+    for record in state.cmd_history.iter().rev() {
+        if !filter_lower.is_empty() && !record.cmd.to_lowercase().contains(&filter_lower) {
+            continue;
+        }
+        if shown >= 100 { break; }
+        shown += 1;
+
+        let elapsed = record.timestamp.elapsed();
+        let ago = if elapsed.as_secs() < 60 {
+            format!("{}s", elapsed.as_secs())
+        } else if elapsed.as_secs() < 3600 {
+            format!("{}m", elapsed.as_secs() / 60)
+        } else {
+            format!("{}h", elapsed.as_secs() / 3600)
+        };
+
+        let cmd_text = text(truncate_str(&record.cmd, 50))
+            .font(Font::MONOSPACE)
+            .color(theme::TEXT_PRIMARY)
+            .size(12);
+        let session_text = text(truncate_str(&record.session_title, 15))
+            .color(theme::TEXT_MUTED)
+            .size(10);
+        let ago_text = text(ago).color(theme::TEXT_MUTED).size(10);
+
+        let replay_btn = button(text(">").font(Font::MONOSPACE).color(theme::SUCCESS).size(12))
+            .on_press(Message::ReplayCommand(record.cmd.clone()))
+            .padding(Padding::from([2, 8]))
+            .style(transparent_button_style);
+
+        let entry_row = row![
+            column![cmd_text, session_text].spacing(2).width(Fill),
+            ago_text,
+            replay_btn,
+        ]
+        .spacing(8)
+        .align_y(alignment::Vertical::Center);
+
+        let i = shown;
+        let row_bg = if i % 2 == 0 { theme::BG_SECONDARY } else { theme::BG_TERTIARY };
+        list_col = list_col.push(
+            button(entry_row)
+                .on_press(Message::ReplayCommand(record.cmd.clone()))
+                .padding(Padding::from([6, 10]))
+                .width(Fill)
+                .style(move |_theme: &Theme, status| {
+                    let mut s = button::Style::default();
+                    s.background = Some(row_bg.into());
+                    if let button::Status::Hovered = status {
+                        s.background = Some(theme::BG_HOVER.into());
+                    }
+                    s
+                }),
+        );
+    }
+
+    if shown == 0 {
+        list_col = list_col.push(
+            container(text(i18n::t("history.empty")).color(theme::TEXT_MUTED).size(13))
+                .padding(Padding::from([20, 12])),
+        );
+    }
+
+    let content = column![
+        header,
+        filter_input,
+        scrollable(list_col).height(Fill),
+    ]
+    .spacing(8)
+    .padding(16)
+    .width(500)
+    .height(Fill);
+
+    let card = container(content)
+        .height(Fill)
+        .style(|_| container::Style {
+            background: Some(theme::BG_SECONDARY.into()),
+            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+                offset: iced::Vector::new(-4.0, 0.0),
+                blur_radius: 16.0,
+            },
+            ..Default::default()
+        });
+
+    // Slide in from right
+    let overlay = row![horizontal_space(), card];
+
+    container(overlay)
+        .width(Fill)
+        .height(Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.3).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- Settings menu (dropdown-style overlay) --------------------------------
+
+fn view_settings_menu(state: &NeoShell) -> Element<'_, Message> {
+    let title = text(i18n::t("settings.title")).size(16).color(theme::TEXT_PRIMARY);
+    let close_btn = button(text("x").color(theme::TEXT_MUTED).size(14))
+        .on_press(Message::HideSettings)
+        .padding(Padding::from([2, 8]))
+        .style(transparent_button_style);
+
+    let header = row![title, horizontal_space(), close_btn]
+        .align_y(alignment::Vertical::Center);
+
+    // Language row
+    let lang_label = text(i18n::t("settings.language")).color(theme::TEXT_SECONDARY).size(13);
+    let lang_value = if state.locale == "zh-CN" { "中文" } else { "English" };
+    let lang_btn = button(
+        text(lang_value).color(theme::ACCENT).size(13)
+    )
+    .on_press(Message::ToggleLanguage)
+    .padding(Padding::from([4, 12]))
+    .style(transparent_button_style);
+    let lang_row = row![lang_label, horizontal_space(), lang_btn]
+        .align_y(alignment::Vertical::Center);
+
+    // Scale row
+    let scale_label = text(i18n::t("settings.scale")).color(theme::TEXT_SECONDARY).size(13);
+    let scale_pct = format!("{:.0}%", state.ui_scale * 100.0);
+    let scale_down = button(text("-").font(Font::MONOSPACE).color(theme::TEXT_SECONDARY).size(14))
+        .on_press(Message::SetUiScale((state.ui_scale - 0.1).max(0.5)))
+        .padding(Padding::from([2, 8]))
+        .style(transparent_button_style);
+    let scale_up = button(text("+").color(theme::TEXT_SECONDARY).size(14))
+        .on_press(Message::SetUiScale((state.ui_scale + 0.1).min(3.0)))
+        .padding(Padding::from([2, 8]))
+        .style(transparent_button_style);
+    let scale_row = row![scale_label, horizontal_space(), scale_down, text(scale_pct).color(theme::TEXT_PRIMARY).size(13), scale_up]
+        .spacing(4)
+        .align_y(alignment::Vertical::Center);
+
+    // Sidebar toggle
+    let sidebar_label = text(i18n::t("settings.sidebar")).color(theme::TEXT_SECONDARY).size(13);
+    let sidebar_icon = if state.sidebar_collapsed { "OFF" } else { "ON" };
+    let sidebar_btn = button(text(sidebar_icon).color(theme::ACCENT).size(14))
+        .on_press(Message::ToggleSidebar)
+        .padding(Padding::from([2, 8]))
+        .style(transparent_button_style);
+    let sidebar_row = row![sidebar_label, horizontal_space(), sidebar_btn]
+        .align_y(alignment::Vertical::Center);
+
+    // Divider
+    let divider: Element<'_, Message> = container(Space::new(Fill, 1))
+        .width(Fill)
+        .style(|_| container::Style {
+            background: Some(theme::BORDER.into()),
+            ..Default::default()
+        })
+        .into();
+
+    // About button
+    let about_btn = button(
+        row![
+            text(i18n::t("settings.about")).color(theme::TEXT_SECONDARY).size(13),
+            horizontal_space(),
+            text(">").font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(12),
+        ]
+        .align_y(alignment::Vertical::Center)
+    )
+    .on_press(Message::ShowAbout)
+    .padding(Padding::from([8, 0]))
+    .width(Fill)
+    .style(transparent_button_style);
+
+    let menu_content = column![
+        header,
+        lang_row,
+        scale_row,
+        sidebar_row,
+        divider,
+        about_btn,
+    ]
+    .spacing(12)
+    .padding(20)
+    .width(280);
+
+    let card = container(menu_content)
+        .style(|_| container::Style {
+            background: Some(theme::BG_SECONDARY.into()),
+            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 8.0.into() },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            },
+            ..Default::default()
+        });
+
+    // Position near bottom-right (above status bar)
+    let overlay_content = column![
+        vertical_space(),
+        row![horizontal_space(), container(card).padding(Padding::from([0, 16]))],
+    ];
+
+    container(overlay_content)
+        .width(Fill)
+        .height(Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.3).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- About dialog ----------------------------------------------------------
+
+fn view_about_dialog(_state: &NeoShell) -> Element<'static, Message> {
+    let title = text(i18n::t("about.title").to_string()).size(22).color(theme::TEXT_PRIMARY);
+    let version_str = i18n::tf("about.version", &[("version", env!("CARGO_PKG_VERSION"))]);
+    let version = text(version_str).size(14).color(theme::ACCENT);
+    let desc = text(i18n::t("about.desc").to_string()).size(13).color(theme::TEXT_SECONDARY);
+    let tech = text(i18n::t("about.tech").to_string()).size(11).color(theme::TEXT_MUTED);
+    let copyright = text(i18n::t("about.copyright").to_string()).size(11).color(theme::TEXT_MUTED);
+
+    let close_btn = button(
+        text(i18n::t("about.close").to_string()).color(theme::TEXT_SECONDARY).size(13)
+    )
+    .on_press(Message::HideAbout)
+    .padding(Padding::from([6, 20]))
+    .style(transparent_button_style);
+
+    let content = column![
+        text("NeoShell").font(Font::MONOSPACE).size(32).color(theme::ACCENT),
+        title,
+        version,
+        vertical_space().height(8),
+        desc,
+        vertical_space().height(4),
+        tech,
+        vertical_space().height(12),
+        copyright,
+        vertical_space().height(8),
+        close_btn,
+    ]
+    .spacing(4)
+    .align_x(alignment::Horizontal::Center)
+    .padding(32)
+    .width(360);
+
+    let card = container(content)
+        .style(|_| container::Style {
+            background: Some(theme::BG_SECONDARY.into()),
+            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 12.0.into() },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 20.0,
+            },
+            ..Default::default()
+        });
+
+    container(card)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- Status bar ------------------------------------------------------------
+
 fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
+    // Sidebar toggle
+    let toggle_icon = if state.sidebar_collapsed { "[>]" } else { "[<]" };
+    let toggle_btn = button(text(toggle_icon).font(Font::MONOSPACE).color(theme::TEXT_SECONDARY).size(11))
+        .on_press(Message::ToggleSidebar)
+        .padding(Padding::from([2, 6]))
+        .style(transparent_button_style);
+
     let left = text(i18n::tf("status.version", &[("version", env!("CARGO_PKG_VERSION"))])).color(theme::TEXT_MUTED).size(12);
 
     let right = if let Some(idx) = state.active_tab {
@@ -3287,13 +3826,13 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
         text(i18n::t("status.no_session")).color(theme::TEXT_MUTED).size(12)
     };
 
-    let lang_label = if state.locale == "zh-CN" { "EN" } else { "中文" };
-    let lang_btn = button(text(lang_label).color(theme::ACCENT).size(11))
-        .on_press(Message::ToggleLanguage)
-        .padding(Padding::from([2, 8]))
+    // Settings gear button
+    let settings_btn = button(text("[=]").font(Font::MONOSPACE).color(theme::TEXT_SECONDARY).size(11))
+        .on_press(Message::ShowSettings)
+        .padding(Padding::from([2, 6]))
         .style(transparent_button_style);
 
-    let bar = row![left, horizontal_space(), lang_btn, right]
+    let bar = row![toggle_btn, left, horizontal_space(), right, settings_btn]
         .spacing(8)
         .padding(Padding::from([4, 12]))
         .align_y(alignment::Vertical::Center);

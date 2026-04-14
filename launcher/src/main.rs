@@ -62,7 +62,16 @@ fn find_core_lib() -> PathBuf {
     #[cfg(target_os = "linux")]
     let name = "libneoshell_core.so";
 
-    dir.join(name)
+    // Check next to executable first, then ../lib/ (AppImage layout)
+    let candidate = dir.join(name);
+    if candidate.exists() {
+        return candidate;
+    }
+    let lib_dir = dir.join("../lib").join(name);
+    if lib_dir.exists() {
+        return lib_dir;
+    }
+    candidate
 }
 
 /// Check for pending update and apply it.

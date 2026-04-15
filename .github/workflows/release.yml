@@ -297,9 +297,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: x86_64-pc-windows-msvc
+          components: rust-src
 
       - name: Install NASM (for openssl vendored build)
         uses: ilammy/setup-nasm@v1
@@ -311,25 +311,26 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-win7-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: windows-win7-cargo-
+          key: windows-win7-nightly-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-win7-nightly-
 
-      - name: Build release (Win7 compatible)
+      - name: Build release (Win7 target with rebuilt std)
         env:
           OPENSSL_STATIC: "1"
-          RUSTFLAGS: "-C target-feature=+crt-static"
-          WGPU_BACKEND: "gl"
-        run: cargo build --release --workspace
+        run: >
+          cargo +nightly build --release --workspace
+          --target x86_64-win7-windows-msvc
+          -Z build-std=std,panic_abort
 
       - name: Package zip
         run: |
           $VERSION = "${{ github.ref_name }}".TrimStart("v")
+          $TARGET_DIR = "target\x86_64-win7-windows-msvc\release"
           New-Item -ItemType Directory -Force -Path dist,"dist\NeoShell-Win7"
-          Copy-Item target\release\neoshell.exe "dist\NeoShell-Win7\"
-          Copy-Item target\release\neoshell_core.dll "dist\NeoShell-Win7\"
+          Copy-Item "$TARGET_DIR\neoshell.exe" "dist\NeoShell-Win7\"
+          Copy-Item "$TARGET_DIR\neoshell_core.dll" "dist\NeoShell-Win7\"
           Copy-Item assets\icon.png "dist\NeoShell-Win7\"
-          # Add a readme for Win7 users
-          Set-Content "dist\NeoShell-Win7\README-Win7.txt" "NeoShell for Windows 7`nRequires: OpenGL 3.3+ or Vulkan GPU driver`nSet WGPU_BACKEND=gl if display issues occur"
+          Set-Content "dist\NeoShell-Win7\README-Win7.txt" "NeoShell for Windows 7 / Server 2008 R2`nRequires: OpenGL 3.3+ or Vulkan GPU driver`nIf display issues: set WGPU_BACKEND=gl"
           Compress-Archive -Path "dist\NeoShell-Win7\*" -DestinationPath "dist\NeoShell-$VERSION-windows-win7-x64.zip"
 
       - name: Upload to Release
@@ -340,7 +341,8 @@ jobs:
       - name: Prepare core library artifact
         run: |
           $VERSION = "${{ github.ref_name }}".TrimStart("v")
-          $DLL = Get-ChildItem -Path target -Recurse -Filter "neoshell_core.dll" | Where-Object { $_.DirectoryName -like "*release*" } | Select-Object -First 1
+          $TARGET_DIR = "target\x86_64-win7-windows-msvc\release"
+          $DLL = Get-ChildItem -Path $TARGET_DIR -Filter "neoshell_core.dll" | Select-Object -First 1
           if (-not $DLL) { Write-Error "ERROR: neoshell_core.dll not found"; exit 1 }
           Copy-Item $DLL.FullName "dist\neoshell_core-$VERSION-windows-win7-x64.dll"
 

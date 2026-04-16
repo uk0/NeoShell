@@ -296,13 +296,12 @@ impl SshManager {
         match session.handshake() {
             Ok(()) => {}
             Err(e) => {
-                // Log supported algorithms for debugging
+                // Log full details for debugging, show short message to user
                 let kex = session.supported_algs(MethodType::Kex).unwrap_or_default();
                 let hk = session.supported_algs(MethodType::HostKey).unwrap_or_default();
                 let cipher = session.supported_algs(MethodType::CryptCs).unwrap_or_default();
-                log::error!("Handshake failed: {}. Supported KEX: {:?}, HostKey: {:?}, Ciphers: {:?}", e, kex, hk, cipher);
-                return Err(format!("SSH handshake failed: {} (KEX: {}, HostKey: {}, Cipher: {})",
-                    e, kex.join(","), hk.join(","), cipher.join(",")));
+                log::error!("Handshake failed: {}. KEX: {:?}, HostKey: {:?}, Ciphers: {:?}", e, kex, hk, cipher);
+                return Err(format!("SSH handshake failed: {}", e));
             }
         }
 

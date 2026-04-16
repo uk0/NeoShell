@@ -1420,9 +1420,15 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             if modifiers.command() {
                 if let keyboard::Key::Character(c) = &key {
                     match c.as_str() {
-                        "v" => return Task::done(Message::PasteClipboard),
-                        "t" => return Task::done(Message::ShowConnectDialog),
-                        "w" => {
+                        "v" | "V" => return Task::done(Message::PasteClipboard),
+                        "c" | "C" => {
+                            // Cmd+C = copy selection (if any)
+                            if state.selection_start.is_some() && state.selection_end.is_some() {
+                                return Task::done(Message::CopySelection);
+                            }
+                        }
+                        "t" | "T" => return Task::done(Message::ShowConnectDialog),
+                        "w" | "W" => {
                             // Cmd+W = close current tab
                             if let Some(idx) = state.active_tab {
                                 return Task::done(Message::TabClosed(idx));
@@ -1441,6 +1447,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                             if !state.tabs.is_empty() {
                                 return Task::done(Message::SwitchToTab(state.tabs.len() - 1));
                             }
+                        }
+                        "h" | "H" => {
+                            state.show_history = !state.show_history;
+                            state.history_filter.clear();
+                            return Task::none();
                         }
                         "+" | "=" | "-" | "0" => return Task::none(), // Block zoom
                         _ => {}
@@ -1484,14 +1495,6 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 }
             }
 
-            // Cmd+H or Ctrl+H = toggle command history
-            if (modifiers.command() || modifiers.control())
-                && matches!(&key, keyboard::Key::Character(c) if c.as_str() == "h")
-            {
-                state.show_history = !state.show_history;
-                state.history_filter.clear();
-                return Task::none();
-            }
 
             if let Some(idx) = state.active_tab {
                 if let Some(tab) = state.tabs.get(idx) {
@@ -2556,6 +2559,10 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
                 }
                 iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                     Some(Message::TerminalMouseUp)
+                }
+                // Right-click = paste from clipboard
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                    Some(Message::PasteClipboard)
                 }
                 iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     Some(Message::TerminalMouseMove(position.x, position.y))
@@ -5649,10 +5656,16 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
     }
     let proxy_input: Element<'_, Message> = column![proxy_label, proxy_row].spacing(4).into();
 
-    let error_text = if state.error_message.is_empty() {
-        text("").size(1)
+    // Error: show truncated, single-line
+    let error_row: Element<'_, Message> = if state.error_message.is_empty() {
+        Space::new(0, 0).into()
     } else {
-        text(&state.error_message).color(theme::DANGER).size(13)
+        let short = if state.error_message.len() > 60 {
+            format!("{}...", &state.error_message[..57])
+        } else {
+            state.error_message.clone()
+        };
+        text(short).color(theme::DANGER).size(11).into()
     };
 
     let buttons = row![
@@ -5667,7 +5680,7 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
     ]
     .spacing(12);
 
-    let form = column![
+    let form_content = column![
         title,
         name_input,
         host_input,
@@ -5678,14 +5691,20 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
         auth_fields,
         group_input,
         proxy_input,
-        error_text,
+    ]
+    .spacing(12);
+
+    // Scrollable form + fixed bottom (error + buttons)
+    let form = column![
+        scrollable(form_content).height(Fill),
+        error_row,
         buttons,
     ]
-    .spacing(12)
+    .spacing(8)
     .width(440)
     .padding(24);
 
-    let card = container(form).style(|_theme| container::Style {
+    let card = container(form).max_height(650).style(|_theme| container::Style {
         background: Some(theme::BG_SECONDARY.into()),
         border: iced::Border {
             color: theme::BORDER,

@@ -5,7 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NeoShell — The Terminal, Reimagined</title>
 <meta name="description" content="NeoShell: a native Rust SSH manager with GPU-accelerated terminal, encrypted vault, real-time monitoring, and SFTP. 6MB binary, zero dependencies.">
-<link rel="icon" type="image/png" href="icon.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="mask-icon" href="icon.png" color="#e8a84c">
+<meta name="apple-mobile-web-app-title" content="NeoShell">
+<meta name="theme-color" content="#0a0a0f">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -162,7 +169,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.2</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.5</a>
     <a href="#features" class="btn-hero btn-ghost" data-i18n="hero.btn.explore">Explore features</a>
   </div>
   <div class="hero-metric">
@@ -241,32 +248,32 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label" data-i18n="dl.label">Get started</div>
     <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
-    <p class="section-desc" data-i18n="dl.desc">v0.6.2 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc" data-i18n="dl.desc">v0.6.5 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.6.2-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.6.2-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.6.5-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.6.5-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64 (Win10+)</div>
-        <a href="downloads/NeoShell-0.6.2-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.5-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.win7">Windows 7</div>
         <div class="dl-arch">x86_64 (OpenGL)</div>
-        <a href="downloads/NeoShell-0.6.2-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.5-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.6.2-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.6.5-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n="dl.note">Proprietary software. Contact us for enterprise licensing.</p>
@@ -282,39 +289,69 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
-        <span class="cl-ver">0.6.2</span>
-        <span class="cl-date">2026-04-16</span><!-- v0.6.2 -->
+        <span class="cl-ver">0.6.5</span>
+        <span class="cl-date">2026-04-21</span>
         <span class="cl-badge" data-i18n="cl.latest">Latest</span>
       </div>
       <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.060.added">
-        <li>FinalShell-style UI &mdash; toolbar + left sidebar + terminal + tabbed bottom panel</li>
-        <li>Dual-pane file browser &mdash; local (left) + remote (right) with refresh buttons</li>
-        <li>Quick command panel &mdash; input box + send button + history replay</li>
-        <li>Process inspector &mdash; click any process for full /proc detail (children, ports, threads, FDs)</li>
-        <li>SOCKS5H / HTTP proxy support &mdash; proxy manager with latency testing</li>
-        <li>Command history &mdash; search, filter, one-click replay (Cmd+H)</li>
-        <li>Bottom panel drag resize &mdash; drag splitter to adjust terminal/panel ratio</li>
-        <li>Font size setting (8-30px) with persistence</li>
-        <li>i18n &mdash; full EN/Chinese UI with 120+ translated strings</li>
-        <li>Delete confirmation dialog</li>
-        <li>Connection status indicator &mdash; green=connected, gray=idle</li>
-        <li>Inline edit/delete buttons on connections</li>
-        <li>Terminal auto-resize &mdash; grid + remote PTY adapt to window size</li>
-        <li>Window icon &mdash; embedded 256px PNG for all platforms</li>
+      <ul class="cl-list" data-i18n-html="cl.065.added">
+        <li>Persistent log file &mdash; auto-written to app data dir, 2 MB rotation</li>
+        <li>Connection error dialog &mdash; full translated error message with "View Log" shortcut</li>
+        <li>In-app log viewer &mdash; status bar <code>LOG</code> button shows last 200 KB; refresh + open-folder actions</li>
+        <li>Esc closes error dialog and log viewer</li>
       </ul>
       <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.060.fixed">
-        <li>SSH key exchange algorithm negotiation &mdash; curve25519, ecdh, ed25519, rsa-sha2</li>
-        <li>Edit connection preserves existing password/key when fields left empty</li>
-        <li>Scroll isolation &mdash; bottom panel scroll no longer moves terminal</li>
-        <li>Keyboard input works after interacting with bottom panel widgets</li>
-        <li>Linux GLIBC 2.35 compatibility (Ubuntu 22.04)</li>
-        <li>Windows exe + title bar icon</li>
-        <li>Win7 build with _WIN32_WINNT=0x0601 + crt-static</li>
-        <li>SSH maximum algorithm compatibility &mdash; enable ALL libssh2 supported algorithms automatically</li>
-        <li>Platform-adaptive shortcut hints &mdash; Cmd on macOS, Ctrl on Windows/Linux</li>
-        <li>Publish script uses CI release assets directly (no DMG/ZIP extraction)</li>
+      <ul class="cl-list" data-i18n-html="cl.065.fixed">
+        <li>Connection failures no longer silently drop <code>error_message</code> on the main screen</li>
+        <li>Removed <code>/tmp/neoshell-connect.log</code> debug hack; unified logging via env_logger</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.4</span>
+        <span class="cl-date">2026-04-18</span>
+      </div>
+      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
+      <ul class="cl-list" data-i18n-html="cl.064.added">
+        <li>Test connection button in form and list &mdash; verify TCP + handshake + auth before saving; latency shown in list</li>
+        <li>Clone existing connection with one click (auto "(Copy)" suffix)</li>
+        <li>Keyboard shortcuts help panel &mdash; <code>F1</code>, <code>Cmd+/</code>, or <code>?</code> in status bar</li>
+        <li>Friendly SSH error messages &mdash; 11 common failure patterns with actionable hints (EN + ZH)</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.3</span>
+        <span class="cl-date">2026-04-17</span>
+      </div>
+      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
+      <ul class="cl-list" data-i18n-html="cl.063.added">
+        <li>SSH bastion (jump host) proxy support &mdash; tunnel via SSH <code>direct-tcpip</code> channel</li>
+        <li>Password or private-key auth to bastion; file picker for key path</li>
+        <li>Proxy test performs full SSH handshake + authentication</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.2</span>
+        <span class="cl-date">2026-04-16</span>
+      </div>
+      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
+      <ul class="cl-list" data-i18n-html="cl.062.added">
+        <li>FinalShell-style UI &mdash; toolbar + left sidebar + terminal + tabbed bottom panel</li>
+        <li>Dual-pane file browser &mdash; local + remote with refresh buttons</li>
+        <li>Quick command panel, process inspector, SOCKS5H/HTTP proxy support</li>
+        <li>Command history, bottom panel drag resize, font size persistence</li>
+        <li>Full EN/Chinese i18n (120+ strings)</li>
+      </ul>
+      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
+      <ul class="cl-list" data-i18n-html="cl.062.fixed">
+        <li>SSH KEX algorithm negotiation &mdash; curve25519, ecdh, ed25519, rsa-sha2</li>
+        <li>Linux GLIBC 2.35 (Ubuntu 22.04) and Win7 (<code>_WIN32_WINNT=0x0601</code>) compatibility</li>
+        <li>Platform-adaptive shortcuts (Cmd/Ctrl); right-click paste in terminal</li>
       </ul>
     </div>
 
@@ -428,7 +465,7 @@ const TRANSLATIONS = {
     'hero.tag':          'Pure Rust &bull; Native GPU &bull; Zero Dependencies',
     'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
     'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
-    'hero.btn.download': 'Download v0.6.2',
+    'hero.btn.download': 'Download v0.6.5',
     'hero.btn.explore':  'Explore features',
     'hero.metric.binary':    'Binary size',
     'hero.metric.start':     'Cold start',
@@ -467,7 +504,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       'Get started',
     'dl.title':       'Download NeoShell',
-    'dl.desc':        'v0.6.2 &mdash; Single binary. No installer dependencies.',
+    'dl.desc':        'v0.6.5 &mdash; Single binary. No installer dependencies.',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -506,7 +543,7 @@ const TRANSLATIONS = {
     'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 零外部依赖',
     'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
     'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
-    'hero.btn.download': '下载 v0.6.2',
+    'hero.btn.download': '下载 v0.6.5',
     'hero.btn.explore':  '探索功能',
     'hero.metric.binary':    '程序体积',
     'hero.metric.start':     '冷启动时间',
@@ -545,7 +582,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       '立即开始',
     'dl.title':       '下载 NeoShell',
-    'dl.desc':        'v0.6.2 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.desc':        'v0.6.5 &mdash; 单文件可执行，无需安装依赖。',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -565,8 +602,12 @@ const TRANSLATIONS = {
     'cl.cat.arch':  '架构调整',
     'cl.cat.perf':  '性能优化',
     'cl.cat.fixed': '问题修复',
-    'cl.060.added': '<li>仿 FinalShell 界面 — 工具栏 + 左侧连接 + 终端 + 底部多标签面板</li><li>双面板文件浏览器 — 本地（左）+ 远程（右），支持刷新</li><li>快捷命令面板 — 输入框 + 发送按钮 + 历史一键重发</li><li>进程详情检查 — 点击进程查看 /proc 完整信息（子进程、端口、线程、文件描述符）</li><li>SOCKS5H / HTTP 代理支持 — 代理管理器 + 延迟测试</li><li>命令历史 — 搜索、过滤、一键重发 (Cmd+H)</li><li>底部面板拖动调整 — 拖动分隔线调整终端与面板比例</li><li>字体大小设置 (8-30px)，持久保存</li><li>国际化 — 完整中英文界面，120+ 翻译条目</li><li>删除确认对话框</li><li>连接状态指示 — 绿色=已连接，灰色=未连接</li><li>连接列表内联编辑/删除按钮</li><li>终端自动缩放 — 网格 + 远程 PTY 随窗口自适应</li><li>窗口图标 — 嵌入 256px PNG 图标</li>',
-    'cl.060.fixed': '<li>SSH 最大算法兼容 — 自动启用 libssh2 支持的全部算法</li><li>编辑连接时保留原有密码/密钥（留空不覆盖）</li><li>滚动隔离 — 底部面板滚动不再影响终端</li><li>键盘输入修复 — 与底部面板交互后可正常输入终端</li><li>跨平台快捷键提示 — macOS 显示 Cmd，Windows/Linux 显示 Ctrl</li><li>Linux GLIBC 2.35 兼容 (Ubuntu 22.04)</li><li>Windows exe 及标题栏图标</li><li>Win7 兼容构建</li><li>发布脚本直接使用 CI 产物（无需拆解 DMG/ZIP）</li>',
+    'cl.065.added': '<li>日志持久化 — 自动写入应用数据目录，2MB 滚动保留</li><li>连接错误弹窗 — 显示完整翻译后的错误信息，附「查看日志」快捷入口</li><li>应用内日志查看器 — 状态栏 <code>日志</code> 按钮展示最近 200KB 日志；支持刷新与打开目录</li><li>Esc 关闭错误弹窗和日志查看器</li>',
+    'cl.065.fixed': '<li>主屏幕下连接失败不再静默丢弃 <code>error_message</code></li><li>移除 <code>/tmp/neoshell-connect.log</code> 调试临时文件，统一走 env_logger</li>',
+    'cl.064.added': '<li>连接测试按钮 — 表单和列表都有，保存前先验证 TCP+handshake+auth，列表显示延迟</li><li>连接克隆 — 一键复制现有连接（自动加 "(Copy)" 后缀）</li><li>键盘快捷键帮助面板 — <code>F1</code>、<code>Cmd+/</code>、或状态栏 <code>?</code> 按钮</li><li>更友好的 SSH 错误提示 — 11 种常见失败场景的可读建议（中英文自动切换）</li>',
+    'cl.063.added': '<li>SSH 堡垒机（跳板机）代理支持 — 通过 SSH <code>direct-tcpip</code> 通道隧道</li><li>堡垒机支持密码或私钥认证，私钥路径文件选择器</li><li>代理测试执行完整 SSH 握手 + 认证</li>',
+    'cl.062.added': '<li>仿 FinalShell 界面 — 工具栏 + 左侧连接 + 终端 + 底部多标签面板</li><li>双面板文件浏览器 — 本地 + 远程 + 刷新</li><li>快捷命令面板、进程详情检查、SOCKS5H/HTTP 代理支持</li><li>命令历史、底部面板拖动调整、字体大小持久化</li><li>完整中英文国际化（120+ 条目）</li>',
+    'cl.062.fixed': '<li>SSH KEX 算法协商 — curve25519、ecdh、ed25519、rsa-sha2</li><li>Linux GLIBC 2.35 (Ubuntu 22.04) 与 Win7 (<code>_WIN32_WINNT=0x0601</code>) 兼容</li><li>跨平台快捷键 (Cmd/Ctrl) + 终端右键粘贴</li>',
     /* contact */
     'contact.label': '保持联系',
     'contact.title': '加入社区',

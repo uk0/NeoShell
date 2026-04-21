@@ -320,13 +320,17 @@ pub struct SshSession {
     /// session's background thread.
     pub writer: tokio::sync::mpsc::Sender<SshCommand>,
     /// SEPARATE SSH session dedicated to exec commands (monitoring, file listing).
-    /// This avoids deadlocking the interactive session — libssh2 is not thread-safe
-    /// for concurrent operations on a single session.
-    pub exec_session: Arc<Mutex<Session>>,
+    /// None for minimal SSH servers (MINA SSHD, embedded devices) where a
+    /// second parallel connection would either be rejected or disrupt the main
+    /// shell. Consumers must check this before calling exec_command etc.
+    pub exec_session: Option<Arc<Mutex<Session>>>,
     /// Connection parameters stored for automatic reconnection.
     pub params: ConnectParams,
     /// Session persistence mode.
     pub mode: SessionMode,
+    /// True when the server banner doesn't identify as OpenSSH — disables
+    /// setenv, keepalive, exec-based shell start, and monitoring exec calls.
+    pub minimal_mode: bool,
 }
 
 /// Manages multiple concurrent SSH sessions.
@@ -629,14 +633,29 @@ impl SshManager {
             return Err("Authentication failed".to_string());
         }
 
-        // --- Enable SSH keepalive (detect dead connections within ~15s) ----
-        session.set_keepalive(true, 15);
+        // --- Classify server — minimal SSH servers (MINA SSHD, embedded devices)
+        // can't handle the full feature set. Banner detection gates everything.
+        let banner_lower = session.banner().unwrap_or("").to_ascii_lowercase();
+        let minimal_mode = !banner_lower.contains("openssh");
+        if minimal_mode {
+            log::info!("Minimal SSH mode (banner {:?}) — disabling keepalive, setenv, exec_session, monitoring", banner_lower);
+        }
+
+        // --- Enable SSH keepalive only for OpenSSH; minimal servers may interpret
+        // the keepalive probe as a protocol violation and disconnect.
+        if !minimal_mode {
+            session.set_keepalive(true, 15);
+        }
 
         // --- Build ConnectParams for reconnection -------------------------
         let params = tmp_params;
 
         // --- Open a SECOND independent SSH connection for exec commands ----
-        let exec_session = {
+        // Skipped in minimal mode: many embedded devices limit to 1 concurrent
+        // SSH session; a second connection causes both to disconnect.
+        let exec_session: Option<Arc<Mutex<Session>>> = if minimal_mode {
+            None
+        } else {
             let tcp2 = establish_tcp(&params)?;
 
             let mut sess2 = Session::new()
@@ -670,22 +689,18 @@ impl SshManager {
 
             sess2.set_keepalive(true, 15);
 
-            Arc::new(Mutex::new(sess2))
+            Some(Arc::new(Mutex::new(sess2)))
         };
 
         // --- Detect session persistence capability --------------------------
-        // tmux probing has side effects on non-mainstream SSH servers. Only
-        // probe when the banner identifies OpenSSH — embedded devices (Cisco,
-        // F5, SSHD_0.9.5, proprietary) go straight to RawShell to avoid the
-        // probe breaking the main session.
+        // Minimal mode: always RawShell, no probing at all.
         let session_name = format!("neo-{}", &session_id[..8]);
-        let banner = session.banner().unwrap_or("").to_ascii_lowercase();
-        let mode = if banner.contains("openssh") {
-            // Probe via exec_session — main session stays untouched either way.
-            let sess2 = exec_session.lock();
+        let mode = if minimal_mode {
+            SessionMode::RawShell
+        } else if let Some(ref es) = exec_session {
+            let sess2 = es.lock();
             detect_and_setup_session(&sess2, &session_name)
         } else {
-            log::info!("Non-OpenSSH banner ({:?}) — skipping tmux probe, using RawShell", banner);
             SessionMode::RawShell
         };
         log::info!("Session mode: {:?}", mode);
@@ -699,15 +714,18 @@ impl SshManager {
             .request_pty("xterm-256color", None, Some((120, 40, 0, 0)))
             .map_err(|e| format!("PTY request failed: {}", e))?;
 
-        // Set UTF-8 locale (ignore errors — server may reject setenv)
-        let _ = channel.setenv("LANG", "en_US.UTF-8");
-        let _ = channel.setenv("LC_ALL", "en_US.UTF-8");
-        let _ = channel.setenv("TERM", "xterm-256color");
+        // Set UTF-8 locale. Skip entirely for minimal servers — some of them
+        // (MINA SSHD 0.9.5, certain embedded firmware) treat unknown setenv as
+        // protocol violation and disconnect.
+        if !minimal_mode {
+            let _ = channel.setenv("LANG", "en_US.UTF-8");
+            let _ = channel.setenv("LC_ALL", "en_US.UTF-8");
+            let _ = channel.setenv("TERM", "xterm-256color");
+        }
 
         match &mode {
             SessionMode::Persistent(name) => {
                 // Create or attach to persistent tmux session with hidden UI
-                // Force UTF-8 via environment in the exec command
                 let cmd = format!(
                     "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color; \
                      tmux has-session -t {n} 2>/dev/null && tmux attach-session -t {n} || \
@@ -722,13 +740,19 @@ impl SshManager {
                     .map_err(|e| format!("Session setup failed: {}", e))?;
             }
             SessionMode::RawShell => {
-                // Start shell with forced UTF-8 locale
-                channel
-                    .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
-                    .unwrap_or_else(|_| {
-                        // Fallback to plain shell if exec fails
-                        let _ = channel.shell();
-                    });
+                // Minimal servers: use a plain SSH "shell" request — the widest-
+                // compatibility path. Embedded devices often don't support "exec".
+                if minimal_mode {
+                    channel
+                        .shell()
+                        .map_err(|e| format!("Shell request failed: {}", e))?;
+                } else {
+                    channel
+                        .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
+                        .unwrap_or_else(|_| {
+                            let _ = channel.shell();
+                        });
+                }
             }
         }
 
@@ -755,7 +779,8 @@ impl SshManager {
         // Clone reconnection context for the reader thread.
         let reader_params = params.clone();
         let reader_mode = mode.clone();
-        let reader_exec = Arc::clone(&exec_session);
+        let reader_minimal = minimal_mode;
+        let reader_exec = exec_session.clone();
 
         // --- Reader thread: reads from SSH channel, emits SshEvent ---------
         // On EOF or error (not WouldBlock), attempts auto-reconnect with
@@ -819,7 +844,7 @@ impl SshManager {
                     std::thread::sleep(Duration::from_millis(backoff_ms));
                     backoff_ms = (backoff_ms * 2).min(30_000);
 
-                    match reconnect_ssh(&reader_params, &reader_mode) {
+                    match reconnect_ssh(&reader_params, &reader_mode, reader_minimal) {
                         Ok((new_session, new_channel, new_exec)) => {
                             // Replace channel first (writer shares this Arc)
                             {
@@ -831,10 +856,10 @@ impl SshManager {
                                 let mut sess = session_reader.lock();
                                 *sess = new_session;
                             }
-                            // Replace exec session for monitoring/SFTP
-                            {
-                                let mut es = reader_exec.lock();
-                                *es = new_exec;
+                            // Replace exec session for monitoring/SFTP (only if we have one)
+                            if let (Some(slot), Some(fresh)) = (reader_exec.as_ref(), new_exec) {
+                                let mut es = slot.lock();
+                                *es = fresh;
                             }
 
                             let _ = event_tx.send(SshEvent::Reconnected {
@@ -930,6 +955,7 @@ impl SshManager {
             exec_session,
             params,
             mode,
+            minimal_mode,
         };
 
         self.sessions.write().insert(session_id.clone(), ssh_session);
@@ -1004,10 +1030,13 @@ impl SshManager {
     fn exec_command_inner(&self, session_id: &str, command: &str) -> Result<String, String> {
         let exec_session = {
             let sessions = self.sessions.read();
-            sessions
+            let s = sessions
                 .get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
+                .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+            match &s.exec_session {
+                Some(es) => es.clone(),
+                None => return Err("exec not supported on this server (minimal SSH mode)".into()),
+            }
         };
 
         let sess = exec_session.lock();
@@ -1032,13 +1061,17 @@ impl SshManager {
     }
 
     /// Get the exec session Arc (with auto-reconnect on failure).
+    /// Returns Err for minimal-mode sessions that have no exec_session.
     fn get_exec_session(&self, session_id: &str) -> Result<Arc<Mutex<Session>>, String> {
         let exec_session = {
             let sessions = self.sessions.read();
-            sessions
+            let s = sessions
                 .get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .exec_session.clone()
+                .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+            match &s.exec_session {
+                Some(es) => es.clone(),
+                None => return Err("exec not supported on this server (minimal SSH mode)".into()),
+            }
         };
 
         // Quick health check: try to set blocking (fails if TCP is dead)
@@ -1050,10 +1083,11 @@ impl SshManager {
                 // Rebuild and return fresh session
                 self.rebuild_exec_session(session_id)?;
                 let sessions = self.sessions.read();
-                return Ok(sessions
-                    .get(session_id)
-                    .ok_or("Session not found")?
-                    .exec_session.clone());
+                let s = sessions.get(session_id).ok_or("Session not found")?;
+                return match &s.exec_session {
+                    Some(es) => Ok(es.clone()),
+                    None => Err("exec not supported".into()),
+                };
             }
         }
 
@@ -1061,22 +1095,29 @@ impl SshManager {
     }
 
     /// Rebuild the exec session by creating a fresh SSH connection.
+    /// No-op for minimal-mode sessions.
     fn rebuild_exec_session(&self, session_id: &str) -> Result<(), String> {
-        let params = {
+        let (params, has_slot) = {
             let sessions = self.sessions.read();
-            sessions
+            let s = sessions
                 .get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .params.clone()
+                .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+            (s.params.clone(), s.exec_session.is_some())
         };
+
+        if !has_slot {
+            return Err("minimal SSH mode: no exec_session to rebuild".into());
+        }
 
         let new_exec = create_exec_connection(&params)?;
 
         // Replace the exec session in-place
         let sessions = self.sessions.read();
         if let Some(ssh_session) = sessions.get(session_id) {
-            let mut old = ssh_session.exec_session.lock();
-            *old = new_exec;
+            if let Some(slot) = &ssh_session.exec_session {
+                let mut old = slot.lock();
+                *old = new_exec;
+            }
         }
         Ok(())
     }
@@ -1601,7 +1642,8 @@ fn detect_and_setup_session(session: &Session, name: &str) -> SessionMode {
 fn reconnect_ssh(
     params: &ConnectParams,
     mode: &SessionMode,
-) -> Result<(Session, ssh2::Channel, Session), String> {
+    minimal_mode: bool,
+) -> Result<(Session, ssh2::Channel, Option<Session>), String> {
     let tcp = establish_tcp(params)?;
 
     tcp.set_nonblocking(false).ok();
@@ -1613,7 +1655,9 @@ fn reconnect_ssh(
     session
         .handshake()
         .map_err(|e| format!("Handshake failed: {}", e))?;
-    session.set_keepalive(true, 15);
+    if !minimal_mode {
+        session.set_keepalive(true, 15);
+    }
 
     // Authenticate
     match params.auth_type.as_str() {
@@ -1651,8 +1695,10 @@ fn reconnect_ssh(
         .request_pty("xterm-256color", None, Some((120, 40, 0, 0)))
         .map_err(|e| format!("PTY failed: {}", e))?;
 
-    let _ = channel.setenv("LANG", "en_US.UTF-8");
-    let _ = channel.setenv("LC_ALL", "en_US.UTF-8");
+    if !minimal_mode {
+        let _ = channel.setenv("LANG", "en_US.UTF-8");
+        let _ = channel.setenv("LC_ALL", "en_US.UTF-8");
+    }
 
     match mode {
         SessionMode::Persistent(name) => {
@@ -1667,17 +1713,25 @@ fn reconnect_ssh(
                 .map_err(|e| format!("Reattach failed: {}", e))?;
         }
         SessionMode::RawShell => {
-            channel
-                .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
-                .unwrap_or_else(|_| { let _ = channel.shell(); });
+            if minimal_mode {
+                channel.shell().map_err(|e| format!("Shell failed: {}", e))?;
+            } else {
+                channel
+                    .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
+                    .unwrap_or_else(|_| { let _ = channel.shell(); });
+            }
         }
     }
 
     // Set non-blocking for the reader thread
     session.set_blocking(false);
 
-    // Create a fresh exec session using the shared helper
-    let exec_sess = create_exec_connection(params)?;
+    // Create a fresh exec session (only for non-minimal servers).
+    let exec_sess = if minimal_mode {
+        None
+    } else {
+        Some(create_exec_connection(params)?)
+    };
 
     Ok((session, channel, exec_sess))
 }

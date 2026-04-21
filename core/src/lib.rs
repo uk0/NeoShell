@@ -35,7 +35,9 @@ pub(crate) fn log_file_path() -> std::path::PathBuf {
 
 /// Install a logger that writes to BOTH stderr (for terminal-launched use)
 /// and a rotating-ish log file so GUI users can inspect connection failures
-/// after the fact. Falls back to stderr-only if the file can't be opened.
+/// after the fact. Also redirects raw stderr into the log file so libssh2
+/// trace output (which writes to fprintf(stderr, ...) bypassing the log crate)
+/// is captured alongside structured logs.
 fn init_logger() {
     use std::io::Write;
 

@@ -154,6 +154,33 @@ pub struct ConnectParams {
     pub proxy_id: Option<String>,
 }
 
+/// Attempt an SSH handshake. When `configure_algos` is true, applies our
+/// filtered algorithm list via method_pref; when false, uses libssh2 defaults
+/// (which includes kex-strict and ext-info markers that some modern OpenSSH
+/// servers require). The fallback covers edge cases where method_pref would
+/// otherwise break kex-strict negotiation.
+fn try_handshake(
+    params: &ConnectParams,
+    timeout_ms: u32,
+    configure_algos: bool,
+) -> Result<Session, String> {
+    let tcp = establish_tcp(params)?;
+    tcp.set_nonblocking(false)
+        .map_err(|e| format!("Failed to set blocking mode: {}", e))?;
+
+    let mut session = Session::new()
+        .map_err(|e| format!("Failed to create SSH session: {}", e))?;
+    session.set_tcp_stream(tcp);
+    session.set_timeout(timeout_ms);
+    if configure_algos {
+        configure_session_algorithms(&session);
+    }
+    session
+        .handshake()
+        .map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
 /// Establish TCP connection, optionally through a proxy.
 fn establish_tcp(params: &ConnectParams) -> Result<TcpStream, String> {
     use crate::proxy::{self, ProxyStore};
@@ -507,34 +534,54 @@ impl SshManager {
             proxy_id: proxy_id.map(|s| s.to_string()),
         };
 
-        // --- Establish TCP + SSH handshake (blocking) ----------------------
-        let tcp = establish_tcp(&tmp_params)?;
-
-        tcp.set_nonblocking(false)
-            .map_err(|e| format!("Failed to set blocking mode: {}", e))?;
-
-        let mut session =
-            Session::new().map_err(|e| format!("Failed to create SSH session: {}", e))?;
-        session.set_tcp_stream(tcp);
-        session.set_timeout(15000);
-        configure_session_algorithms(&session);
-        match session.handshake() {
-            Ok(()) => {}
-            Err(e) => {
-                // Log full algorithm diagnostics to help debug negotiation failures
-                let kex = session.supported_algs(MethodType::Kex).unwrap_or_default();
-                let hk = session.supported_algs(MethodType::HostKey).unwrap_or_default();
-                let cipher = session.supported_algs(MethodType::CryptCs).unwrap_or_default();
-                let mac = session.supported_algs(MethodType::MacCs).unwrap_or_default();
-                log::error!(
-                    "Handshake failed: {}\n  Offered KEX: {}\n  Offered HostKey: {}\n  Offered Cipher: {}\n  Offered MAC: {}",
-                    e, kex.join(","), hk.join(","), cipher.join(","), mac.join(",")
-                );
-                return Err(translate_ssh_error(&format!("SSH handshake failed: {}", e)));
+        // --- Establish SSH handshake ---------------------------------------
+        // --- Pre-handshake banner peek — read up to 128 bytes from a disposable TCP
+        // connection so we know what SSH implementation is on the other end, even
+        // if KEX fails later. Does not interfere with the real handshake socket.
+        if let Ok(mut peek_tcp) = establish_tcp(&tmp_params) {
+            peek_tcp.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut buf = [0u8; 128];
+            if let Ok(n) = std::io::Read::read(&mut peek_tcp, &mut buf) {
+                let line = String::from_utf8_lossy(&buf[..n]);
+                let banner_line = line.lines().next().unwrap_or("").trim();
+                log::info!("SSH peek {}:{} — server announces: {}", host, port, banner_line);
             }
+            drop(peek_tcp);
         }
 
-        log::info!("SSH handshake OK to {}:{}, authenticating as {} ({})", host, port, username, auth_type);
+        // Attempt handshake — two-phase retry to handle both old and modern servers.
+        // Phase 1: filtered algorithm list (our preferred path)
+        // Phase 2: fall back to libssh2 defaults (uncustomized) to handle kex-strict servers
+        let session = match try_handshake(&tmp_params, 15000, true) {
+            Ok(s) => s,
+            Err(e1) => {
+                log::warn!("First handshake attempt failed ({}), retrying with libssh2 defaults", e1);
+                match try_handshake(&tmp_params, 15000, false) {
+                    Ok(s) => {
+                        log::info!("Fallback handshake (default algorithms) succeeded");
+                        s
+                    }
+                    Err(e2) => {
+                        // Both attempts failed — log full client-side diagnostics
+                        if let Ok(sess) = Session::new() {
+                            let kex = sess.supported_algs(MethodType::Kex).unwrap_or_default();
+                            let hk = sess.supported_algs(MethodType::HostKey).unwrap_or_default();
+                            let cipher = sess.supported_algs(MethodType::CryptCs).unwrap_or_default();
+                            let mac = sess.supported_algs(MethodType::MacCs).unwrap_or_default();
+                            log::error!(
+                                "Both SSH handshake attempts failed.\n  Primary: {}\n  Fallback: {}\n  Client KEX: {}\n  Client HostKey: {}\n  Client Cipher: {}\n  Client MAC: {}",
+                                e1, e2, kex.join(","), hk.join(","), cipher.join(","), mac.join(",")
+                            );
+                        }
+                        return Err(translate_ssh_error(&format!("SSH handshake failed: {}", e2)));
+                    }
+                }
+            }
+        };
+
+        let server_banner = session.banner().unwrap_or("<unknown>").to_string();
+        log::info!("SSH handshake OK to {}:{} (banner: {}), authenticating as {} ({})",
+            host, port, server_banner, username, auth_type);
 
         // --- Authenticate --------------------------------------------------
         match auth_type {

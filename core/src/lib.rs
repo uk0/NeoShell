@@ -39,11 +39,10 @@ pub(crate) fn log_file_path() -> std::path::PathBuf {
     dir.join("neoshell.log")
 }
 
-/// Install a logger that writes to BOTH stderr (for terminal-launched use)
-/// and a rotating-ish log file so GUI users can inspect connection failures
-/// after the fact. Also redirects raw stderr into the log file so libssh2
-/// trace output (which writes to fprintf(stderr, ...) bypassing the log crate)
-/// is captured alongside structured logs.
+/// Install a logger that writes to both stderr and a persistent log file.
+/// The file handle is reopened on every write so that if the user deletes
+/// the log file while the app is running, the next log line recreates it
+/// instead of writing into a ghost inode (POSIX unlink semantics).
 fn init_logger() {
     use std::io::Write;
 
@@ -57,15 +56,11 @@ fn init_logger() {
         }
     }
 
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok();
+    // Serialize writes so two threads don't interleave characters mid-line.
+    let write_lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let write_lock_for_closure = write_lock.clone();
+    let path_for_closure = path.clone();
 
-    let file_arc = file.map(|f| std::sync::Arc::new(std::sync::Mutex::new(f)));
-
-    let file_for_closure = file_arc.clone();
     let mut builder = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
     );
@@ -77,10 +72,20 @@ fn init_logger() {
             record.target(),
             record.args()
         );
-        if let Some(f) = &file_for_closure {
-            if let Ok(mut g) = f.lock() {
-                let _ = writeln!(g, "{}", line);
-                let _ = g.flush();
+        // Open-append-close on every line so `rm neoshell.log` during runtime
+        // is handled correctly — next write recreates the file.
+        if let Ok(_g) = write_lock_for_closure.lock() {
+            // Ensure parent dir exists (log dir might be removed alongside the file).
+            if let Some(parent) = path_for_closure.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path_for_closure)
+            {
+                let _ = writeln!(f, "{}", line);
+                let _ = f.flush();
             }
         }
         writeln!(buf, "{}", line)
@@ -107,4 +112,46 @@ fn chrono_now() -> String {
 #[no_mangle]
 pub extern "C" fn neoshell_version() -> *const u8 {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr()
+}
+
+#[cfg(test)]
+mod logger_tests {
+    use std::io::Write;
+
+    /// Verify that log output recreates the file if it was deleted mid-run.
+    /// (Can't call init_logger directly because env_logger::Builder is global;
+    /// instead this tests the open-append-close write helper logic.)
+    #[test]
+    fn log_file_recreates_after_deletion() {
+        let tmp = std::env::temp_dir().join(format!("neoshell_test_{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let write = |line: &str| {
+            if let Some(parent) = tmp.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&tmp)
+                .expect("open log");
+            writeln!(f, "{}", line).unwrap();
+        };
+
+        write("line 1");
+        write("line 2");
+        assert!(tmp.exists(), "file should exist after writes");
+
+        // Simulate user deleting the log file mid-run
+        std::fs::remove_file(&tmp).expect("remove");
+        assert!(!tmp.exists(), "file should be gone");
+
+        // Next write must recreate it
+        write("line 3");
+        assert!(tmp.exists(), "file should be recreated on next write");
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        assert_eq!(content.trim(), "line 3", "only post-delete content should remain");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
 }

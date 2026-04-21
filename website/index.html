@@ -169,7 +169,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.7</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.9</a>
     <a href="#features" class="btn-hero btn-ghost" data-i18n="hero.btn.explore">Explore features</a>
   </div>
   <div class="hero-metric">
@@ -248,32 +248,32 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label" data-i18n="dl.label">Get started</div>
     <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
-    <p class="section-desc" data-i18n="dl.desc">v0.6.7 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc" data-i18n="dl.desc">v0.6.9 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.6.7-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.6.7-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.6.9-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.6.9-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64 (Win10+)</div>
-        <a href="downloads/NeoShell-0.6.7-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.9-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.win7">Windows 7</div>
         <div class="dl-arch">x86_64 (OpenGL)</div>
-        <a href="downloads/NeoShell-0.6.7-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.9-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.6.7-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.6.9-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n="dl.note">Proprietary software. Contact us for enterprise licensing.</p>
@@ -289,9 +289,23 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
-        <span class="cl-ver">0.6.7</span>
+        <span class="cl-ver">0.6.9</span>
         <span class="cl-date">2026-04-21</span>
         <span class="cl-badge" data-i18n="cl.latest">Latest</span>
+      </div>
+      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
+      <ul class="cl-list" data-i18n-html="cl.069.fixed">
+        <li>Bastion / embedded-SSH <code>Failed to open channel: Session(-13)</code> &mdash; tmux probing was running on the main session; on non-mainstream SSH servers (SSHD_0.9.5 firmware, Cisco, F5, embedded gateways) the probe closed the whole session, breaking the real shell channel</li>
+        <li>Probe now skipped entirely when banner is not OpenSSH &mdash; embedded devices go straight to RawShell</li>
+        <li>Even for OpenSSH, probe runs on the exec_session (second SSH connection) so the main session stays pristine</li>
+        <li>Log file auto-recreates if deleted mid-run (previously stuck on a ghost inode after POSIX unlink)</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.7</span>
+        <span class="cl-date">2026-04-21</span>
       </div>
       <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
       <ul class="cl-list" data-i18n-html="cl.067.fixed">
@@ -302,7 +316,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
       <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
       <ul class="cl-list" data-i18n-html="cl.067.added">
         <li>CI algorithm-support verification &mdash; every platform build runs <code>cargo test algorithm_tests</code>; missing curve25519 / ecdh / ed25519 fails the build before shipping</li>
-        <li>Startup self-check logs <code>libssh2 algorithm self-check: OK</code> (or the exact missing algorithms)</li>
+        <li>Startup self-check logs <code>libssh2 algorithm self-check: OK</code></li>
       </ul>
     </div>
 
@@ -477,7 +491,7 @@ const TRANSLATIONS = {
     'hero.tag':          'Pure Rust &bull; Native GPU &bull; Zero Dependencies',
     'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
     'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
-    'hero.btn.download': 'Download v0.6.7',
+    'hero.btn.download': 'Download v0.6.9',
     'hero.btn.explore':  'Explore features',
     'hero.metric.binary':    'Binary size',
     'hero.metric.start':     'Cold start',
@@ -516,7 +530,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       'Get started',
     'dl.title':       'Download NeoShell',
-    'dl.desc':        'v0.6.7 &mdash; Single binary. No installer dependencies.',
+    'dl.desc':        'v0.6.9 &mdash; Single binary. No installer dependencies.',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -555,7 +569,7 @@ const TRANSLATIONS = {
     'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 零外部依赖',
     'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
     'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
-    'hero.btn.download': '下载 v0.6.7',
+    'hero.btn.download': '下载 v0.6.9',
     'hero.btn.explore':  '探索功能',
     'hero.metric.binary':    '程序体积',
     'hero.metric.start':     '冷启动时间',
@@ -594,7 +608,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       '立即开始',
     'dl.title':       '下载 NeoShell',
-    'dl.desc':        'v0.6.7 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.desc':        'v0.6.9 &mdash; 单文件可执行，无需安装依赖。',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -614,6 +628,7 @@ const TRANSLATIONS = {
     'cl.cat.arch':  '架构调整',
     'cl.cat.perf':  '性能优化',
     'cl.cat.fixed': '问题修复',
+    'cl.069.fixed': '<li>堡垒机 / 嵌入式 SSH <code>Failed to open channel: Session(-13)</code> — tmux 探测跑在主 session 上，SSHD_0.9.5 这类非标准 SSH 实现 wait_close 后整个 session 被断开</li><li>banner 非 OpenSSH 直接跳过探测走 RawShell（Cisco/F5/嵌入式/堡垒机按这条）</li><li>即便是 OpenSSH，探测改用 exec_session 第二条独立连接，主 session 保持干净</li><li>日志文件运行中被删自动重建（之前 POSIX unlink 后写进幽灵 inode）</li>',
     'cl.067.fixed': '<li>Windows SSH 连接现代 OpenSSH 服务器 KEX 失败 — libssh2 改用 OpenSSL 后端（原 WinCNG 缺 curve25519/ecdh/ed25519），全平台算法一致</li><li>两阶段握手重试（过滤算法列表 → libssh2 默认配置）覆盖 kex-strict 边缘情况</li><li>握手前 banner 预读 — 即便失败也能在日志里看到服务器的 SSH 版本号</li>',
     'cl.067.added': '<li>CI 构建期算法验证 — 每个平台 build 后跑 <code>cargo test algorithm_tests</code>，缺 curve25519/ecdh/ed25519 直接阻塞发布</li><li>启动自检输出 <code>libssh2 algorithm self-check: OK</code>（或明确列出缺失算法）</li>',
     'cl.065.added': '<li>日志持久化 — 自动写入应用数据目录，2MB 滚动保留</li><li>连接错误弹窗 — 显示完整翻译后的错误信息，附「查看日志」快捷入口</li><li>应用内日志查看器 — 状态栏 <code>日志</code> 按钮展示最近 200KB 日志；支持刷新与打开目录</li>',

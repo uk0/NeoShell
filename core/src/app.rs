@@ -794,6 +794,17 @@ pub fn run() -> iced::Result {
         ..Default::default()
     };
 
+    // Embedded glyph-fallback fonts — cosmic-text uses them per-codepoint when
+    // the primary/monospace font doesn't cover a glyph. Bundling guarantees
+    // oh-my-zsh / powerlevel10k / starship prompts render correctly even on
+    // Windows 11 boxes without Nerd Font or Color Emoji installed.
+    const NERD_FONT: &[u8] = include_bytes!(
+        "../../assets/fonts/SymbolsNerdFontMono-Regular.ttf"
+    );
+    const EMOJI_FONT: &[u8] = include_bytes!(
+        "../../assets/fonts/NotoEmoji-Regular.ttf"
+    );
+
     iced::application("NeoShell", update, view)
         .subscription(subscription)
         .theme(|_state| Theme::Dark)
@@ -801,6 +812,8 @@ pub fn run() -> iced::Result {
         .scale_factor(move |_state| initial_scale)
         .antialiasing(true)
         .decorations(true)
+        .font(NERD_FONT)
+        .font(EMOJI_FONT)
         .default_font(CJK_FONT)
         .run()
 }

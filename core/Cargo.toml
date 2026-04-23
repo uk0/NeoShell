@@ -1,6 +1,6 @@
 [package]
 name = "neoshell-core"
-version = "0.6.12"
+version = "0.6.13"
 edition = "2021"
 description = "NeoShell core library — all application logic"
 

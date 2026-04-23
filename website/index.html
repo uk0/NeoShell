@@ -169,7 +169,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.11</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.12</a>
     <a href="#features" class="btn-hero btn-ghost" data-i18n="hero.btn.explore">Explore features</a>
   </div>
   <div class="hero-metric">
@@ -248,32 +248,32 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label" data-i18n="dl.label">Get started</div>
     <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
-    <p class="section-desc" data-i18n="dl.desc">v0.6.11 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc" data-i18n="dl.desc">v0.6.12 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.6.11-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.6.11-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.6.12-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.6.12-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64 (Win10+)</div>
-        <a href="downloads/NeoShell-0.6.11-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.12-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.win7">Windows 7</div>
         <div class="dl-arch">x86_64 (OpenGL)</div>
-        <a href="downloads/NeoShell-0.6.11-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.12-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.6.11-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.6.12-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n="dl.note">Proprietary software. Contact us for enterprise licensing.</p>
@@ -289,14 +289,27 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
+        <span class="cl-ver">0.6.12</span>
+        <span class="cl-date">2026-04-23</span>
+        <span class="cl-badge" data-i18n="cl.latest">Latest</span>
+      </div>
+      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
+      <ul class="cl-list" data-i18n-html="cl.0612.fixed">
+        <li>Win11 font rendering &mdash; primary UI font switched from <code>Microsoft YaHei</code> (inconsistent family names and malformed mstmc.ttf on some Win11 installs) to <code>Segoe UI</code>; CJK falls back automatically via cosmic-text glyph-level fallback</li>
+        <li>top/htop/nmon column drift &mdash; zero-width chars (combining marks, ZWJ, variation selectors, bidi, BOM) no longer advance cursor; they accumulated 1-cell drift per row</li>
+        <li>CJK glyphs rendered at 1.1x monospace size (was 1.3x) so wide chars stay within 2-cell slot and don't squeeze neighbors</li>
+        <li>is_wide_char coverage extended: Hangul Jamo, CJK Compat Forms, main Emoji ranges</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
         <span class="cl-ver">0.6.11</span>
         <span class="cl-date">2026-04-21</span>
-        <span class="cl-badge" data-i18n="cl.latest">Latest</span>
       </div>
       <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
       <ul class="cl-list" data-i18n-html="cl.0611.added">
-        <li>Monitoring, SFTP, and file browsing now work on minimal-mode SSH (MINA SSHD, embedded gateways, bastion-behind-jumphost) &mdash; exec requests share the main session with mutex serialization, no second SSH connection needed</li>
-        <li>Monitoring polls briefly pause the shell (&lt;500ms) then release &mdash; shell stays fully responsive when idle</li>
+        <li>Monitoring, SFTP, and file browsing now work on minimal-mode SSH (MINA SSHD, embedded gateways, bastion-behind-jumphost) &mdash; exec requests share the main session with mutex serialization</li>
       </ul>
     </div>
 
@@ -513,7 +526,7 @@ const TRANSLATIONS = {
     'hero.tag':          'Pure Rust &bull; Native GPU &bull; Zero Dependencies',
     'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
     'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
-    'hero.btn.download': 'Download v0.6.11',
+    'hero.btn.download': 'Download v0.6.12',
     'hero.btn.explore':  'Explore features',
     'hero.metric.binary':    'Binary size',
     'hero.metric.start':     'Cold start',
@@ -552,7 +565,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       'Get started',
     'dl.title':       'Download NeoShell',
-    'dl.desc':        'v0.6.11 &mdash; Single binary. No installer dependencies.',
+    'dl.desc':        'v0.6.12 &mdash; Single binary. No installer dependencies.',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -591,7 +604,7 @@ const TRANSLATIONS = {
     'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 零外部依赖',
     'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
     'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
-    'hero.btn.download': '下载 v0.6.11',
+    'hero.btn.download': '下载 v0.6.12',
     'hero.btn.explore':  '探索功能',
     'hero.metric.binary':    '程序体积',
     'hero.metric.start':     '冷启动时间',
@@ -630,7 +643,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       '立即开始',
     'dl.title':       '下载 NeoShell',
-    'dl.desc':        'v0.6.11 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.desc':        'v0.6.12 &mdash; 单文件可执行，无需安装依赖。',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -650,7 +663,8 @@ const TRANSLATIONS = {
     'cl.cat.arch':  '架构调整',
     'cl.cat.perf':  '性能优化',
     'cl.cat.fixed': '问题修复',
-    'cl.0611.added': '<li>监控 / SFTP / 文件浏览现在在 minimal-mode 下也能工作（MINA SSHD / 嵌入式设备 / 堡垒机跳板）— exec 通过共享主 session + 互斥串行化实现，不再需要第二条 SSH 连接</li><li>监控轮询期间 shell 会短暂停顿（&lt;500ms），空闲时完全不受影响</li>',
+    'cl.0612.fixed': '<li>Win11 字体渲染 — 主 UI 字体从 <code>Microsoft YaHei</code>（部分 Win11 安装下 fontdb 无法解析）改成 <code>Segoe UI</code>，CJK 字符通过 cosmic-text 自动 glyph-level fallback</li><li>top/htop/nmon 列偏移 — 零宽字符（combining marks / ZWJ / variation selectors / 双向标记 / BOM）之前每个让光标前进 1 格，TUI 行累积偏移；现在零宽字符不推进光标</li><li>CJK 字形尺寸从 1.3x 改为 1.1x，宽字符不再溢出 2-cell 槽挤压相邻列</li><li>扩展 is_wide_char 覆盖：Hangul Jamo / CJK Compat Forms / 主要 Emoji 范围</li>',
+    'cl.0611.added': '<li>监控 / SFTP / 文件浏览现在在 minimal-mode 下也能工作（MINA SSHD / 嵌入式设备 / 堡垒机跳板）— exec 通过共享主 session + 互斥串行化实现</li>',
     'cl.0610.fixed': '<li>Apache MINA SSHD / 嵌入式 / 专有 SSH 实现 minimal-mode — 跳过 setenv/keepalive/exec 启动 shell，改用标准 <code>shell</code> 请求</li><li>不再 <code>Read error: transport read</code> 无限循环</li><li>日志文件运行中被删自动重建</li>',
     'cl.069.fixed': '<li>堡垒机 / 嵌入式 SSH <code>Failed to open channel: Session(-13)</code> — tmux 探测从主 session 移走，非 OpenSSH banner 直接走 RawShell</li>',
     'cl.067.fixed': '<li>Windows SSH 连接现代 OpenSSH 服务器 KEX 失败 — libssh2 改用 OpenSSL 后端（原 WinCNG 缺 curve25519/ecdh/ed25519），全平台算法一致</li><li>两阶段握手重试（过滤算法列表 → libssh2 默认配置）覆盖 kex-strict 边缘情况</li><li>握手前 banner 预读 — 即便失败也能在日志里看到服务器的 SSH 版本号</li>',

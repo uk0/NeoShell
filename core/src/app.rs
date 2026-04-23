@@ -20,8 +20,15 @@ use crate::i18n;
 use crate::ui::theme;
 use crate::updater::Updater;
 
-/// System CJK font for rendering Chinese/Japanese/Korean characters.
-/// iced canvas doesn't do font fallback, so we must specify explicitly.
+/// Primary UI font. cosmic-text (under iced) does glyph-level fallback to
+/// system fonts when the primary doesn't cover a codepoint, so CJK characters
+/// render via the system CJK font even though we specify a Latin-first family.
+///
+/// Windows 11 detail: "Microsoft YaHei" is usually installed but the family
+/// name registered with fontdb varies between Win10/11 and some installs have
+/// a malformed mstmc.ttf that breaks font enumeration mid-way. "Segoe UI" is
+/// the Win10/11 default UI font and is guaranteed to load; CJK codepoints
+/// fall back to YaHei/SimSun/etc. automatically.
 #[cfg(target_os = "macos")]
 const CJK_FONT: Font = Font {
     family: iced::font::Family::Name("PingFang SC"),
@@ -32,7 +39,7 @@ const CJK_FONT: Font = Font {
 
 #[cfg(target_os = "windows")]
 const CJK_FONT: Font = Font {
-    family: iced::font::Family::Name("Microsoft YaHei"),
+    family: iced::font::Family::Name("Segoe UI"),
     weight: iced::font::Weight::Normal,
     stretch: iced::font::Stretch::Normal,
     style: iced::font::Style::Normal,
@@ -6499,14 +6506,18 @@ impl<Message> canvas::Program<Message> for TerminalView {
                             // draw individually with the CJK font.
                             flush_run(frame, &mut run_buf, run_start_x, run_y, run_fg, cell_w, cell_h, font_size);
 
+                            // Render at 1.1x monospace size — keeps CJK legible
+                            // without overflowing the 2-cell slot. (Previously
+                            // 1.3x caused rows with wide chars to drift visually,
+                            // especially in TUI programs like top/htop/nmon.)
                             frame.fill_text(canvas::Text {
                                 content: cell.c.to_string(),
                                 position: Point::new(
-                                    x as f32 * cell_w + cell_w * 0.1,
+                                    x as f32 * cell_w,
                                     y as f32 * cell_h,
                                 ),
                                 color: fg,
-                                size: Pixels(font_size * 1.3),
+                                size: Pixels(font_size * 1.1),
                                 font: CJK_FONT,
                                 ..canvas::Text::default()
                             });

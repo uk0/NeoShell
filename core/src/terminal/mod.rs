@@ -163,7 +163,8 @@ fn is_wide_char(c: char) -> bool {
     || (0x20000..=0x2FA1F).contains(&cp)
     // CJK Compatibility Ideographs
     || (0xF900..=0xFAFF).contains(&cp)
-    // Hangul Syllables
+    // Hangul Jamo + Syllables
+    || (0x1100..=0x115F).contains(&cp)
     || (0xAC00..=0xD7AF).contains(&cp)
     // Fullwidth Forms
     || (0xFF01..=0xFF60).contains(&cp)
@@ -175,11 +176,43 @@ fn is_wide_char(c: char) -> bool {
     || (0x31F0..=0x31FF).contains(&cp)
     // Bopomofo
     || (0x3100..=0x312F).contains(&cp)
-    // Enclosed CJK
+    // Enclosed CJK + CJK Compatibility Forms
     || (0x3200..=0x33FF).contains(&cp)
-    // CJK Radicals
+    || (0xFE30..=0xFE4F).contains(&cp)
+    // CJK Radicals / Kangxi
     || (0x2E80..=0x2EFF).contains(&cp)
     || (0x2F00..=0x2FDF).contains(&cp)
+    // Emoji & pictographs — most are wide-cell
+    || (0x1F300..=0x1F64F).contains(&cp)
+    || (0x1F680..=0x1F6FF).contains(&cp)
+    || (0x1F900..=0x1F9FF).contains(&cp)
+    || (0x1FA00..=0x1FAFF).contains(&cp)
+}
+
+/// Check if a character takes zero cells (combining marks, ZWJ, variation
+/// selectors). TUI programs like `top`/`nmon`/`htop` emit these; without this
+/// check each one would advance the cursor by 1 and shift the entire row.
+fn is_zero_width_char(c: char) -> bool {
+    let cp = c as u32;
+    // Combining diacritical marks + extensions
+    (0x0300..=0x036F).contains(&cp)
+    || (0x1AB0..=0x1AFF).contains(&cp)
+    || (0x1DC0..=0x1DFF).contains(&cp)
+    || (0x20D0..=0x20FF).contains(&cp)
+    || (0xFE20..=0xFE2F).contains(&cp)
+    // Zero-width joiner / non-joiner / space
+    || cp == 0x200B || cp == 0x200C || cp == 0x200D
+    // Variation selectors (VS1-16, VS17-256)
+    || (0xFE00..=0xFE0F).contains(&cp)
+    || (0xE0100..=0xE01EF).contains(&cp)
+    // Mongolian free variation selectors
+    || (0x180B..=0x180D).contains(&cp)
+    // Bidi / directional marks
+    || cp == 0x200E || cp == 0x200F
+    || (0x202A..=0x202E).contains(&cp)
+    || (0x2066..=0x2069).contains(&cp)
+    // BOM
+    || cp == 0xFEFF
 }
 
 /// Convert a 256-color index to an RGB Color.
@@ -437,6 +470,13 @@ impl TerminalGrid {
 
 impl Perform for TerminalGrid {
     fn print(&mut self, c: char) {
+        // Zero-width characters (combining marks, ZWJ, variation selectors):
+        // do not advance the cursor, do not overwrite the current cell.
+        // Without this, TUI programs (top/htop/nmon) drift 1 cell per mark.
+        if is_zero_width_char(c) {
+            return;
+        }
+
         let wide = is_wide_char(c);
         let char_width = if wide { 2 } else { 1 };
 
@@ -844,6 +884,28 @@ mod tests {
         assert_eq!(term.grid.cells[0][4].c, 'o');
         assert_eq!(term.grid.cursor_x, 5);
         assert_eq!(term.grid.cursor_y, 0);
+    }
+
+    #[test]
+    fn test_zero_width_char_no_cursor_advance() {
+        // Combining acute (U+0301) must not push the cursor —
+        // otherwise TUI output with diacritics drifts 1 cell per mark.
+        let mut term = Terminal::new(80, 24);
+        let bytes = "a\u{0301}b".as_bytes();
+        term.feed(bytes);
+        assert_eq!(term.grid.cells[0][0].c, 'a');
+        assert_eq!(term.grid.cells[0][1].c, 'b'); // 'b' at col 1, not col 2
+        assert_eq!(term.grid.cursor_x, 2);
+    }
+
+    #[test]
+    fn test_variation_selector_no_advance() {
+        // VS16 (U+FE0F) after an emoji base shouldn't add a cell.
+        let mut term = Terminal::new(80, 24);
+        term.feed("A\u{FE0F}Z".as_bytes());
+        assert_eq!(term.grid.cells[0][0].c, 'A');
+        assert_eq!(term.grid.cells[0][1].c, 'Z');
+        assert_eq!(term.grid.cursor_x, 2);
     }
 
     #[test]

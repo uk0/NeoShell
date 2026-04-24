@@ -283,6 +283,10 @@ pub struct NeoShell {
     show_tunnel_form: bool,
     tunnel_form: TunnelFormData,
     tunnel_edit_id: Option<String>,
+    // Theme customization — load from theme.json on startup
+    theme_cfg: crate::ui::theme_config::ThemeConfig,
+    /// Zone currently expanded for RGB editing in Settings → Appearance.
+    theme_editing_zone: Option<crate::ui::theme_config::ThemeZone>,
 }
 
 #[derive(Default, Clone)]
@@ -465,6 +469,16 @@ pub enum Message {
     StartTunnel(String),
     StopTunnel(String),
     TunnelStateTick,
+    // Theme editor
+    ThemeSelectZone(crate::ui::theme_config::ThemeZone),
+    ThemeCloseZone,
+    ThemeRChanged(u8),
+    ThemeGChanged(u8),
+    ThemeBChanged(u8),
+    ThemeHexChanged(String),
+    ThemeTerminalFontSize(f32),
+    ThemeUiFontSize(f32),
+    ThemeReset,
 
     // Terminal
     SshConnected(String, String, String, String),  // tab_id, session_id, title, connection_id
@@ -826,6 +840,8 @@ impl Default for NeoShell {
             show_tunnel_form: false,
             tunnel_form: TunnelFormData::default(),
             tunnel_edit_id: None,
+            theme_cfg: crate::ui::theme_config::ThemeConfig::load(),
+            theme_editing_zone: None,
         }
     }
 }
@@ -2883,6 +2899,78 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
         Message::TunnelStateTick => Task::none(),
 
+        // ---- theme editor ---------------------------------------------------
+        Message::ThemeSelectZone(z) => {
+            state.theme_editing_zone = Some(z);
+            Task::none()
+        }
+        Message::ThemeCloseZone => {
+            state.theme_editing_zone = None;
+            Task::none()
+        }
+        Message::ThemeRChanged(r) => {
+            if let Some(z) = state.theme_editing_zone {
+                let mut v = z.get(&state.theme_cfg);
+                v.r = r;
+                z.set(&mut state.theme_cfg, v);
+                state.theme_cfg.save();
+            }
+            Task::none()
+        }
+        Message::ThemeGChanged(g) => {
+            if let Some(z) = state.theme_editing_zone {
+                let mut v = z.get(&state.theme_cfg);
+                v.g = g;
+                z.set(&mut state.theme_cfg, v);
+                state.theme_cfg.save();
+            }
+            Task::none()
+        }
+        Message::ThemeBChanged(b) => {
+            if let Some(z) = state.theme_editing_zone {
+                let mut v = z.get(&state.theme_cfg);
+                v.b = b;
+                z.set(&mut state.theme_cfg, v);
+                state.theme_cfg.save();
+            }
+            Task::none()
+        }
+        Message::ThemeHexChanged(hex) => {
+            if let Some(z) = state.theme_editing_zone {
+                let s = hex.trim().trim_start_matches('#');
+                if s.len() == 6 {
+                    if let Ok(n) = u32::from_str_radix(s, 16) {
+                        let rgb = crate::ui::theme_config::Rgb::new(
+                            ((n >> 16) & 0xFF) as u8,
+                            ((n >> 8) & 0xFF) as u8,
+                            (n & 0xFF) as u8,
+                        );
+                        z.set(&mut state.theme_cfg, rgb);
+                        state.theme_cfg.save();
+                    }
+                }
+            }
+            Task::none()
+        }
+        Message::ThemeTerminalFontSize(s) => {
+            state.theme_cfg.terminal_font_size = s.clamp(8.0, 28.0);
+            state.font_size = state.theme_cfg.terminal_font_size;
+            state.theme_cfg.save();
+            Task::none()
+        }
+        Message::ThemeUiFontSize(s) => {
+            state.theme_cfg.ui_font_size = s.clamp(10.0, 18.0);
+            state.theme_cfg.save();
+            Task::none()
+        }
+        Message::ThemeReset => {
+            state.theme_cfg = crate::ui::theme_config::ThemeConfig::default();
+            state.font_size = state.theme_cfg.terminal_font_size;
+            state.theme_editing_zone = None;
+            state.theme_cfg.save();
+            Task::none()
+        }
+
         // ---- language --------------------------------------------------------
         Message::ToggleLanguage => {
             state.locale = if state.locale == "zh-CN" {
@@ -3887,9 +3975,18 @@ fn view_monitor_panel(state: &NeoShell) -> Element<'_, Message> {
     let active_session = state.active_tab
         .and_then(|idx| state.tabs.get(idx))
         .map(|t| t.session_id.as_str());
+    // Every font size in this panel is scaled by (ui_font_size / 12) so the
+    // Appearance slider in Settings updates monitor labels + process table
+    // + network table immediately.
+    let scale = state.theme_cfg.ui_font_size / 12.0;
+    let c_primary = state.theme_cfg.text_primary.to_color();
+    let c_danger  = state.theme_cfg.danger.to_color();
+    let c_success = state.theme_cfg.success.to_color();
+    let pb_color  = Some(state.theme_cfg.progress_bar.to_color());
+
     let sid = match active_session {
         Some(s) if !s.is_empty() => s,
-        _ => return container(text(i18n::t("monitor.connecting")).color(theme::TEXT_MUTED).size(12))
+        _ => return container(text(i18n::t("monitor.connecting")).color(theme::TEXT_MUTED).size(12.0 * scale))
             .padding(Padding::from([12, 12])).into(),
     };
 
@@ -3898,64 +3995,62 @@ fn view_monitor_panel(state: &NeoShell) -> Element<'_, Message> {
 
     // ── Column 1: System info ──────────────────────────────────────
     let mut sys_col = column![
-        text(i18n::t("monitor.system")).color(theme::TEXT_PRIMARY).size(11),
+        text(i18n::t("monitor.system")).color(c_primary).size(11.0 * scale),
     ].spacing(2);
+    let sys_size = 10.0 * scale;
     if let Some(s) = stats {
-        sys_col = sys_col.push(sys_row(&i18n::t("monitor.load"), &format!("{:.2} / {:.2} / {:.2}", s.load_1m, s.load_5m, s.load_15m)));
-        sys_col = sys_col.push(sys_row(i18n::t("monitor.cpu"), &i18n::tf("monitor.cpu_cores", &[("count", &s.cpu_cores.to_string())])));
-        sys_col = sys_col.push(sys_row(&i18n::t("monitor.mem"), &format!("{} / {} MB ({:.0}%)", s.mem_used_mb, s.mem_total_mb, s.mem_percent)));
-        sys_col = sys_col.push(progress_bar_widget(s.mem_percent));
+        sys_col = sys_col.push(sys_row_sized(&i18n::t("monitor.load"), &format!("{:.2} / {:.2} / {:.2}", s.load_1m, s.load_5m, s.load_15m), sys_size));
+        sys_col = sys_col.push(sys_row_sized(i18n::t("monitor.cpu"), &i18n::tf("monitor.cpu_cores", &[("count", &s.cpu_cores.to_string())]), sys_size));
+        sys_col = sys_col.push(sys_row_sized(&i18n::t("monitor.mem"), &format!("{} / {} MB ({:.0}%)", s.mem_used_mb, s.mem_total_mb, s.mem_percent), sys_size));
+        sys_col = sys_col.push(progress_bar_widget_with_color(s.mem_percent, pb_color));
         if !s.disks.is_empty() {
             for d in &s.disks {
-                sys_col = sys_col.push(sys_row(&truncate_str(&d.mount_point, 10), &format!("{}/{} ({:.0}%)", d.used, d.total, d.percent)));
-                sys_col = sys_col.push(progress_bar_widget(d.percent));
+                sys_col = sys_col.push(sys_row_sized(&truncate_str(&d.mount_point, 10), &format!("{}/{} ({:.0}%)", d.used, d.total, d.percent), sys_size));
+                sys_col = sys_col.push(progress_bar_widget_with_color(d.percent, pb_color));
             }
         }
         if !s.uptime.is_empty() {
-            sys_col = sys_col.push(sys_row(&i18n::t("monitor.uptime"), &s.uptime));
+            sys_col = sys_col.push(sys_row_sized(&i18n::t("monitor.uptime"), &s.uptime, sys_size));
         }
     } else {
-        sys_col = sys_col.push(text(i18n::t("monitor.connecting")).color(theme::TEXT_MUTED).size(11));
+        sys_col = sys_col.push(text(i18n::t("monitor.connecting")).color(theme::TEXT_MUTED).size(11.0 * scale));
     }
 
     // ── Column 2: Network interfaces ───────────────────────────────
     let mut net_col = column![
-        text(i18n::t("monitor.network")).color(theme::TEXT_PRIMARY).size(11),
+        text(i18n::t("monitor.network")).color(c_primary).size(11.0 * scale),
     ].spacing(1);
 
     if let Some(s) = stats {
-        // Speed summary
         let rx_rate = state.net_rx_rate.get(sid).copied().unwrap_or(0.0);
         let tx_rate = state.net_tx_rate.get(sid).copied().unwrap_or(0.0);
         net_col = net_col.push(
             row![
-                text(i18n::t("net.speed")).color(theme::TEXT_MUTED).size(9).width(80),
-                text(format!("D {}/s", format_bytes(rx_rate as u64))).color(theme::SUCCESS).size(9).width(80),
-                text(format!("U {}/s", format_bytes(tx_rate as u64))).color(theme::SUCCESS).size(9),
+                text(i18n::t("net.speed")).color(theme::TEXT_MUTED).size(9.0 * scale).width(80),
+                text(format!("D {}/s", format_bytes(rx_rate as u64))).color(c_success).size(9.0 * scale).width(80),
+                text(format!("U {}/s", format_bytes(tx_rate as u64))).color(c_success).size(9.0 * scale),
             ].spacing(4)
         );
 
-        // Table header
         net_col = net_col.push(
             row![
-                text(i18n::t("net.interface")).color(theme::TEXT_MUTED).size(8).width(80),
-                text(i18n::t("net.received")).color(theme::TEXT_MUTED).size(8).width(80),
-                text(i18n::t("net.sent")).color(theme::TEXT_MUTED).size(8),
+                text(i18n::t("net.interface")).color(theme::TEXT_MUTED).size(8.0 * scale).width(80),
+                text(i18n::t("net.received")).color(theme::TEXT_MUTED).size(8.0 * scale).width(80),
+                text(i18n::t("net.sent")).color(theme::TEXT_MUTED).size(8.0 * scale),
             ].spacing(4)
         );
 
-        // Per-interface rows
         for (i, iface) in s.interfaces.iter().enumerate() {
             if iface.name == "lo" { continue; }
             let is_physical = iface.name.starts_with("eth") || iface.name.starts_with("en")
                 || iface.name.starts_with("wl") || iface.name.starts_with("bond");
-            let name_color = if is_physical { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED };
+            let name_color = if is_physical { c_primary } else { theme::TEXT_MUTED };
             let row_bg = if i % 2 == 0 { theme::BG_SECONDARY } else { theme::BG_TERTIARY };
 
             let iface_row = row![
-                text(truncate_str(&iface.name, 10)).color(name_color).size(9).width(80),
-                text(format_bytes(iface.rx_bytes)).color(theme::TEXT_SECONDARY).size(9).width(80),
-                text(format_bytes(iface.tx_bytes)).color(theme::TEXT_SECONDARY).size(9),
+                text(truncate_str(&iface.name, 10)).color(name_color).size(9.0 * scale).width(80),
+                text(format_bytes(iface.rx_bytes)).color(theme::TEXT_SECONDARY).size(9.0 * scale).width(80),
+                text(format_bytes(iface.tx_bytes)).color(theme::TEXT_SECONDARY).size(9.0 * scale),
             ].spacing(4);
 
             let iface_clone = iface.clone();
@@ -3973,13 +4068,12 @@ fn view_monitor_panel(state: &NeoShell) -> Element<'_, Message> {
             );
         }
 
-        // Total row
         net_col = net_col.push(
             container(
                 row![
-                    text(i18n::t("monitor.total")).color(theme::ACCENT).size(9).width(80),
-                    text(format_bytes(s.net_rx_bytes)).color(theme::ACCENT).size(9).width(80),
-                    text(format_bytes(s.net_tx_bytes)).color(theme::ACCENT).size(9),
+                    text(i18n::t("monitor.total")).color(theme::ACCENT).size(9.0 * scale).width(80),
+                    text(format_bytes(s.net_rx_bytes)).color(theme::ACCENT).size(9.0 * scale).width(80),
+                    text(format_bytes(s.net_tx_bytes)).color(theme::ACCENT).size(9.0 * scale),
                 ].spacing(4)
             ).padding(Padding::from([2, 2]))
         );
@@ -3987,27 +4081,28 @@ fn view_monitor_panel(state: &NeoShell) -> Element<'_, Message> {
 
     // ── Column 3: Processes ────────────────────────────────────────
     let mut proc_col = column![
-        text(i18n::t("monitor.processes")).color(theme::TEXT_PRIMARY).size(11),
+        text(i18n::t("monitor.processes")).color(c_primary).size(11.0 * scale),
         row![
-            text("PID").color(theme::TEXT_MUTED).size(8).width(44),
-            text("CPU").color(theme::TEXT_MUTED).size(8).width(32),
-            text("MEM").color(theme::TEXT_MUTED).size(8).width(32),
-            text("CMD").color(theme::TEXT_MUTED).size(8),
+            text("PID").color(theme::TEXT_MUTED).size(8.0 * scale).width(44),
+            text("CPU").color(theme::TEXT_MUTED).size(8.0 * scale).width(32),
+            text("MEM").color(theme::TEXT_MUTED).size(8.0 * scale).width(32),
+            text("CMD").color(theme::TEXT_MUTED).size(8.0 * scale),
         ].spacing(1),
     ].spacing(1);
 
     if let Some(procs) = processes {
+        let row_size = 9.0 * scale;
         for (i, p) in procs.iter().take(15).enumerate() {
-            let color = if p.cpu > 50.0 { theme::DANGER }
+            let color = if p.cpu > 50.0 { c_danger }
                        else if p.cpu > 20.0 { theme::WARNING }
                        else { theme::TEXT_SECONDARY };
             let row_bg = if i % 2 == 0 { theme::BG_SECONDARY } else { theme::BG_TERTIARY };
             let pid_val = p.pid;
             let prow = row![
-                text(format!("{}", p.pid)).color(color).size(9).width(44),
-                text(format!("{:.1}", p.cpu)).color(color).size(9).width(32),
-                text(format!("{:.1}", p.mem)).color(color).size(9).width(32),
-                text(&p.command).color(color).size(9),
+                text(format!("{}", p.pid)).color(color).size(row_size).width(44),
+                text(format!("{:.1}", p.cpu)).color(color).size(row_size).width(32),
+                text(format!("{:.1}", p.mem)).color(color).size(row_size).width(32),
+                text(&p.command).color(color).size(row_size),
             ].spacing(1);
             proc_col = proc_col.push(
                 button(
@@ -4517,14 +4612,22 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     let stats = active_session.and_then(|sid| state.server_stats.get(sid));
     let processes = active_session.and_then(|sid| state.top_processes.get(sid));
 
+    // Scale factor applied to every monitor font size. 12 is the baseline
+    // UI font size; when the user bumps it in Settings → Appearance, every
+    // label/value/table-cell in this panel grows proportionally.
+    let scale = state.theme_cfg.ui_font_size / 12.0;
+    // text_primary / text_muted from the user's theme (defaults fall back
+    // to the hard-coded constants if the user hasn't touched the picker).
+    let c_primary = state.theme_cfg.text_primary.to_color();
+
     let mut col = column![].spacing(0);
 
     // ── Header ──────────────────────────────────────────────────────────
     let header = container(
         row![
-            text(i18n::t("monitor.system")).color(theme::TEXT_PRIMARY).size(13),
+            text(i18n::t("monitor.system")).color(c_primary).size(13.0 * scale),
             horizontal_space(),
-            button(text("+").color(theme::ACCENT).size(16))
+            button(text("+").color(theme::ACCENT).size(16.0 * scale))
                 .on_press(Message::ShowConnectDialog)
                 .padding(Padding::from([2, 6]))
                 .style(transparent_button_style),
@@ -4539,84 +4642,82 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     .width(Fill);
     col = col.push(header);
 
+    let sys_size = 10.0 * scale;
+
     if let Some(stats) = stats {
-        // Load — label left, values right
-        col = col.push(sys_row(&i18n::t("monitor.load"),
-            &format!("{:.2} / {:.2} / {:.2}", stats.load_1m, stats.load_5m, stats.load_15m)));
-        col = col.push(sys_row(i18n::t("monitor.cpu"), &i18n::tf("monitor.cpu_cores", &[("count", &stats.cpu_cores.to_string())])));
+        col = col.push(sys_row_sized(&i18n::t("monitor.load"),
+            &format!("{:.2} / {:.2} / {:.2}", stats.load_1m, stats.load_5m, stats.load_15m), sys_size));
+        col = col.push(sys_row_sized(i18n::t("monitor.cpu"),
+            &i18n::tf("monitor.cpu_cores", &[("count", &stats.cpu_cores.to_string())]), sys_size));
 
-        // Memory — label left, usage right + progress bar
-        col = col.push(sys_row(&i18n::t("monitor.mem"),
-            &format!("{} / {} MB ({:.0}%)", stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent)));
-        col = col.push(progress_bar_widget(stats.mem_percent));
+        let pb_color = Some(state.theme_cfg.progress_bar.to_color());
+        col = col.push(sys_row_sized(&i18n::t("monitor.mem"),
+            &format!("{} / {} MB ({:.0}%)", stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent), sys_size));
+        col = col.push(progress_bar_widget_with_color(stats.mem_percent, pb_color));
 
-        // Disks
         if stats.disks.is_empty() {
-            col = col.push(sys_row(&i18n::t("monitor.disk"),
-                &format!("{:.1} / {:.1} GB ({:.0}%)", stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent)));
-            col = col.push(progress_bar_widget(stats.disk_percent));
+            col = col.push(sys_row_sized(&i18n::t("monitor.disk"),
+                &format!("{:.1} / {:.1} GB ({:.0}%)", stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent), sys_size));
+            col = col.push(progress_bar_widget_with_color(stats.disk_percent, pb_color));
         } else {
             for d in &stats.disks {
-                col = col.push(sys_row(
+                col = col.push(sys_row_sized(
                     &truncate_str(&d.mount_point, 8),
                     &format!("{}/{} ({:.0}%)", d.used, d.total, d.percent),
+                    sys_size,
                 ));
-                col = col.push(progress_bar_widget(d.percent));
+                col = col.push(progress_bar_widget_with_color(d.percent, pb_color));
             }
         }
 
-        // Uptime
         if !stats.uptime.is_empty() {
-            col = col.push(sys_row(&i18n::t("monitor.uptime"), &stats.uptime));
+            col = col.push(sys_row_sized(&i18n::t("monitor.uptime"), &stats.uptime, sys_size));
         }
     } else {
         col = col.push(
-            container(text(i18n::t("monitor.connecting")).color(theme::TEXT_MUTED).size(12))
+            container(text(i18n::t("monitor.connecting")).color(theme::TEXT_MUTED).size(12.0 * scale))
                 .padding(Padding::from([8, 10])),
         );
     }
 
-    // ── Divider ─────────────────────────────────────────────────────────
     col = col.push(sidebar_divider());
 
-    // ── Top Processes (BEFORE Network) ──────────────────────────────────
-    col = col.push(section_header(&i18n::t("monitor.processes")));
+    // ── Top Processes ──────────────────────────────────────────────────
+    col = col.push(section_header_sized(&i18n::t("monitor.processes"), 12.0 * scale));
 
     if let Some(procs) = processes {
-        // Column-aligned header
+        let hdr_size = 9.0 * scale;
         let hdr_row = row![
-            container(text(i18n::t("monitor.pid")).color(theme::TEXT_MUTED).size(9)).width(42),
-            container(text(i18n::t("monitor.proc_cpu")).color(theme::TEXT_MUTED).size(9)).width(38),
-            container(text(i18n::t("monitor.proc_mem")).color(theme::TEXT_MUTED).size(9)).width(36),
-            container(text(i18n::t("monitor.proc_cmd")).color(theme::TEXT_MUTED).size(9)).width(Fill),
+            container(text(i18n::t("monitor.pid")).color(theme::TEXT_MUTED).size(hdr_size)).width(42),
+            container(text(i18n::t("monitor.proc_cpu")).color(theme::TEXT_MUTED).size(hdr_size)).width(38),
+            container(text(i18n::t("monitor.proc_mem")).color(theme::TEXT_MUTED).size(hdr_size)).width(36),
+            container(text(i18n::t("monitor.proc_cmd")).color(theme::TEXT_MUTED).size(hdr_size)).width(Fill),
         ]
         .spacing(2)
         .padding(Padding::from([4, 8]));
 
         let mut proc_col = column![hdr_row, sidebar_divider()].spacing(0);
 
+        let row_size = 9.0 * scale;
+        let bar_size = 7.0 * scale;
+
         for (i, p) in procs.iter().take(15).enumerate() {
             let bar_len = ((p.cpu / 100.0) * 6.0).ceil() as usize;
             let bar: String = "\u{2588}".repeat(bar_len.min(6));
             let pad: String = "\u{2591}".repeat(6_usize.saturating_sub(bar_len));
 
-            let color = if p.cpu > 50.0 { theme::DANGER }
+            let color = if p.cpu > 50.0 { state.theme_cfg.danger.to_color() }
                        else if p.cpu > 20.0 { theme::WARNING }
                        else { theme::TEXT_SECONDARY };
             let row_bg = if i % 2 == 0 { theme::BG_SECONDARY } else { theme::BG_TERTIARY };
 
-            let pid_text = format!("{}", p.pid);
-            let cpu_text = format!("{:.1}", p.cpu);
-            let mem_text = format!("{:.1}", p.mem);
-            let cmd_text = truncate_str(&p.command, 10);
-
             let proc_row = row![
-                container(text(pid_text).color(color).size(9)).width(42),
-                container(text(cpu_text).color(color).size(9)).width(38),
-                container(text(mem_text).color(color).size(9)).width(36),
-                text(cmd_text).color(color).size(9),
+                container(text(format!("{}", p.pid)).color(color).size(row_size)).width(42),
+                container(text(format!("{:.1}", p.cpu)).color(color).size(row_size)).width(38),
+                container(text(format!("{:.1}", p.mem)).color(color).size(row_size)).width(36),
+                text(truncate_str(&p.command, 10)).color(color).size(row_size),
                 horizontal_space(),
-                text(format!("{}{}", bar, pad)).color(color).size(7).font(Font::MONOSPACE),
+                text(format!("{}{}", bar, pad)).color(color).size(bar_size).font(Font::MONOSPACE),
             ]
             .spacing(2)
             .align_y(alignment::Vertical::Center);
@@ -4634,7 +4735,7 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
         col = col.push(proc_col);
     } else {
         col = col.push(
-            container(text(i18n::t("monitor.loading")).color(theme::TEXT_MUTED).size(11))
+            container(text(i18n::t("monitor.loading")).color(theme::TEXT_MUTED).size(11.0 * scale))
                 .padding(Padding::from([8, 10])),
         );
     }
@@ -4752,7 +4853,11 @@ fn sidebar_divider() -> Element<'static, Message> {
 }
 
 fn section_header(title: &str) -> Element<'static, Message> {
-    container(text(title.to_string()).color(theme::TEXT_PRIMARY).size(12))
+    section_header_sized(title, 12.0)
+}
+
+fn section_header_sized(title: &str, size: f32) -> Element<'static, Message> {
+    container(text(title.to_string()).color(theme::TEXT_PRIMARY).size(size))
         .padding(Padding::from([6, 10]))
         .style(|_| container::Style {
             background: Some(theme::BG_TERTIARY.into()),
@@ -4774,12 +4879,16 @@ fn stat_row(icon: &str, text_content: &str) -> Element<'static, Message> {
 
 /// System info row: label(left, 60px) | value(right, fill)
 fn sys_row(label_str: &str, value_str: &str) -> Element<'static, Message> {
+    sys_row_sized(label_str, value_str, 10.0)
+}
+
+fn sys_row_sized(label_str: &str, value_str: &str, size: f32) -> Element<'static, Message> {
     let l = label_str.to_string();
     let v = value_str.to_string();
     container(
         row![
-            container(text(l).color(theme::TEXT_MUTED).size(10)).width(55),
-            container(text(v).color(theme::TEXT_SECONDARY).size(10))
+            container(text(l).color(theme::TEXT_MUTED).size(size)).width(55),
+            container(text(v).color(theme::TEXT_SECONDARY).size(size))
                 .width(Fill).align_x(alignment::Horizontal::Right),
         ]
         .spacing(4)
@@ -4792,15 +4901,19 @@ fn sys_row(label_str: &str, value_str: &str) -> Element<'static, Message> {
 
 /// A small progress bar widget for memory/disk usage.
 fn progress_bar_widget(percent: f64) -> Element<'static, Message> {
+    progress_bar_widget_with_color(percent, None)
+}
+
+fn progress_bar_widget_with_color(percent: f64, user_color: Option<Color>) -> Element<'static, Message> {
     let clamped = percent.max(0.0).min(100.0);
     let width = (clamped / 100.0 * 196.0) as f32;
-    let bar_color = if clamped > 90.0 {
-        theme::DANGER
-    } else if clamped > 70.0 {
-        theme::WARNING
-    } else {
-        theme::SUCCESS
-    };
+    // When the user set a custom progress color in the theme editor, use it.
+    // Otherwise keep the heat-gauge (green/orange/red) behavior.
+    let bar_color = user_color.unwrap_or_else(|| {
+        if clamped > 90.0 { theme::DANGER }
+        else if clamped > 70.0 { theme::WARNING }
+        else { theme::SUCCESS }
+    });
 
     container(
         container(Space::new(width, 3))
@@ -4831,9 +4944,11 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
                 grid: tab.terminal.clone(),
                 selection_start: state.selection_start,
                 selection_end: state.selection_end,
-                font_size: state.font_size,
+                font_size: state.theme_cfg.terminal_font_size,
                 session_id: tab.session_id.clone(),
                 ssh_manager: state.ssh_manager.clone(),
+                terminal_bg: state.theme_cfg.terminal_bg.to_color(),
+                terminal_fg: state.theme_cfg.terminal_fg.to_color(),
             };
 
             return canvas(term_view).width(Fill).height(Fill).into();
@@ -5960,6 +6075,9 @@ fn view_settings_menu(state: &NeoShell) -> Element<'_, Message> {
     .width(Fill)
     .style(transparent_button_style);
 
+    // --- Appearance section: color zones + font sizes + picker --------------
+    let appearance = view_theme_editor(state);
+
     let menu_content = column![
         header,
         lang_row,
@@ -5967,14 +6085,16 @@ fn view_settings_menu(state: &NeoShell) -> Element<'_, Message> {
         scale_row,
         sidebar_row,
         divider,
+        appearance,
         proxy_btn,
         about_btn,
     ]
     .spacing(12)
     .padding(20)
-    .width(280);
+    .width(360);
 
-    let card = container(menu_content)
+    let card = container(scrollable(menu_content).height(Fill))
+        .max_height(620)
         .style(|_| container::Style {
             background: Some(theme::BG_SECONDARY.into()),
             border: iced::Border { color: theme::BORDER, width: 1.0, radius: 8.0.into() },
@@ -6000,6 +6120,112 @@ fn view_settings_menu(state: &NeoShell) -> Element<'_, Message> {
             ..Default::default()
         })
         .into()
+}
+
+// ---- Theme editor (colors + per-zone font sizes) --------------------------
+
+fn view_theme_editor(state: &NeoShell) -> Element<'_, Message> {
+    use crate::ui::theme_config::ThemeZone;
+    use iced::widget::slider;
+
+    let t = &state.theme_cfg;
+
+    let section_title = text(i18n::t("theme.title"))
+        .color(theme::TEXT_PRIMARY).size(13);
+
+    // -- Zone swatches: click one to expand RGB editor below it --
+    let mut swatches = column![].spacing(6);
+    for zone in ThemeZone::ALL {
+        let rgb = zone.get(t);
+        let selected = state.theme_editing_zone == Some(zone);
+        let swatch = container(Space::new(24, 20))
+            .style(move |_| container::Style {
+                background: Some(rgb.to_color().into()),
+                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            });
+        let label_color = if selected { theme::ACCENT } else { theme::TEXT_SECONDARY };
+        let label = text(i18n::t(zone.label_key())).color(label_color).size(12);
+        let hex = text(rgb.to_hex()).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(10);
+
+        let press_msg = if selected {
+            Message::ThemeCloseZone
+        } else {
+            Message::ThemeSelectZone(zone)
+        };
+        let row_el = button(
+            row![swatch, label, horizontal_space(), hex]
+                .spacing(10)
+                .align_y(alignment::Vertical::Center)
+        )
+        .on_press(press_msg)
+        .padding(Padding::from([4, 6]))
+        .width(Fill)
+        .style(if selected { sidebar_item_style } else { transparent_button_style });
+        swatches = swatches.push(row_el);
+
+        // Expand RGB editor right below the selected zone
+        if selected {
+            let current = rgb;
+            let r_slider = slider(0..=255u8, current.r, Message::ThemeRChanged).step(1u8);
+            let g_slider = slider(0..=255u8, current.g, Message::ThemeGChanged).step(1u8);
+            let b_slider = slider(0..=255u8, current.b, Message::ThemeBChanged).step(1u8);
+            let r_lbl = text(format!("R {:>3}", current.r)).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(10).width(50);
+            let g_lbl = text(format!("G {:>3}", current.g)).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(10).width(50);
+            let b_lbl = text(format!("B {:>3}", current.b)).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(10).width(50);
+            let hex_input = text_input("#RRGGBB", &current.to_hex())
+                .on_input(Message::ThemeHexChanged)
+                .padding(4).size(11).width(90);
+            let preview = container(Space::new(Fill, 24))
+                .style(move |_| container::Style {
+                    background: Some(current.to_color().into()),
+                    border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                    ..Default::default()
+                });
+            let editor = column![
+                row![r_lbl, r_slider].spacing(6).align_y(alignment::Vertical::Center),
+                row![g_lbl, g_slider].spacing(6).align_y(alignment::Vertical::Center),
+                row![b_lbl, b_slider].spacing(6).align_y(alignment::Vertical::Center),
+                row![hex_input, horizontal_space(), preview].spacing(8),
+            ].spacing(6).padding(8).width(Fill);
+            let editor_container = container(editor).style(|_| container::Style {
+                background: Some(theme::BG_TERTIARY.into()),
+                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 6.0.into() },
+                ..Default::default()
+            });
+            swatches = swatches.push(editor_container);
+        }
+    }
+
+    // -- Font sizes --
+    let term_size = t.terminal_font_size;
+    let ui_size = t.ui_font_size;
+    let term_size_row = row![
+        text(i18n::t("theme.terminal_font_size")).color(theme::TEXT_SECONDARY).size(12).width(Fill),
+        text(format!("{:.0}px", term_size)).font(Font::MONOSPACE).color(theme::TEXT_PRIMARY).size(11).width(40),
+    ].align_y(alignment::Vertical::Center);
+    let term_slider = slider(8.0..=28.0f32, term_size, Message::ThemeTerminalFontSize).step(1.0f32);
+
+    let ui_size_row = row![
+        text(i18n::t("theme.ui_font_size")).color(theme::TEXT_SECONDARY).size(12).width(Fill),
+        text(format!("{:.0}px", ui_size)).font(Font::MONOSPACE).color(theme::TEXT_PRIMARY).size(11).width(40),
+    ].align_y(alignment::Vertical::Center);
+    let ui_slider = slider(10.0..=18.0f32, ui_size, Message::ThemeUiFontSize).step(1.0f32);
+
+    let reset_btn = button(text(i18n::t("theme.reset")).color(theme::DANGER).size(11))
+        .on_press(Message::ThemeReset)
+        .padding(Padding::from([4, 10]))
+        .style(transparent_button_style);
+
+    column![
+        section_title,
+        swatches,
+        term_size_row, term_slider,
+        ui_size_row, ui_slider,
+        row![horizontal_space(), reset_btn],
+    ]
+    .spacing(8)
+    .into()
 }
 
 // ---- About dialog ----------------------------------------------------------
@@ -6796,6 +7022,10 @@ struct TerminalView {
     /// and the last few columns of every row get clipped off-screen.
     session_id: String,
     ssh_manager: Arc<crate::ssh::SshManager>,
+    /// User-configured terminal background / default foreground colors.
+    terminal_bg: Color,
+    #[allow(dead_code)]
+    terminal_fg: Color,
 }
 
 /// Persistent state for the terminal canvas. Created once by iced and reused
@@ -6879,9 +7109,10 @@ impl<Message> canvas::Program<Message> for TerminalView {
 
         let grid = self.grid.lock();
 
+        let bg_color = self.terminal_bg;
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            // Background fill
-            frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::BG_PRIMARY);
+            // Background fill — user-configured terminal background.
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), bg_color);
 
             // Pre-allocated buffer for batching consecutive same-style ASCII
             // characters into single fill_text calls.

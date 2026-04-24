@@ -123,6 +123,17 @@ static EN: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("tunnel.running", "Running");
     m.insert("tunnel.stopped", "Stopped");
     m.insert("tunnel.starting", "Starting...");
+    m.insert("theme.title", "Appearance");
+    m.insert("theme.zone.text_primary", "Primary text");
+    m.insert("theme.zone.accent", "Accent (buttons / links)");
+    m.insert("theme.zone.terminal_fg", "Terminal foreground");
+    m.insert("theme.zone.terminal_bg", "Terminal background");
+    m.insert("theme.zone.success", "Success / running");
+    m.insert("theme.zone.danger", "Danger / stopped");
+    m.insert("theme.zone.progress_bar", "Progress bar (monitor)");
+    m.insert("theme.terminal_font_size", "Terminal font size");
+    m.insert("theme.ui_font_size", "UI font size");
+    m.insert("theme.reset", "Reset to defaults");
     // SSH error hints
     m.insert("ssh.err.auth", "wrong username/password or key — check credentials or server sshd permissions");
     m.insert("ssh.err.refused", "target port closed — confirm SSH service is running on the right port (usually 22)");
@@ -347,6 +358,17 @@ static ZH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("tunnel.running", "运行中");
     m.insert("tunnel.stopped", "已停止");
     m.insert("tunnel.starting", "启动中...");
+    m.insert("theme.title", "外观");
+    m.insert("theme.zone.text_primary", "主要文本");
+    m.insert("theme.zone.accent", "强调色 (按钮/链接)");
+    m.insert("theme.zone.terminal_fg", "终端前景色");
+    m.insert("theme.zone.terminal_bg", "终端背景色");
+    m.insert("theme.zone.success", "成功 / 运行中");
+    m.insert("theme.zone.danger", "危险 / 停止");
+    m.insert("theme.zone.progress_bar", "进度条 (监控区)");
+    m.insert("theme.terminal_font_size", "终端字号");
+    m.insert("theme.ui_font_size", "UI 字号");
+    m.insert("theme.reset", "恢复默认");
     // SSH 错误提示
     m.insert("ssh.err.auth", "用户名或密码/密钥不正确 — 请检查账号凭据，或确认服务器 sshd 是否允许此用户登录");
     m.insert("ssh.err.refused", "目标端口未开放 — 确认 SSH 服务已启动且端口号正确 (通常是 22)");

@@ -8,10 +8,12 @@ import { Changelog } from "./components/Changelog";
 import { Contact } from "./components/Contact";
 import { Footer } from "./components/Footer";
 import { Cursor } from "./components/Cursor";
+import { AmbientGrid } from "./components/AmbientGrid";
 
 export function App() {
   return (
     <>
+      <AmbientGrid />
       <Cursor />
       <Nav />
       <main>

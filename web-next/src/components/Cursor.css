@@ -1,26 +1,64 @@
 .cursor-dot,
-.cursor-ring {
+.cursor-ring,
+.cursor-trail,
+.cursor-ripple {
   position: fixed;
   top: 0;
   left: 0;
   pointer-events: none;
   z-index: 9999;
   mix-blend-mode: screen;
-  will-change: transform;
+  will-change: transform, opacity;
 }
 
+/* Core dot — current position. */
 .cursor-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--amber);
-  box-shadow: 0 0 14px rgba(244, 184, 107, 0.85);
+  box-shadow: 0 0 14px rgba(244, 184, 107, 0.95);
+  transition: background 0.6s, box-shadow 0.6s;
 }
 
+/* Outer ring — lags behind with a larger time constant. */
 .cursor-ring {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  border: 1px solid rgba(93, 228, 199, 0.5);
-  transition: transform 0.35s var(--ease-out);
+  border: 1px solid rgba(93, 228, 199, 0.55);
+  transition: transform 0.35s var(--ease-out), border-color 0.6s;
+}
+
+/* Ghost trail — rendered as N small dots decaying in opacity. */
+.cursor-trail {
+  border-radius: 50%;
+  background: var(--amber);
+  filter: blur(1.5px);
+  transition: background 0.6s;
+}
+
+/* Section-aware tint overrides via body attribute. */
+body[data-cursor-tint="teal"]   .cursor-dot       { background: var(--teal); box-shadow: 0 0 16px rgba(93, 228, 199, 0.95); }
+body[data-cursor-tint="teal"]   .cursor-trail     { background: var(--teal); }
+body[data-cursor-tint="teal"]   .cursor-ring      { border-color: rgba(244, 184, 107, 0.55); }
+
+body[data-cursor-tint="violet"] .cursor-dot       { background: #b59cff; box-shadow: 0 0 16px rgba(181, 156, 255, 0.95); }
+body[data-cursor-tint="violet"] .cursor-trail     { background: #b59cff; }
+body[data-cursor-tint="violet"] .cursor-ring      { border-color: rgba(93, 228, 199, 0.55); }
+
+/* Click ripple — a circle that blooms out and fades. */
+.cursor-ripple {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin: -5px 0 0 -5px;
+  border: 1px solid var(--amber);
+  animation: cursor-ripple-bloom 0.75s var(--ease-out) forwards;
+}
+.cursor-ripple-teal   { border-color: var(--teal); }
+.cursor-ripple-violet { border-color: #b59cff; }
+@keyframes cursor-ripple-bloom {
+  0%   { transform: scale(0.6);  opacity: 1; }
+  100% { transform: scale(12);   opacity: 0; }
 }

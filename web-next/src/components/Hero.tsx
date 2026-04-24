@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { useI18n } from "../i18n/context";
 import { HeroCanvas } from "./HeroCanvas";
+import { GPUParticles } from "./GPUParticles";
 import "./Hero.css";
 
 const stagger = {
@@ -32,6 +33,7 @@ export function Hero() {
   return (
     <section id="top" className="hero">
       <HeroCanvas />
+      <GPUParticles />
 
       <div className="wrap hero-inner">
         <motion.div variants={stagger} initial="hidden" animate="visible">

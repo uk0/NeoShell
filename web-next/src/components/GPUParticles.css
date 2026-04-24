@@ -1,0 +1,16 @@
+.gpu-particles {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: 0.85;
+  /* Fade in once WebGPU actually attaches a device — avoids a flash
+     of blank pixels during the async adapter request. */
+  animation: gpu-fade-in 1.2s ease-out 0.2s backwards;
+}
+@keyframes gpu-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 0.85; }
+}

@@ -1,7 +1,31 @@
 import { motion, useInView } from "framer-motion";
-import { useRef } from "react";
+import { useRef, type MouseEvent as ReactMouseEvent } from "react";
 import { useI18n } from "../i18n/context";
 import "./Features.css";
+
+/**
+ * Magnetic 3D tilt — reads the pointer position relative to the card's
+ * center and writes CSS variables consumed by the card's transform.
+ * Keeps everything on the compositor (transform + will-change) so it
+ * runs at display refresh on high-Hz monitors.
+ */
+function handleTilt(e: ReactMouseEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  const r = el.getBoundingClientRect();
+  const px = (e.clientX - r.left) / r.width;
+  const py = (e.clientY - r.top) / r.height;
+  const rx = (0.5 - py) * 6;
+  const ry = (px - 0.5) * 10;
+  el.style.setProperty("--tilt-rx", `${rx}deg`);
+  el.style.setProperty("--tilt-ry", `${ry}deg`);
+  el.style.setProperty("--tilt-px", `${px * 100}%`);
+  el.style.setProperty("--tilt-py", `${py * 100}%`);
+}
+function resetTilt(e: ReactMouseEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  el.style.setProperty("--tilt-rx", `0deg`);
+  el.style.setProperty("--tilt-ry", `0deg`);
+}
 
 /**
  * Features grid — 3 × 2 cards, each fades up on entry with a staggered
@@ -74,6 +98,8 @@ export function Features() {
               initial={{ y: 40, opacity: 0 }}
               animate={inView ? { y: 0, opacity: 1 } : {}}
               transition={{ duration: 0.8, delay: i * 0.08, ease: [0.2, 0.8, 0.2, 1] }}
+              onMouseMove={handleTilt}
+              onMouseLeave={resetTilt}
               data-hover
             >
               <div className="feature-card-num mono">{c.num}</div>

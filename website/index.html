@@ -170,7 +170,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary. Now fully open source on GitHub.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.18</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.21</a>
     <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener" class="btn-hero btn-ghost" data-i18n="hero.btn.source">View on GitHub &rarr;</a>
   </div>
   <div class="hero-metric">
@@ -249,32 +249,32 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label" data-i18n="dl.label">Get started</div>
     <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
-    <p class="section-desc" data-i18n="dl.desc">v0.6.18 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc" data-i18n="dl.desc">v0.6.21 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.6.18-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.6.18-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.6.21-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.6.21-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64 (Win10+)</div>
-        <a href="downloads/NeoShell-0.6.18-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.21-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.win7">Windows 7</div>
         <div class="dl-arch">x86_64 (OpenGL)</div>
-        <a href="downloads/NeoShell-0.6.18-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.21-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.6.18-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.6.21-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n-html="dl.note">Crafted by <strong style="color:var(--amber)">NEO</strong> &mdash; <a href="https://firsh.me" target="_blank" rel="noopener">firsh.me</a></p>
@@ -290,9 +290,54 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
-        <span class="cl-ver">0.6.18</span>
+        <span class="cl-ver">0.6.21</span>
         <span class="cl-date">2026-04-24</span>
         <span class="cl-badge" data-i18n="cl.latest">Latest</span>
+      </div>
+      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
+      <ul class="cl-list" data-i18n-html="cl.0621.added">
+        <li><strong>Bulk import from <code>~/.ssh/config</code></strong> &mdash; Connect dialog now offers a one-click <em>"Import all (N)"</em> button that adds every <code>Host</code> entry to your connection list, deduped by <code>user@host:port</code></li>
+        <li><strong>Command broadcast</strong> &mdash; toolbar 📣 button opens a panel where you type once and fan the command out to any subset of active sessions. Indispensable for fleet-wide <code>apt update</code> / log tailing</li>
+        <li><strong>Command snippet library</strong> &mdash; toolbar button for named snippets (name + body), click to send to the active session, persisted to <code>snippets.json</code></li>
+      </ul>
+      <div class="cl-cat cl-cat-arch" data-i18n="cl.cat.changed">Changed</div>
+      <ul class="cl-list" data-i18n-html="cl.0621.changed">
+        <li>Settings → Appearance rolled out across almost every UI surface: 29 view functions now respect the theme config, 206 font-size references scale with the UI size slider, ~280 color refs switched to the configurable <code>c_primary / c_accent / c_success / c_danger</code> helpers. Changes apply live without restart</li>
+      </ul>
+      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
+      <ul class="cl-list" data-i18n-html="cl.0621.fixed">
+        <li>Scroll-through &amp; click-through on overlays &mdash; while any overlay is open (Settings / History / Shortcuts / Broadcast / Snippets / Tunnels / Proxies / About / LogViewer / context menu / dialogs), the terminal below no longer reacts to mouse wheel or clicks. New <code>any_overlay_open()</code> guard in every terminal event handler</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.20</span>
+        <span class="cl-date">2026-04-24</span>
+      </div>
+      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
+      <ul class="cl-list" data-i18n-html="cl.0620.added">
+        <li><strong>Settings → Appearance</strong> &mdash; 7 color-zone palettes (Primary text / Accent / Terminal fg / Terminal bg / Success / Danger / Progress bar), each with RGB sliders + hex input + live preview</li>
+        <li>Two font-size sliders: terminal (8&ndash;28px) + UI (10&ndash;18px). One-click restore defaults</li>
+        <li>Auto-persisted to <code>~/Library/Application Support/neoshell/theme.json</code>, reapplied on restart</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.19</span>
+        <span class="cl-date">2026-04-24</span>
+      </div>
+      <div class="cl-cat cl-cat-arch" data-i18n="cl.cat.changed">Changed</div>
+      <ul class="cl-list" data-i18n-html="cl.0619.changed">
+        <li>Toolbar buttons now <strong>toggle</strong> open/close on click &mdash; pressing Settings / Proxies / Tunnels / History / LogViewer / About a second time closes the panel instead of forcing you to hunt for the × button. Esc and the × button still work as before</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.18</span>
+        <span class="cl-date">2026-04-24</span>
       </div>
       <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
       <ul class="cl-list" data-i18n-html="cl.0618.fixed">
@@ -605,7 +650,7 @@ const TRANSLATIONS = {
     'hero.tag':          'Pure Rust &bull; Native GPU &bull; Open Source',
     'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
     'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
-    'hero.btn.download': 'Download v0.6.18',
+    'hero.btn.download': 'Download v0.6.21',
     'hero.btn.explore':  'Explore features',
     'hero.btn.source':   'View on GitHub &rarr;',
     'hero.metric.binary':    'Binary size',
@@ -645,7 +690,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       'Get started',
     'dl.title':       'Download NeoShell',
-    'dl.desc':        'v0.6.18 &mdash; Single binary. No installer dependencies.',
+    'dl.desc':        'v0.6.21 &mdash; Single binary. No installer dependencies.',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -661,10 +706,11 @@ const TRANSLATIONS = {
     'cl.title':     'Changelog',
     'cl.desc':      'What shipped and when.',
     'cl.latest':    'Latest',
-    'cl.cat.added': 'Added',
-    'cl.cat.arch':  'Architecture',
-    'cl.cat.perf':  'Performance',
-    'cl.cat.fixed': 'Fixed',
+    'cl.cat.added':   'Added',
+    'cl.cat.arch':    'Architecture',
+    'cl.cat.perf':    'Performance',
+    'cl.cat.fixed':   'Fixed',
+    'cl.cat.changed': 'Changed',
     /* contact */
     'contact.label': 'Stay in touch',
     'contact.title': 'Join the Community',
@@ -684,7 +730,7 @@ const TRANSLATIONS = {
     'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 完全开源',
     'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
     'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
-    'hero.btn.download': '下载 v0.6.18',
+    'hero.btn.download': '下载 v0.6.21',
     'hero.btn.explore':  '探索功能',
     'hero.btn.source':   '查看源码 &rarr;',
     'hero.metric.binary':    '程序体积',
@@ -724,7 +770,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       '立即开始',
     'dl.title':       '下载 NeoShell',
-    'dl.desc':        'v0.6.18 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.desc':        'v0.6.21 &mdash; 单文件可执行，无需安装依赖。',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -740,10 +786,16 @@ const TRANSLATIONS = {
     'cl.title':     '更新日志',
     'cl.desc':      '记录每一次发布与变更。',
     'cl.latest':    '最新版',
-    'cl.cat.added': '新增',
-    'cl.cat.arch':  '架构调整',
-    'cl.cat.perf':  '性能优化',
-    'cl.cat.fixed': '问题修复',
+    'cl.cat.added':   '新增',
+    'cl.cat.arch':    '架构调整',
+    'cl.cat.perf':    '性能优化',
+    'cl.cat.fixed':   '问题修复',
+    'cl.cat.changed': '优化调整',
+    'cl.0621.added':   '<li><strong>一键导入 <code>~/.ssh/config</code></strong> — Connect 对话框新增"全部导入 (N)"按钮，把所有 <code>Host</code> 条目添加到连接列表，按 <code>user@host:port</code> 自动去重</li><li><strong>命令广播</strong> — 工具栏"广播"按钮打开广播面板，一次输入命令并勾选要下发的活跃 session，批量下发到所有选中机器。适用于 <code>apt update</code>、日志 tail 等 fleet 操作</li><li><strong>命令片段库</strong> — 工具栏"片段"按钮，新建/编辑/删除命名的片段（name + body），点击即发送到当前 session，持久化到 <code>snippets.json</code></li>',
+    'cl.0621.changed': '<li>Settings → Appearance 全面 rollout 到几乎所有 UI：29 个 view 函数接入 theme config，206 处字号引用随 UI 字号滑条缩放，~280 处颜色引用改用可配置的 <code>c_primary / c_accent / c_success / c_danger</code> helper。所有改动即时生效，无需重启</li>',
+    'cl.0621.fixed':   '<li>修复滚动穿透 & 点击穿透 — 打开任意 overlay 时（Settings / History / Shortcuts / 广播 / 片段 / 隧道 / 代理 / About / LogViewer / 右键菜单 / 各 dialog），下面的终端不再响应滚轮或点击。新增 <code>any_overlay_open()</code> 统一判断，在每个终端事件 handler 里前置拦截</li>',
+    'cl.0620.added':   '<li><strong>Settings → Appearance</strong> — 7 个颜色 zone 调色盘（Primary text / Accent / Terminal 前景 / Terminal 背景 / Success / Danger / Progress bar），每个 zone 都是 RGB 三滑条 + hex 输入框 + 实时预览</li><li>两条字号滑条：终端字号（8–28px）+ UI 字号（10–18px）。一键恢复默认按钮</li><li>配置自动持久化到 <code>~/Library/Application Support/neoshell/theme.json</code>，重启保留</li>',
+    'cl.0619.changed': '<li>工具栏按钮支持<strong>点开/点关</strong>切换 — Settings / Proxies / Tunnels / History / LogViewer / About 这些面板现在点第二次就收起。之前只能去找 × 按钮关闭，不符合直觉。Esc 和 × 一如既往可用</li>',
     'cl.0618.fixed': '<li>每次登录都出现 3 条 <code>bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)</code> — 我们之前用 <code>exec("LANG=... $SHELL -l")</code> 包装 + <code>channel.setenv("LC_ALL",...)</code>，服务器没装该 locale 就 warn。改回标准 <code>channel.shell()</code>，locale 让服务器自己决定</li><li>Welcome/motd 不完整 — exec 包装还破坏了 PAM 的 motd pipeline。切回 shell request 后 <code>/etc/motd</code>、last login、系统信息按正常顺序输出。<em>另外</em>新增 <code>session.userauth_banner()</code> 捕获 SSH pre-auth banner（企业 legal notice 等），注入到终端顶部</li><li>top / htop 行距过大 — <code>cell_h</code> 原本 <code>font_size * 1.5</code> 过宽，改成 <code>1.2</code>，匹配 iTerm2 / Windows Terminal 默认密度</li>',
     'cl.0617.added': '<li><strong>NeoShell 现已开源</strong> — <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener">github.com/uk0/NeoShell</a></li>',
     'cl.0617.fixed': '<li><code>ls</code> / <code>top</code> 输出右边被截断 — canvas resize 同步到远端 PTY</li><li>窗口 resize 后 Welcome/motd/prompt 丢失 — 保留 cursor 所在行，其余进 scrollback</li>',

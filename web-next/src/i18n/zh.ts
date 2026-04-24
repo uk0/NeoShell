@@ -117,9 +117,12 @@ export const zh: Dict = {
   "contact.title": "加入社区",
   "contact.lede":
     "Bug 反馈、补丁、功能请求 —— 每一条都会落到我们的收件箱。",
+  "contact.discord": "Discord 服务器",
   "contact.github": "到 GitHub 提 issue",
-  "contact.qq": "QQ 群聊",
-  "contact.qr_hint": "用微信或 QQ 扫码，加入中文交流群。",
+  "contact.wechat": "微信公众号",
+  "contact.wechat_hint": "微信扫码关注公众号，第一时间收到版本更新。",
+  "contact.qq": "QQ 群",
+  "contact.qr_hint": "微信或 QQ 扫码，加入中文交流群。",
 
   "footer.meta": "© 2026 NeoShell · 用 Rust ♥ 构建 · 开源 @ GitHub",
   "footer.version": "当前版本",

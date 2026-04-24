@@ -116,9 +116,12 @@ export const en = {
   "contact.title": "Join the community",
   "contact.lede":
     "Bug reports, patches, feature requests — every one of them lands in our inbox.",
+  "contact.discord": "Discord server",
   "contact.github": "Open a GitHub issue",
-  "contact.qq": "QQ group chat",
-  "contact.qr_hint": "Scan with WeChat or QQ to join the Chinese-speaking channel.",
+  "contact.wechat": "WeChat MP",
+  "contact.wechat_hint": "Scan with WeChat to follow the official account for release notes.",
+  "contact.qq": "QQ group",
+  "contact.qr_hint": "Scan with WeChat or QQ to join the Chinese-speaking group.",
 
   "footer.meta": "© 2026 NeoShell · Built with Rust ♥ · Open source on GitHub",
   "footer.version": "Current release",

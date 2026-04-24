@@ -106,6 +106,18 @@
   transform: translateX(4px);
 }
 
+/* Discord channel — indigo accent on hover to match Discord branding. */
+.channel-discord:hover {
+  background: rgba(88, 101, 242, 0.1);
+  border-color: rgba(88, 101, 242, 0.45);
+}
+.channel-discord:hover .channel-icon {
+  background: rgba(88, 101, 242, 0.18);
+  color: #8d9bff;
+  border-color: rgba(88, 101, 242, 0.5);
+}
+.channel-discord:hover .channel-arrow { color: #8d9bff; }
+
 /* Right — QR card ------------------------------------------------- */
 .contact-qr {
   display: flex;
@@ -134,9 +146,40 @@
 }
 .contact-qr-img {
   display: block;
-  width: 200px;
-  height: 200px;
+  width: 220px;
+  height: 220px;
   object-fit: contain;
+  animation: qr-fade-in 0.35s var(--ease-out);
+}
+@keyframes qr-fade-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Tabs above the QR to switch between WeChat & QQ. */
+.qr-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--rule);
+  margin-bottom: 6px;
+}
+.qr-tab {
+  flex: 1;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  border-radius: 999px;
+  transition: background 0.3s, color 0.3s;
+  white-space: nowrap;
+}
+.qr-tab:hover { color: var(--ink); }
+.qr-tab.is-active {
+  background: linear-gradient(135deg, var(--amber), var(--teal));
+  color: var(--bg-deep);
+  font-weight: 500;
 }
 
 .contact-qr-scan {

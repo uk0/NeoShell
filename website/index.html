@@ -170,7 +170,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary. Now fully open source on GitHub.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.17</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.18</a>
     <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener" class="btn-hero btn-ghost" data-i18n="hero.btn.source">View on GitHub &rarr;</a>
   </div>
   <div class="hero-metric">
@@ -249,32 +249,32 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label" data-i18n="dl.label">Get started</div>
     <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
-    <p class="section-desc" data-i18n="dl.desc">v0.6.17 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc" data-i18n="dl.desc">v0.6.18 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.6.17-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.6.17-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.6.18-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.6.18-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64 (Win10+)</div>
-        <a href="downloads/NeoShell-0.6.17-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.18-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.win7">Windows 7</div>
         <div class="dl-arch">x86_64 (OpenGL)</div>
-        <a href="downloads/NeoShell-0.6.17-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.18-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.6.17-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.6.18-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n="dl.note">Proprietary software. Contact us for enterprise licensing.</p>
@@ -290,18 +290,31 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
-        <span class="cl-ver">0.6.17</span>
+        <span class="cl-ver">0.6.18</span>
         <span class="cl-date">2026-04-24</span>
         <span class="cl-badge" data-i18n="cl.latest">Latest</span>
       </div>
+      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
+      <ul class="cl-list" data-i18n-html="cl.0618.fixed">
+        <li>Three <code>bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)</code> warnings on every login &mdash; we used to wrap shell start as <code>exec("LANG=... $SHELL -l")</code> + <code>channel.setenv("LC_ALL",...)</code>; servers without that locale complained. Now standard <code>channel.shell()</code>, server decides its own locale</li>
+        <li>Welcome / motd incomplete &mdash; the exec-wrapper also broke PAM's motd pipeline. Switching to shell request restores <code>/etc/motd</code>, last-login, and system info in the normal order. <em>Plus</em> added <code>session.userauth_banner()</code> capture so SSH pre-auth banners (enterprise legal notices etc.) appear at the top of the terminal</li>
+        <li>top / htop rows double-spaced &mdash; <code>cell_h</code> was <code>font_size * 1.5</code>, too loose. Now <code>1.2</code> to match iTerm2 / Windows Terminal defaults</li>
+      </ul>
+    </div>
+
+    <div class="cl-entry">
+      <div class="cl-head">
+        <span class="cl-ver">0.6.17</span>
+        <span class="cl-date">2026-04-24</span>
+      </div>
       <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
       <ul class="cl-list" data-i18n-html="cl.0617.added">
-        <li><strong>NeoShell is now open source</strong> &mdash; full source at <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener">github.com/uk0/NeoShell</a>. Audit the crypto, file issues, fork, or send PRs</li>
+        <li><strong>NeoShell is now open source</strong> &mdash; full source at <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener">github.com/uk0/NeoShell</a></li>
       </ul>
       <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
       <ul class="cl-list" data-i18n-html="cl.0617.fixed">
-        <li><code>ls</code> / <code>top</code> / <code>htop</code> output clipped off the right edge &mdash; canvas-side grid resize now propagates to the remote SSH PTY via <code>ch.request_pty_size()</code>, so the server re-wraps output to the actual visible width instead of the initial 120-col default</li>
-        <li>Welcome / motd disappearing + blank rows after window resize &mdash; <code>TerminalGrid::resize</code> shrink path rewritten to preserve the cursor row (active prompt) and push displaced top rows into scrollback; grow path rehydrates from scrollback to avoid blank-flash</li>
+        <li><code>ls</code> / <code>top</code> output right-clipped &mdash; canvas resize now propagates to remote PTY via <code>ch.request_pty_size()</code></li>
+        <li>Welcome / motd / prompt loss after resize &mdash; <code>TerminalGrid::resize</code> preserves cursor row; dropped rows go to scrollback</li>
       </ul>
     </div>
 
@@ -592,7 +605,7 @@ const TRANSLATIONS = {
     'hero.tag':          'Pure Rust &bull; Native GPU &bull; Open Source',
     'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
     'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
-    'hero.btn.download': 'Download v0.6.17',
+    'hero.btn.download': 'Download v0.6.18',
     'hero.btn.explore':  'Explore features',
     'hero.btn.source':   'View on GitHub &rarr;',
     'hero.metric.binary':    'Binary size',
@@ -632,7 +645,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       'Get started',
     'dl.title':       'Download NeoShell',
-    'dl.desc':        'v0.6.17 &mdash; Single binary. No installer dependencies.',
+    'dl.desc':        'v0.6.18 &mdash; Single binary. No installer dependencies.',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -671,7 +684,7 @@ const TRANSLATIONS = {
     'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 完全开源',
     'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
     'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
-    'hero.btn.download': '下载 v0.6.17',
+    'hero.btn.download': '下载 v0.6.18',
     'hero.btn.explore':  '探索功能',
     'hero.btn.source':   '查看源码 &rarr;',
     'hero.metric.binary':    '程序体积',
@@ -711,7 +724,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       '立即开始',
     'dl.title':       '下载 NeoShell',
-    'dl.desc':        'v0.6.17 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.desc':        'v0.6.18 &mdash; 单文件可执行，无需安装依赖。',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -731,8 +744,9 @@ const TRANSLATIONS = {
     'cl.cat.arch':  '架构调整',
     'cl.cat.perf':  '性能优化',
     'cl.cat.fixed': '问题修复',
-    'cl.0617.added': '<li><strong>NeoShell 现已开源</strong> — 完整源码仓库 <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener">github.com/uk0/NeoShell</a>。欢迎审计加密实现、提 issue、fork、PR</li>',
-    'cl.0617.fixed': '<li><code>ls</code> / <code>top</code> / <code>htop</code> 输出右边被截断 — canvas grid resize 现在同步到远端 SSH PTY（<code>ch.request_pty_size()</code>），服务器按实际可见宽度重排输出，不再按初始 120 cols 格式化</li><li>窗口 resize 后 Welcome/motd 消失 + 空白行 — <code>TerminalGrid::resize</code> 重写 shrink 路径，保留 cursor 所在的 prompt 行、把上方多余行推进 scrollback；grow 时从 scrollback 填回顶部避免空白闪烁</li>',
+    'cl.0618.fixed': '<li>每次登录都出现 3 条 <code>bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)</code> — 我们之前用 <code>exec("LANG=... $SHELL -l")</code> 包装 + <code>channel.setenv("LC_ALL",...)</code>，服务器没装该 locale 就 warn。改回标准 <code>channel.shell()</code>，locale 让服务器自己决定</li><li>Welcome/motd 不完整 — exec 包装还破坏了 PAM 的 motd pipeline。切回 shell request 后 <code>/etc/motd</code>、last login、系统信息按正常顺序输出。<em>另外</em>新增 <code>session.userauth_banner()</code> 捕获 SSH pre-auth banner（企业 legal notice 等），注入到终端顶部</li><li>top / htop 行距过大 — <code>cell_h</code> 原本 <code>font_size * 1.5</code> 过宽，改成 <code>1.2</code>，匹配 iTerm2 / Windows Terminal 默认密度</li>',
+    'cl.0617.added': '<li><strong>NeoShell 现已开源</strong> — <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener">github.com/uk0/NeoShell</a></li>',
+    'cl.0617.fixed': '<li><code>ls</code> / <code>top</code> 输出右边被截断 — canvas resize 同步到远端 PTY</li><li>窗口 resize 后 Welcome/motd/prompt 丢失 — 保留 cursor 所在行，其余进 scrollback</li>',
     'cl.0616.fixed': '<li>8 处中文按钮残余 tofu（代理管理 add/test/edit/delete、历史清空、状态栏 LOG/QUIT、隧道 + 新增隧道）— 移除 <code>Font::MONOSPACE</code> 覆写让它们继承嵌入的 Noto Sans CJK SC</li>',
     'cl.0615.fixed': '<li>统一 UI_FONT 和 CJK_FONT 都用嵌入的 Noto Sans CJK SC，所有平台 text widget + canvas 都能渲染中文</li>',
     'cl.0614.fixed': '<li>终端 session 里服务器返回的中文 — pyftsubset 精简时清空了嵌入字体的 <code>name</code> 表，重做 subset 保留 name 记录，Family::Name 现在能命中</li><li>移除坏的"emoji 字体" embed（66 KB 的 GitHub 404 HTML 页，每次启动触发 fontdb "malformed font"）</li>',

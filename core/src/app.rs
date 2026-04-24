@@ -5548,7 +5548,7 @@ fn view_proxy_manager(state: &NeoShell) -> Element<'_, Message> {
         .on_press(Message::HideProxyManager)
         .padding(Padding::from([2, 8]))
         .style(transparent_button_style);
-    let add_btn = button(text(i18n::t("proxy.add")).font(Font::MONOSPACE).color(theme::ACCENT).size(11))
+    let add_btn = button(text(i18n::t("proxy.add")).color(theme::ACCENT).size(11))
         .on_press(Message::ShowProxyForm(None))
         .padding(Padding::from([4, 8]))
         .style(transparent_button_style);
@@ -5675,11 +5675,11 @@ fn view_proxy_manager(state: &NeoShell) -> Element<'_, Message> {
             text("").size(1).into()
         };
 
-        let test_btn = button(text(i18n::t("proxy.test")).font(Font::MONOSPACE).color(theme::ACCENT).size(10))
+        let test_btn = button(text(i18n::t("proxy.test")).color(theme::ACCENT).size(10))
             .on_press(Message::TestProxy(pid.clone())).padding(Padding::from([2, 6])).style(transparent_button_style);
-        let edit_btn = button(text(i18n::t("proxy.edit")).font(Font::MONOSPACE).color(theme::TEXT_SECONDARY).size(10))
+        let edit_btn = button(text(i18n::t("proxy.edit")).color(theme::TEXT_SECONDARY).size(10))
             .on_press(Message::ShowProxyForm(Some(pid2))).padding(Padding::from([2, 6])).style(transparent_button_style);
-        let del_btn = button(text(i18n::t("proxy.delete")).font(Font::MONOSPACE).color(theme::DANGER).size(10))
+        let del_btn = button(text(i18n::t("proxy.delete")).color(theme::DANGER).size(10))
             .on_press(Message::DeleteProxy(pid3)).padding(Padding::from([2, 6])).style(transparent_button_style);
 
         let entry = row![
@@ -5727,7 +5727,7 @@ fn view_history_panel(state: &NeoShell) -> Element<'_, Message> {
         .on_press(Message::HideHistory)
         .padding(Padding::from([2, 8]))
         .style(transparent_button_style);
-    let clear_btn = button(text(i18n::t("history.clear")).font(Font::MONOSPACE).color(theme::DANGER).size(11))
+    let clear_btn = button(text(i18n::t("history.clear")).color(theme::DANGER).size(11))
         .on_press(Message::ClearHistory)
         .padding(Padding::from([4, 8]))
         .style(transparent_button_style);
@@ -6301,7 +6301,7 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
         });
 
     // "LOG" button — opens log viewer
-    let log_btn = button(text(i18n::t("status.log")).font(Font::MONOSPACE).color(theme::ACCENT).size(9))
+    let log_btn = button(text(i18n::t("status.log")).color(theme::ACCENT).size(9))
         .on_press(Message::ShowLogViewer)
         .padding(Padding::from([1, 5]))
         .style(|_: &Theme, status| {
@@ -6316,7 +6316,7 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
 
     // Explicit Quit — close (×) button minimizes to keep SSH sessions alive;
     // this is how users truly exit the process.
-    let quit_btn = button(text(i18n::t("status.quit")).font(Font::MONOSPACE).color(theme::DANGER).size(9))
+    let quit_btn = button(text(i18n::t("status.quit")).color(theme::DANGER).size(9))
         .on_press(Message::QuitApp)
         .padding(Padding::from([1, 6]))
         .style(|_: &Theme, status| {
@@ -6357,7 +6357,7 @@ fn view_tunnel_manager(state: &NeoShell) -> Element<'_, Message> {
         .on_press(Message::HideTunnelManager)
         .padding(Padding::from([2, 8]))
         .style(transparent_button_style);
-    let add_btn = button(text(i18n::t("tunnel.add")).font(Font::MONOSPACE).color(theme::ACCENT).size(11))
+    let add_btn = button(text(i18n::t("tunnel.add")).color(theme::ACCENT).size(11))
         .on_press(Message::ShowTunnelForm(None))
         .padding(Padding::from([4, 8]))
         .style(transparent_button_style);

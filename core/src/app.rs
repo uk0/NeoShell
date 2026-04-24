@@ -4819,6 +4819,8 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
                 selection_start: state.selection_start,
                 selection_end: state.selection_end,
                 font_size: state.font_size,
+                session_id: tab.session_id.clone(),
+                ssh_manager: state.ssh_manager.clone(),
             };
 
             return canvas(term_view).width(Fill).height(Fill).into();
@@ -6775,6 +6777,12 @@ struct TerminalView {
     selection_start: Option<(usize, usize)>,
     selection_end: Option<(usize, usize)>,
     font_size: f32,
+    /// Carried so the canvas can propagate local-grid resizes to the remote
+    /// SSH PTY — otherwise the server keeps formatting `ls`, `top`, etc. for
+    /// the initial 120×40 while the client only has space for ~90 columns,
+    /// and the last few columns of every row get clipped off-screen.
+    session_id: String,
+    ssh_manager: Arc<crate::ssh::SshManager>,
 }
 
 /// Persistent state for the terminal canvas. Created once by iced and reused
@@ -6841,6 +6849,17 @@ impl<Message> canvas::Program<Message> for TerminalView {
         if needs_resize {
             self.grid.lock().resize(new_cols, new_rows);
             state.cache.clear(); // force redraw at new size
+            // Propagate to the remote SSH PTY so the server wraps its output
+            // to the actual visible width. Without this, `ls`, `top`, etc.
+            // output gets clipped because the server still thinks we have
+            // the original 120 columns.
+            if !self.session_id.is_empty() {
+                let _ = self.ssh_manager.resize(
+                    &self.session_id,
+                    new_cols as u32,
+                    new_rows as u32,
+                );
+            }
         }
 
         let grid = self.grid.lock();

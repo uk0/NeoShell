@@ -291,23 +291,79 @@ impl TerminalGrid {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    #[doc(hidden)]
+    fn _clip_or_pad_helper(row: Vec<Cell>, new_cols: usize) -> Vec<Cell> {
+        let mut out = row;
+        if out.len() > new_cols {
+            out.truncate(new_cols);
+        } else if out.len() < new_cols {
+            out.resize(new_cols, Cell::default());
+        }
+        out
+    }
+
     /// Resize the terminal grid, preserving content where possible.
+    ///
+    /// When shrinking rows, keep the **row containing the cursor** visible
+    /// (plus some history above it) and push the rest of the top rows into
+    /// scrollback — otherwise a window resize eats the active shell prompt.
+    /// When growing rows, pull from scrollback to fill the new top rows so
+    /// resize doesn't flash blank lines.
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
         if new_cols == 0 || new_rows == 0 {
             return;
         }
-        let mut new_cells = vec![vec![Cell::default(); new_cols]; new_rows];
-        for (y, row) in self.cells.iter().enumerate() {
-            if y >= new_rows {
-                break;
+
+        let old_rows = self.cells.len();
+        let cursor_y = self.cursor_y;
+
+        // --- Shrink rows: drop enough TOP rows to keep cursor inside the
+        // new window (cursor goes to bottom when it was near the bottom).
+        if old_rows > new_rows {
+            let drop_top = if cursor_y + 1 > new_rows {
+                (cursor_y + 1 - new_rows).min(old_rows - new_rows)
+            } else {
+                0
+            };
+            for row in self.cells.drain(0..drop_top) {
+                self.scrollback.push_back(row);
             }
-            for (x, cell) in row.iter().enumerate() {
-                if x >= new_cols {
-                    break;
-                }
-                new_cells[y][x] = cell.clone();
+            while self.scrollback.len() > 10_000 {
+                self.scrollback.pop_front();
             }
+            self.cells.truncate(new_rows);
+            self.cursor_y = cursor_y.saturating_sub(drop_top);
         }
+
+        // --- Build new row buffer. If growing, pull from scrollback into
+        // the top so users don't see blank rows flash in.
+        let mut new_cells: Vec<Vec<Cell>> = Vec::with_capacity(new_rows);
+
+        if self.cells.len() < new_rows {
+            let need = new_rows - self.cells.len();
+            let from_scrollback = need.min(self.scrollback.len());
+            for _ in 0..from_scrollback {
+                if let Some(row) = self.scrollback.pop_back() {
+                    new_cells.push(Self::_clip_or_pad_helper(row, new_cols));
+                }
+            }
+            new_cells.reverse();
+            for _ in from_scrollback..need {
+                new_cells.push(vec![Cell::default(); new_cols]);
+            }
+            self.cursor_y = self.cursor_y.saturating_add(from_scrollback);
+        }
+
+        for row in self.cells.drain(..) {
+            new_cells.push(Self::_clip_or_pad_helper(row, new_cols));
+        }
+
+        // Ensure exact length
+        new_cells.truncate(new_rows);
+        while new_cells.len() < new_rows {
+            new_cells.push(vec![Cell::default(); new_cols]);
+        }
+
         self.cells = new_cells;
         self.cols = new_cols;
         self.rows = new_rows;
@@ -1008,5 +1064,33 @@ mod tests {
         assert_eq!(term.grid.cols, 40);
         assert_eq!(term.grid.rows, 12);
         assert_eq!(term.grid.cells[0][0].c, 'H');
+    }
+
+    #[test]
+    fn test_resize_shrink_preserves_cursor_row() {
+        // Simulate: motd + prompt + ls output → cursor near bottom.
+        let mut term = Terminal::new(80, 40);
+        // Fill rows 0..20 with distinct markers; put cursor at row 25.
+        for i in 0..20u32 {
+            term.feed(&[b'A' + (i as u8)]);
+            term.feed(b"\r\n");
+        }
+        // Move cursor to row 25 by feeding newlines + a marker
+        for _ in 0..5 {
+            term.feed(b"\r\n");
+        }
+        term.feed(b"Z"); // cursor_y now around 25
+        let old_cursor_y = term.grid.cursor_y;
+        assert!(old_cursor_y >= 20, "setup: cursor should be near bottom");
+
+        // Shrink to 10 rows — cursor MUST stay inside the new window,
+        // the "Z" row MUST be preserved, and top rows pushed to scrollback.
+        term.resize(80, 10);
+        assert_eq!(term.grid.rows, 10);
+        assert!(term.grid.cursor_y < 10, "cursor must be inside new view, got {}", term.grid.cursor_y);
+        assert!(!term.grid.scrollback.is_empty(), "dropped rows should be in scrollback");
+        // 'Z' row is preserved (it's where cursor was)
+        let z_found = term.grid.cells.iter().any(|row| row.iter().any(|c| c.c == 'Z'));
+        assert!(z_found, "'Z' row must survive shrink");
     }
 }

@@ -170,7 +170,7 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <h1 data-i18n="hero.title">The terminal you<br>actually <em>want</em> to use.</h1>
   <p class="hero-sub" data-i18n="hero.sub">NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary. Now fully open source on GitHub.</p>
   <div class="hero-actions">
-    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.21</a>
+    <a href="#download" class="btn-hero btn-fill" data-i18n="hero.btn.download">Download v0.6.26</a>
     <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener" class="btn-hero btn-ghost" data-i18n="hero.btn.source">View on GitHub &rarr;</a>
   </div>
   <div class="hero-metric">
@@ -249,32 +249,32 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
   <div class="wrap">
     <div class="section-label" data-i18n="dl.label">Get started</div>
     <h2 class="section-title" data-i18n="dl.title">Download NeoShell</h2>
-    <p class="section-desc" data-i18n="dl.desc">v0.6.21 &mdash; Single binary. No installer dependencies.</p>
+    <p class="section-desc" data-i18n="dl.desc">v0.6.26 &mdash; Single binary. No installer dependencies.</p>
     <div class="dl-grid">
       <div class="dl-card">
         <div class="dl-os">&#63743;</div>
         <div class="dl-name" data-i18n="dl.macos">macOS</div>
         <div class="dl-arch">Apple Silicon &amp; Intel</div>
-        <a href="downloads/NeoShell-0.6.21-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
-        <a href="downloads/NeoShell-0.6.21-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
+        <a href="downloads/NeoShell-0.6.26-macos-aarch64.dmg" class="dl-btn" data-i18n="dl.macos.arm">ARM64 .dmg &darr;</a>
+        <a href="downloads/NeoShell-0.6.26-macos-x86_64.dmg" class="dl-btn-alt" data-i18n="dl.macos.intel">Intel x86_64 .dmg</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.windows">Windows</div>
         <div class="dl-arch">x86_64 (Win10+)</div>
-        <a href="downloads/NeoShell-0.6.21-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.26-windows-x64.zip" class="dl-btn" data-i18n="dl.windows.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128187;</div>
         <div class="dl-name" data-i18n="dl.win7">Windows 7</div>
         <div class="dl-arch">x86_64 (OpenGL)</div>
-        <a href="downloads/NeoShell-0.6.21-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
+        <a href="downloads/NeoShell-0.6.26-windows-win7-x64.zip" class="dl-btn" data-i18n="dl.win7.btn">Download .zip &darr;</a>
       </div>
       <div class="dl-card">
         <div class="dl-os">&#128039;</div>
         <div class="dl-name" data-i18n="dl.linux">Linux</div>
         <div class="dl-arch">x86_64</div>
-        <a href="downloads/NeoShell-0.6.21-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
+        <a href="downloads/NeoShell-0.6.26-linux-x86_64.AppImage" class="dl-btn" data-i18n="dl.linux.btn">Download .AppImage &darr;</a>
       </div>
     </div>
     <p style="margin-top:28px;color:var(--text-faint);font-size:12px" data-i18n-html="dl.note">Crafted by <strong style="color:var(--amber)">NEO</strong> &mdash; <a href="https://firsh.me" target="_blank" rel="noopener">firsh.me</a></p>
@@ -290,309 +290,29 @@ footer p{color:var(--text-faint);font-size:12px;letter-spacing:.04em}
 
     <div class="cl-entry">
       <div class="cl-head">
-        <span class="cl-ver">0.6.21</span>
+        <span class="cl-ver">0.6.26</span>
         <span class="cl-date">2026-04-24</span>
         <span class="cl-badge" data-i18n="cl.latest">Latest</span>
       </div>
       <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.0621.added">
-        <li><strong>Bulk import from <code>~/.ssh/config</code></strong> &mdash; Connect dialog now offers a one-click <em>"Import all (N)"</em> button that adds every <code>Host</code> entry to your connection list, deduped by <code>user@host:port</code></li>
-        <li><strong>Command broadcast</strong> &mdash; toolbar 📣 button opens a panel where you type once and fan the command out to any subset of active sessions. Indispensable for fleet-wide <code>apt update</code> / log tailing</li>
-        <li><strong>Command snippet library</strong> &mdash; toolbar button for named snippets (name + body), click to send to the active session, persisted to <code>snippets.json</code></li>
+      <ul class="cl-list" data-i18n-html="cl.0626.added">
+        <li><strong>Cmd+F terminal search</strong> &mdash; a floating search bar in the top-right of the terminal scans scrollback+grid in real time. All hits highlighted yellow, current hit orange, "3/12" counter, case-sensitivity toggle, Enter/↓/↑ to navigate, Esc to close</li>
+        <li><strong>Bulk import from <code>~/.ssh/config</code></strong> &mdash; Connect dialog offers one-click "Import all (N)" which adds every <code>Host</code> entry to your saved connections, deduped by <code>user@host:port</code></li>
+        <li><strong>Command broadcast</strong> &mdash; a toolbar panel to type one command and fan it out to any subset of active sessions. Indispensable for fleet-wide <code>apt update</code> / log tailing</li>
+        <li><strong>Command snippet library</strong> &mdash; named snippets persisted to <code>snippets.json</code>; click to send to the active session</li>
+        <li><strong>Settings → Appearance</strong> &mdash; 7 color-zone palettes (primary text / accent / terminal fg+bg / success / danger / progress bar) with RGB sliders + hex input, two font-size sliders (terminal 8&ndash;28px, UI 10&ndash;18px), live preview, auto-saved to <code>theme.json</code></li>
+        <li><strong>Collapsible bottom panel</strong> &mdash; splitter gets a centered chevron button plus a new <code>⌘+J / Ctrl+J</code> shortcut (VSCode/iTerm2 convention) to hide the Monitor/Files/QuickCmd pane and give the terminal the full height</li>
       </ul>
       <div class="cl-cat cl-cat-arch" data-i18n="cl.cat.changed">Changed</div>
-      <ul class="cl-list" data-i18n-html="cl.0621.changed">
-        <li>Settings → Appearance rolled out across almost every UI surface: 29 view functions now respect the theme config, 206 font-size references scale with the UI size slider, ~280 color refs switched to the configurable <code>c_primary / c_accent / c_success / c_danger</code> helpers. Changes apply live without restart</li>
+      <ul class="cl-list" data-i18n-html="cl.0626.changed">
+        <li><strong>Theme system rollout</strong> &mdash; 29 view functions now respect <code>theme_cfg</code>, 206 font-size call sites scale with the UI size slider, ~280 color refs switched to configurable <code>c_primary / c_accent / c_success / c_danger</code> helpers. Any zone edit applies live without restart</li>
+        <li><strong>Toolbar buttons toggle on click</strong> &mdash; Settings / Proxies / Tunnels / History / LogViewer / About now close when clicked a second time (no more hunting for the × button)</li>
+        <li><strong>Shortcuts help panel rebuilt</strong> &mdash; platform-aware modifier (⌘ on macOS, Ctrl on Win/Linux), all descriptions i18n'd EN+ZH, grouped into Tabs / Terminal / Panels / Other, added missing bindings (⌘+F search, ⌘+S save, ⌘+J panel, Ctrl+Shift+Tab prev-tab, search-bar Enter/Esc)</li>
       </ul>
       <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0621.fixed">
-        <li>Scroll-through &amp; click-through on overlays &mdash; while any overlay is open (Settings / History / Shortcuts / Broadcast / Snippets / Tunnels / Proxies / About / LogViewer / context menu / dialogs), the terminal below no longer reacts to mouse wheel or clicks. New <code>any_overlay_open()</code> guard in every terminal event handler</li>
+      <ul class="cl-list" data-i18n-html="cl.0626.fixed">
+        <li><strong>Overlay scroll-through &amp; click-through</strong> &mdash; while any overlay is open (Settings / History / Shortcuts / Broadcast / Snippets / Tunnels / Proxies / About / LogViewer / context menus / dialogs), the terminal below no longer reacts to mouse wheel or clicks. New <code>any_overlay_open()</code> guard intercepts every terminal event handler</li>
       </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.20</span>
-        <span class="cl-date">2026-04-24</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.0620.added">
-        <li><strong>Settings → Appearance</strong> &mdash; 7 color-zone palettes (Primary text / Accent / Terminal fg / Terminal bg / Success / Danger / Progress bar), each with RGB sliders + hex input + live preview</li>
-        <li>Two font-size sliders: terminal (8&ndash;28px) + UI (10&ndash;18px). One-click restore defaults</li>
-        <li>Auto-persisted to <code>~/Library/Application Support/neoshell/theme.json</code>, reapplied on restart</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.19</span>
-        <span class="cl-date">2026-04-24</span>
-      </div>
-      <div class="cl-cat cl-cat-arch" data-i18n="cl.cat.changed">Changed</div>
-      <ul class="cl-list" data-i18n-html="cl.0619.changed">
-        <li>Toolbar buttons now <strong>toggle</strong> open/close on click &mdash; pressing Settings / Proxies / Tunnels / History / LogViewer / About a second time closes the panel instead of forcing you to hunt for the × button. Esc and the × button still work as before</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.18</span>
-        <span class="cl-date">2026-04-24</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0618.fixed">
-        <li>Three <code>bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)</code> warnings on every login &mdash; we used to wrap shell start as <code>exec("LANG=... $SHELL -l")</code> + <code>channel.setenv("LC_ALL",...)</code>; servers without that locale complained. Now standard <code>channel.shell()</code>, server decides its own locale</li>
-        <li>Welcome / motd incomplete &mdash; the exec-wrapper also broke PAM's motd pipeline. Switching to shell request restores <code>/etc/motd</code>, last-login, and system info in the normal order. <em>Plus</em> added <code>session.userauth_banner()</code> capture so SSH pre-auth banners (enterprise legal notices etc.) appear at the top of the terminal</li>
-        <li>top / htop rows double-spaced &mdash; <code>cell_h</code> was <code>font_size * 1.5</code>, too loose. Now <code>1.2</code> to match iTerm2 / Windows Terminal defaults</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.17</span>
-        <span class="cl-date">2026-04-24</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.0617.added">
-        <li><strong>NeoShell is now open source</strong> &mdash; full source at <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener">github.com/uk0/NeoShell</a></li>
-      </ul>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0617.fixed">
-        <li><code>ls</code> / <code>top</code> output right-clipped &mdash; canvas resize now propagates to remote PTY via <code>ch.request_pty_size()</code></li>
-        <li>Welcome / motd / prompt loss after resize &mdash; <code>TerminalGrid::resize</code> preserves cursor row; dropped rows go to scrollback</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.16</span>
-        <span class="cl-date">2026-04-24</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0616.fixed">
-        <li>Residual CJK tofu on 8 Chinese buttons (Proxy add/test/edit/delete, History clear, Status-bar LOG/QUIT, Tunnel + Add Tunnel) &mdash; dropped <code>Font::MONOSPACE</code> overrides so they inherit the CJK-capable default font</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.15</span>
-        <span class="cl-date">2026-04-24</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0615.fixed">
-        <li>Unified UI_FONT and CJK_FONT to embedded Noto Sans CJK SC so every text widget and canvas path renders Chinese regardless of platform</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.14</span>
-        <span class="cl-date">2026-04-23</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0614.fixed">
-        <li>Terminal session CJK from server &mdash; pyftsubset had stripped the embedded font's <code>name</code> table; re-subset preserves name records so Family::Name now resolves</li>
-        <li>Removed the broken "emoji font" embed (a 66 KB GitHub 404 HTML page that triggered fontdb "malformed font" on every startup)</li>
-      </ul>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.0614.added">
-        <li><strong>SSH tunnel manager</strong> (Tunnels toolbar button) &mdash; persistent port forwarding through a jump host, independent of terminal tabs; one SSH session per tunnel with multiple <code>LOCAL_PORT:REMOTE_HOST:REMOTE_PORT</code> mappings, password/key auth, auto_start flag, green count badge when running</li>
-        <li>Inspired by <a href="https://github.com/uk0/sshrw">github.com/uk0/sshrw</a>; accepts compact (<code>8080:10.0.0.5:80</code>) and arrow (<code>10.0.0.5:80-&gt;8080</code>) syntax</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.13</span>
-        <span class="cl-date">2026-04-23</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.0613.added">
-        <li>Close (×) button minimizes to taskbar/Dock keeping SSH sessions alive; explicit QUIT button + <code>Cmd/Ctrl+Shift+Q</code> shortcut for clean exit</li>
-        <li>Embedded Nerd Font Mono (2.5 MB) so oh-my-zsh / powerlevel10k / starship prompts render correctly without system font install</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.12</span>
-        <span class="cl-date">2026-04-23</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0612.fixed">
-        <li>top/htop/nmon column drift &mdash; zero-width chars (combining marks, ZWJ, variation selectors, bidi, BOM) no longer advance cursor</li>
-        <li>CJK glyphs rendered at 1.1x monospace size (was 1.3x) so wide chars stay within 2-cell slot</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.11</span>
-        <span class="cl-date">2026-04-21</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.0611.added">
-        <li>Monitoring, SFTP, and file browsing now work on minimal-mode SSH (MINA SSHD, embedded gateways, bastion-behind-jumphost) &mdash; exec requests share the main session with mutex serialization</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.10</span>
-        <span class="cl-date">2026-04-21</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.0610.fixed">
-        <li>Minimal-mode SSH path for Apache MINA SSHD, embedded devices, and proprietary stacks &mdash; skip setenv/keepalive/exec-based shell start, use standard <code>shell</code> request</li>
-        <li>No more <code>Read error: transport read</code> infinite loop on non-OpenSSH servers</li>
-        <li>Log file auto-recreates if deleted mid-run</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.9</span>
-        <span class="cl-date">2026-04-21</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.069.fixed">
-        <li>Bastion / embedded-SSH <code>Failed to open channel: Session(-13)</code> &mdash; tmux probing moved off main session; non-OpenSSH banner goes straight to RawShell</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.7</span>
-        <span class="cl-date">2026-04-21</span>
-      </div>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.067.fixed">
-        <li>Windows SSH KEX failure with modern OpenSSH servers &mdash; libssh2 now uses OpenSSL backend (not WinCNG) so curve25519, ecdh-sha2-*, ssh-ed25519 are available on all platforms</li>
-        <li>Two-phase handshake retry (filtered algo list &rarr; libssh2 defaults) covers kex-strict edge cases</li>
-        <li>Pre-handshake banner peek &mdash; failed connections now log the server's SSH version string</li>
-      </ul>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.067.added">
-        <li>CI algorithm-support verification &mdash; every platform build runs <code>cargo test algorithm_tests</code>; missing curve25519 / ecdh / ed25519 fails the build before shipping</li>
-        <li>Startup self-check logs <code>libssh2 algorithm self-check: OK</code></li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.5</span>
-        <span class="cl-date">2026-04-21</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.065.added">
-        <li>Persistent log file &mdash; auto-written to app data dir, 2 MB rotation</li>
-        <li>Connection error dialog &mdash; full translated error message with "View Log" shortcut</li>
-        <li>In-app log viewer &mdash; status bar <code>LOG</code> button shows last 200 KB; refresh + open-folder actions</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.4</span>
-        <span class="cl-date">2026-04-18</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.064.added">
-        <li>Test connection button in form and list &mdash; verify TCP + handshake + auth before saving; latency shown in list</li>
-        <li>Clone existing connection with one click (auto "(Copy)" suffix)</li>
-        <li>Keyboard shortcuts help panel &mdash; <code>F1</code>, <code>Cmd+/</code>, or <code>?</code> in status bar</li>
-        <li>Friendly SSH error messages &mdash; 11 common failure patterns with actionable hints (EN + ZH)</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.3</span>
-        <span class="cl-date">2026-04-17</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.063.added">
-        <li>SSH bastion (jump host) proxy support &mdash; tunnel via SSH <code>direct-tcpip</code> channel</li>
-        <li>Password or private-key auth to bastion; file picker for key path</li>
-        <li>Proxy test performs full SSH handshake + authentication</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry">
-      <div class="cl-head">
-        <span class="cl-ver">0.6.2</span>
-        <span class="cl-date">2026-04-16</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list" data-i18n-html="cl.062.added">
-        <li>FinalShell-style UI &mdash; toolbar + left sidebar + terminal + tabbed bottom panel</li>
-        <li>Dual-pane file browser &mdash; local + remote with refresh buttons</li>
-        <li>Quick command panel, process inspector, SOCKS5H/HTTP proxy support</li>
-        <li>Command history, bottom panel drag resize, font size persistence</li>
-        <li>Full EN/Chinese i18n (120+ strings)</li>
-      </ul>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list" data-i18n-html="cl.062.fixed">
-        <li>SSH KEX algorithm negotiation &mdash; curve25519, ecdh, ed25519, rsa-sha2</li>
-        <li>Linux GLIBC 2.35 (Ubuntu 22.04) and Win7 (<code>_WIN32_WINNT=0x0601</code>) compatibility</li>
-        <li>Platform-adaptive shortcuts (Cmd/Ctrl); right-click paste in terminal</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry cl-old">
-      <div class="cl-head">
-        <span class="cl-ver cl-ver-old">0.4.0</span>
-        <span class="cl-date">2026-04-14</span>
-      </div>
-      <ul class="cl-list">
-        <li>Dynamic library architecture, network auto-update, DMG installer, neon icon</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry cl-old">
-      <div class="cl-head">
-        <span class="cl-ver cl-ver-old">0.3.1</span>
-        <span class="cl-date">2026-04-14</span>
-      </div>
-      <ul class="cl-list"><li>Tab focus cycling, Enter submit, rounded icon, website redesign, Discord/QQ</li></ul>
-    </div>
-
-    <div class="cl-entry cl-old">
-      <div class="cl-head">
-        <span class="cl-ver cl-ver-old">0.3.0</span>
-        <span class="cl-date">2026-04-13</span>
-      </div>
-      <div class="cl-cat cl-cat-add" data-i18n="cl.cat.added">Added</div>
-      <ul class="cl-list">
-        <li>rz/sz ZMODEM detection &mdash; auto file transfer via SFTP</li>
-        <li>Terminal scrollback: 10,000 lines with mouse wheel</li>
-        <li>Text selection + copy to clipboard</li>
-        <li>Resume file transfers (breakpoint SFTP)</li>
-        <li>File browser syncs with shell CWD</li>
-        <li>Transfer speed in progress bar + cancel button</li>
-        <li>Cmd+S editor save, connection edit/delete, tab status dots</li>
-      </ul>
-      <div class="cl-cat cl-cat-perf" data-i18n="cl.cat.perf">Performance</div>
-      <ul class="cl-list">
-        <li>spawn_blocking for all SSH/SFTP &mdash; UI never freezes</li>
-        <li>Streaming SFTP I/O &mdash; large files don't load into memory</li>
-      </ul>
-      <div class="cl-cat cl-cat-fix" data-i18n="cl.cat.fixed">Fixed</div>
-      <ul class="cl-list">
-        <li>Progress bar rendering, Ctrl+L, file sizes, CJK in all UI</li>
-        <li>System/Network/Process/File browser column alignment</li>
-        <li>sz filename from terminal grid, font zoom prevention</li>
-      </ul>
-    </div>
-
-    <div class="cl-entry cl-old">
-      <div class="cl-head"><span class="cl-ver cl-ver-old">0.2.0</span><span class="cl-date">2026-04-13</span></div>
-      <ul class="cl-list"><li>Eternal SSH, multi-tab, VIM, CJK, SSH config import, DNS, canvas caching, code signing</li></ul>
-    </div>
-    <div class="cl-entry cl-old">
-      <div class="cl-head"><span class="cl-ver cl-ver-old">0.1.0</span><span class="cl-date">2026-04-13</span></div>
-      <ul class="cl-list"><li>Initial release: Rust GUI, SSH terminal, encrypted vault, monitoring, SFTP, cross-platform</li></ul>
     </div>
   </div>
 </section>
@@ -650,7 +370,7 @@ const TRANSLATIONS = {
     'hero.tag':          'Pure Rust &bull; Native GPU &bull; Open Source',
     'hero.title':        'The terminal you<br>actually <em>want</em> to use.',
     'hero.sub':          'NeoShell is a native SSH manager built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP &mdash; all in a single 6MB binary.',
-    'hero.btn.download': 'Download v0.6.21',
+    'hero.btn.download': 'Download v0.6.26',
     'hero.btn.explore':  'Explore features',
     'hero.btn.source':   'View on GitHub &rarr;',
     'hero.metric.binary':    'Binary size',
@@ -690,7 +410,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       'Get started',
     'dl.title':       'Download NeoShell',
-    'dl.desc':        'v0.6.21 &mdash; Single binary. No installer dependencies.',
+    'dl.desc':        'v0.6.26 &mdash; Single binary. No installer dependencies.',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -730,7 +450,7 @@ const TRANSLATIONS = {
     'hero.tag':          '纯 Rust 构建 &bull; 原生 GPU 渲染 &bull; 完全开源',
     'hero.title':        '你真正<em>想用</em>的<br>那款终端。',
     'hero.sub':          'NeoShell 是一款完全用 Rust 打造的原生 SSH 管理器。加密凭据库、实时监控、多标签终端、SFTP 文件管理——全部集成在一个 6MB 的单文件可执行程序中。',
-    'hero.btn.download': '下载 v0.6.21',
+    'hero.btn.download': '下载 v0.6.26',
     'hero.btn.explore':  '探索功能',
     'hero.btn.source':   '查看源码 &rarr;',
     'hero.metric.binary':    '程序体积',
@@ -770,7 +490,7 @@ const TRANSLATIONS = {
     /* download */
     'dl.label':       '立即开始',
     'dl.title':       '下载 NeoShell',
-    'dl.desc':        'v0.6.21 &mdash; 单文件可执行，无需安装依赖。',
+    'dl.desc':        'v0.6.26 &mdash; 单文件可执行，无需安装依赖。',
     'dl.macos':       'macOS',
     'dl.macos.arm':   'ARM64 .dmg &darr;',
     'dl.macos.intel': 'Intel x86_64 .dmg',
@@ -791,30 +511,9 @@ const TRANSLATIONS = {
     'cl.cat.perf':    '性能优化',
     'cl.cat.fixed':   '问题修复',
     'cl.cat.changed': '优化调整',
-    'cl.0621.added':   '<li><strong>一键导入 <code>~/.ssh/config</code></strong> — Connect 对话框新增"全部导入 (N)"按钮，把所有 <code>Host</code> 条目添加到连接列表，按 <code>user@host:port</code> 自动去重</li><li><strong>命令广播</strong> — 工具栏"广播"按钮打开广播面板，一次输入命令并勾选要下发的活跃 session，批量下发到所有选中机器。适用于 <code>apt update</code>、日志 tail 等 fleet 操作</li><li><strong>命令片段库</strong> — 工具栏"片段"按钮，新建/编辑/删除命名的片段（name + body），点击即发送到当前 session，持久化到 <code>snippets.json</code></li>',
-    'cl.0621.changed': '<li>Settings → Appearance 全面 rollout 到几乎所有 UI：29 个 view 函数接入 theme config，206 处字号引用随 UI 字号滑条缩放，~280 处颜色引用改用可配置的 <code>c_primary / c_accent / c_success / c_danger</code> helper。所有改动即时生效，无需重启</li>',
-    'cl.0621.fixed':   '<li>修复滚动穿透 & 点击穿透 — 打开任意 overlay 时（Settings / History / Shortcuts / 广播 / 片段 / 隧道 / 代理 / About / LogViewer / 右键菜单 / 各 dialog），下面的终端不再响应滚轮或点击。新增 <code>any_overlay_open()</code> 统一判断，在每个终端事件 handler 里前置拦截</li>',
-    'cl.0620.added':   '<li><strong>Settings → Appearance</strong> — 7 个颜色 zone 调色盘（Primary text / Accent / Terminal 前景 / Terminal 背景 / Success / Danger / Progress bar），每个 zone 都是 RGB 三滑条 + hex 输入框 + 实时预览</li><li>两条字号滑条：终端字号（8–28px）+ UI 字号（10–18px）。一键恢复默认按钮</li><li>配置自动持久化到 <code>~/Library/Application Support/neoshell/theme.json</code>，重启保留</li>',
-    'cl.0619.changed': '<li>工具栏按钮支持<strong>点开/点关</strong>切换 — Settings / Proxies / Tunnels / History / LogViewer / About 这些面板现在点第二次就收起。之前只能去找 × 按钮关闭，不符合直觉。Esc 和 × 一如既往可用</li>',
-    'cl.0618.fixed': '<li>每次登录都出现 3 条 <code>bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)</code> — 我们之前用 <code>exec("LANG=... $SHELL -l")</code> 包装 + <code>channel.setenv("LC_ALL",...)</code>，服务器没装该 locale 就 warn。改回标准 <code>channel.shell()</code>，locale 让服务器自己决定</li><li>Welcome/motd 不完整 — exec 包装还破坏了 PAM 的 motd pipeline。切回 shell request 后 <code>/etc/motd</code>、last login、系统信息按正常顺序输出。<em>另外</em>新增 <code>session.userauth_banner()</code> 捕获 SSH pre-auth banner（企业 legal notice 等），注入到终端顶部</li><li>top / htop 行距过大 — <code>cell_h</code> 原本 <code>font_size * 1.5</code> 过宽，改成 <code>1.2</code>，匹配 iTerm2 / Windows Terminal 默认密度</li>',
-    'cl.0617.added': '<li><strong>NeoShell 现已开源</strong> — <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener">github.com/uk0/NeoShell</a></li>',
-    'cl.0617.fixed': '<li><code>ls</code> / <code>top</code> 输出右边被截断 — canvas resize 同步到远端 PTY</li><li>窗口 resize 后 Welcome/motd/prompt 丢失 — 保留 cursor 所在行，其余进 scrollback</li>',
-    'cl.0616.fixed': '<li>8 处中文按钮残余 tofu（代理管理 add/test/edit/delete、历史清空、状态栏 LOG/QUIT、隧道 + 新增隧道）— 移除 <code>Font::MONOSPACE</code> 覆写让它们继承嵌入的 Noto Sans CJK SC</li>',
-    'cl.0615.fixed': '<li>统一 UI_FONT 和 CJK_FONT 都用嵌入的 Noto Sans CJK SC，所有平台 text widget + canvas 都能渲染中文</li>',
-    'cl.0614.fixed': '<li>终端 session 里服务器返回的中文 — pyftsubset 精简时清空了嵌入字体的 <code>name</code> 表，重做 subset 保留 name 记录，Family::Name 现在能命中</li><li>移除坏的"emoji 字体" embed（66 KB 的 GitHub 404 HTML 页，每次启动触发 fontdb "malformed font"）</li>',
-    'cl.0614.added': '<li><strong>SSH 隧道管理</strong>（工具栏"隧道管理"按钮）— 通过跳板机持续端口转发，独立于终端 tab；每条隧道一条 SSH 会话支持多个 <code>本地端口:远端主机:远端端口</code> 映射，密码/密钥认证，auto_start 应用启动自动拉起，工具栏运行中显示绿色徽标</li><li>参考 <a href="https://github.com/uk0/sshrw">github.com/uk0/sshrw</a> 设计；同时支持紧凑（<code>8080:10.0.0.5:80</code>）和箭头（<code>10.0.0.5:80-&gt;8080</code>）两种规则语法</li>',
-    'cl.0613.added': '<li>关闭 (×) 按钮最小化到任务栏/Dock，SSH 会话不中断；状态栏 QUIT 按钮 + <code>Cmd/Ctrl+Shift+Q</code> 快捷键真正退出</li><li>内嵌 Nerd Font Mono (2.5 MB)，oh-my-zsh / powerlevel10k / starship prompt 无需系统装字体也能正确渲染</li>',
-    'cl.0612.fixed': '<li>top/htop/nmon 列偏移 — 零宽字符（combining marks / ZWJ / variation selectors）不再推进光标</li><li>CJK 字形尺寸从 1.3x 改为 1.1x，宽字符不再溢出 2-cell 槽</li>',
-    'cl.0611.added': '<li>监控 / SFTP / 文件浏览现在在 minimal-mode 下也能工作（MINA SSHD / 嵌入式设备 / 堡垒机跳板）— exec 通过共享主 session + 互斥串行化实现</li>',
-    'cl.0610.fixed': '<li>Apache MINA SSHD / 嵌入式 / 专有 SSH 实现 minimal-mode — 跳过 setenv/keepalive/exec 启动 shell，改用标准 <code>shell</code> 请求</li><li>不再 <code>Read error: transport read</code> 无限循环</li><li>日志文件运行中被删自动重建</li>',
-    'cl.069.fixed': '<li>堡垒机 / 嵌入式 SSH <code>Failed to open channel: Session(-13)</code> — tmux 探测从主 session 移走，非 OpenSSH banner 直接走 RawShell</li>',
-    'cl.067.fixed': '<li>Windows SSH 连接现代 OpenSSH 服务器 KEX 失败 — libssh2 改用 OpenSSL 后端（原 WinCNG 缺 curve25519/ecdh/ed25519），全平台算法一致</li><li>两阶段握手重试（过滤算法列表 → libssh2 默认配置）覆盖 kex-strict 边缘情况</li><li>握手前 banner 预读 — 即便失败也能在日志里看到服务器的 SSH 版本号</li>',
-    'cl.067.added': '<li>CI 构建期算法验证 — 每个平台 build 后跑 <code>cargo test algorithm_tests</code>，缺 curve25519/ecdh/ed25519 直接阻塞发布</li><li>启动自检输出 <code>libssh2 algorithm self-check: OK</code>（或明确列出缺失算法）</li>',
-    'cl.065.added': '<li>日志持久化 — 自动写入应用数据目录，2MB 滚动保留</li><li>连接错误弹窗 — 显示完整翻译后的错误信息，附「查看日志」快捷入口</li><li>应用内日志查看器 — 状态栏 <code>日志</code> 按钮展示最近 200KB 日志；支持刷新与打开目录</li>',
-    'cl.064.added': '<li>连接测试按钮 — 表单和列表都有，保存前先验证 TCP+handshake+auth，列表显示延迟</li><li>连接克隆 — 一键复制现有连接（自动加 "(Copy)" 后缀）</li><li>键盘快捷键帮助面板 — <code>F1</code>、<code>Cmd+/</code>、或状态栏 <code>?</code> 按钮</li><li>更友好的 SSH 错误提示 — 11 种常见失败场景的可读建议（中英文自动切换）</li>',
-    'cl.063.added': '<li>SSH 堡垒机（跳板机）代理支持 — 通过 SSH <code>direct-tcpip</code> 通道隧道</li><li>堡垒机支持密码或私钥认证，私钥路径文件选择器</li><li>代理测试执行完整 SSH 握手 + 认证</li>',
-    'cl.062.added': '<li>仿 FinalShell 界面 — 工具栏 + 左侧连接 + 终端 + 底部多标签面板</li><li>双面板文件浏览器 — 本地 + 远程 + 刷新</li><li>快捷命令面板、进程详情检查、SOCKS5H/HTTP 代理支持</li><li>命令历史、底部面板拖动调整、字体大小持久化</li><li>完整中英文国际化（120+ 条目）</li>',
-    'cl.062.fixed': '<li>SSH KEX 算法协商 — curve25519、ecdh、ed25519、rsa-sha2</li><li>Linux GLIBC 2.35 (Ubuntu 22.04) 与 Win7 (<code>_WIN32_WINNT=0x0601</code>) 兼容</li><li>跨平台快捷键 (Cmd/Ctrl) + 终端右键粘贴</li>',
+    'cl.0626.added':   '<li><strong>Cmd+F 终端搜索</strong> — 终端右上角浮动搜索框，实时扫 scrollback + 当前 grid，所有匹配黄色高亮、当前匹配橙色，「3/12」计数、大小写敏感 toggle，Enter/↑/↓ 导航，Esc 关闭</li><li><strong>一键批量导入 <code>~/.ssh/config</code></strong> — Connect 对话框「全部导入 (N)」按钮把所有 <code>Host</code> 条目加入连接列表，按 <code>user@host:port</code> 去重</li><li><strong>命令广播</strong> — 工具栏面板一次输入、勾选多个活跃 session 批量下发。适合 <code>apt update</code>、日志 tail 等 fleet 场景</li><li><strong>命令片段库</strong> — 持久化到 <code>snippets.json</code>，点击即发到当前 session</li><li><strong>Settings → Appearance</strong> — 7 个颜色 zone 调色盘（主文本/强调/终端前景+背景/成功/危险/进度条）含 RGB 滑条 + hex 输入 + 实时预览，两条字号滑条（终端 8–28px、UI 10–18px），自动存 <code>theme.json</code></li><li><strong>底部面板可折叠</strong> — Splitter 中央加 chevron 按钮，新快捷键 <code>⌘+J / Ctrl+J</code>（VSCode/iTerm2 约定）一键收起，终端拿到全屏高度</li>',
+    'cl.0626.changed': '<li><strong>主题系统全面 rollout</strong> — 29 个 view 函数接入 <code>theme_cfg</code>，206 处字号引用随 UI 字号滑条缩放，~280 处颜色改用 <code>c_primary / c_accent / c_success / c_danger</code> helper，所有改动即时生效无需重启</li><li><strong>工具栏按钮支持点开/点关</strong> — Settings / Proxies / Tunnels / History / LogViewer / About 点第二次自动收起，不用再去找 × 按钮</li><li><strong>快捷键帮助面板大改</strong> — 平台自适应（macOS 显示 ⌘、Win/Linux 显示 Ctrl），全部描述 i18n 化（中英双语），分组为「标签页 / 终端 / 面板 / 其他」，补齐缺失的快捷键（⌘+F 搜索、⌘+S 保存、⌘+J 面板、Ctrl+Shift+Tab 上一标签、搜索栏 Enter/Esc）</li>',
+    'cl.0626.fixed':   '<li><strong>Overlay 滚动穿透 & 点击穿透</strong> — 打开任意 overlay 时（Settings / History / Shortcuts / 广播 / 片段 / 隧道 / 代理 / About / LogViewer / 右键菜单 / 各 dialog），下面的终端不再响应滚轮或点击。新增 <code>any_overlay_open()</code> 统一判断，在每个终端事件 handler 里前置拦截</li>',
     /* contact */
     'contact.label': '保持联系',
     'contact.title': '加入社区',

@@ -6,7 +6,18 @@ import react from "@vitejs/plugin-react";
 const BUILD_ID = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // Stamp the current build id into index.html so the runtime can
+    // compare it with the JS bundle's baked-in __BUILD_ID__ and force
+    // a reload when a stale HTML sneaks past every cache layer.
+    {
+      name: "build-id-html",
+      transformIndexHtml(html) {
+        return html.replace(/%BUILD_ID%/g, BUILD_ID);
+      },
+    },
+  ],
   define: {
     __BUILD_ID__: JSON.stringify(BUILD_ID),
   },

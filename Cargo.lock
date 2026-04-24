@@ -2623,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "neoshell"
-version = "0.6.20"
+version = "0.6.21"
 dependencies = [
  "dirs 5.0.1",
  "libloading 0.8.9",
@@ -2632,7 +2632,7 @@ dependencies = [
 
 [[package]]
 name = "neoshell-core"
-version = "0.6.20"
+version = "0.6.21"
 dependencies = [
  "aes-gcm",
  "arboard",

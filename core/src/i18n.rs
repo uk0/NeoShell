@@ -134,6 +134,21 @@ static EN: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("theme.terminal_font_size", "Terminal font size");
     m.insert("theme.ui_font_size", "UI font size");
     m.insert("theme.reset", "Reset to defaults");
+    m.insert("dialog.ssh_config_import_all", "Import all ({count})");
+    m.insert("broadcast.title", "Broadcast command");
+    m.insert("broadcast.hint", "Command will be sent to every ticked session (appends \\n)");
+    m.insert("broadcast.sessions", "Active sessions");
+    m.insert("broadcast.send", "Send to ticked");
+    m.insert("broadcast.empty", "No active sessions to broadcast to");
+    m.insert("snippet.title", "Snippets");
+    m.insert("snippet.new", "New snippet");
+    m.insert("snippet.name_placeholder", "Name (e.g. 'docker ps')");
+    m.insert("snippet.body_placeholder", "Command or script body");
+    m.insert("snippet.save", "Save");
+    m.insert("snippet.send", "Send to active tab");
+    m.insert("snippet.empty", "No snippets yet — create one below");
+    m.insert("btn.broadcast", "Broadcast");
+    m.insert("btn.snippets", "Snippets");
     // SSH error hints
     m.insert("ssh.err.auth", "wrong username/password or key — check credentials or server sshd permissions");
     m.insert("ssh.err.refused", "target port closed — confirm SSH service is running on the right port (usually 22)");
@@ -369,6 +384,21 @@ static ZH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("theme.terminal_font_size", "终端字号");
     m.insert("theme.ui_font_size", "UI 字号");
     m.insert("theme.reset", "恢复默认");
+    m.insert("dialog.ssh_config_import_all", "全部导入 ({count})");
+    m.insert("broadcast.title", "广播命令");
+    m.insert("broadcast.hint", "命令将发送到所有勾选的 session（自动补 \\n）");
+    m.insert("broadcast.sessions", "活跃会话");
+    m.insert("broadcast.send", "发送到已勾选");
+    m.insert("broadcast.empty", "没有活跃会话可广播");
+    m.insert("snippet.title", "命令片段");
+    m.insert("snippet.new", "新建片段");
+    m.insert("snippet.name_placeholder", "名称（如 'docker ps'）");
+    m.insert("snippet.body_placeholder", "命令 / 脚本内容");
+    m.insert("snippet.save", "保存");
+    m.insert("snippet.send", "发送到当前 tab");
+    m.insert("snippet.empty", "暂无片段 — 在下方新建");
+    m.insert("btn.broadcast", "广播");
+    m.insert("btn.snippets", "片段");
     // SSH 错误提示
     m.insert("ssh.err.auth", "用户名或密码/密钥不正确 — 请检查账号凭据，或确认服务器 sshd 是否允许此用户登录");
     m.insert("ssh.err.refused", "目标端口未开放 — 确认 SSH 服务已启动且端口号正确 (通常是 22)");

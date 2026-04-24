@@ -432,6 +432,71 @@ impl TerminalGrid {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Find all occurrences of `query` in scrollback + visible grid.
+    /// `abs_line` indices: 0..scrollback.len() for history, then grid rows after.
+    pub fn search(&self, query: &str, case_insensitive: bool) -> Vec<SearchMatch> {
+        if query.is_empty() { return Vec::new(); }
+        let needle: String = if case_insensitive { query.to_lowercase() } else { query.to_string() };
+        let mut out = Vec::new();
+        for (i, row) in self.scrollback.iter().enumerate() {
+            append_row_matches(row, &needle, case_insensitive, i, &mut out);
+        }
+        let sb_len = self.scrollback.len();
+        for (gy, row) in self.cells.iter().enumerate() {
+            append_row_matches(row, &needle, case_insensitive, sb_len + gy, &mut out);
+        }
+        out
+    }
+}
+
+/// A search hit in the terminal buffer. Coordinates are in absolute-line space
+/// (scrollback rows first, grid rows after). `col_end` is exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub abs_line: usize,
+    pub col_start: usize,
+    pub col_end: usize,
+}
+
+fn append_row_matches(
+    row: &[Cell],
+    needle: &str,
+    case_insensitive: bool,
+    abs_line: usize,
+    out: &mut Vec<SearchMatch>,
+) {
+    // Build the row as a String and remember which column each byte of the
+    // string came from, so we can translate byte offsets back to columns.
+    let mut buf = String::with_capacity(row.len());
+    let mut col_for_byte: Vec<usize> = Vec::with_capacity(row.len() * 2);
+    for (col, cell) in row.iter().enumerate() {
+        let ch = if cell.c == '\0' { ' ' } else { cell.c };
+        if case_insensitive {
+            for lo in ch.to_lowercase() {
+                let s_len = lo.len_utf8();
+                for _ in 0..s_len { col_for_byte.push(col); }
+                buf.push(lo);
+            }
+        } else {
+            let s_len = ch.len_utf8();
+            for _ in 0..s_len { col_for_byte.push(col); }
+            buf.push(ch);
+        }
+    }
+    for (byte_idx, _) in buf.match_indices(needle) {
+        let col_start = col_for_byte.get(byte_idx).copied().unwrap_or(0);
+        let end_byte = byte_idx + needle.len();
+        // Column of the last byte belonging to the match, then +1 for exclusive end.
+        let col_end = col_for_byte
+            .get(end_byte.saturating_sub(1))
+            .copied()
+            .map(|c| c + 1)
+            .unwrap_or_else(|| col_for_byte.last().copied().map(|c| c + 1).unwrap_or(col_start));
+        out.push(SearchMatch { abs_line, col_start, col_end });
+    }
+}
+
+impl TerminalGrid {
     /// Handle SGR (Select Graphic Rendition) escape parameters.
     fn handle_sgr(&mut self, params: &vte::Params) {
         let params: Vec<u16> = params.iter().flat_map(|sub| sub.iter().copied()).collect();
@@ -928,6 +993,25 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_search_basic() {
+        let mut g = TerminalGrid::new(20, 4);
+        g.write(b"error: timeout\r\nwarn: slow\r\nERROR: retry\r\n");
+        let hits = g.search("error", true);
+        assert_eq!(hits.len(), 2);
+        let hits_cs = g.search("error", false);
+        assert_eq!(hits_cs.len(), 1);
+        assert_eq!(hits_cs[0].col_start, 0);
+        assert_eq!(hits_cs[0].col_end, 5);
+    }
+
+    #[test]
+    fn test_search_empty_query_returns_nothing() {
+        let mut g = TerminalGrid::new(10, 2);
+        g.write(b"hello");
+        assert!(g.search("", true).is_empty());
+    }
 
     #[test]
     fn test_basic_print() {

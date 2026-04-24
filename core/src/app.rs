@@ -298,6 +298,12 @@ pub struct NeoShell {
     snippet_edit_id: Option<String>,
     snippet_form_name: String,
     snippet_form_body: String,
+    // ---- v0.6.22: Cmd+F terminal search ----
+    term_search_active: bool,
+    term_search_query: String,
+    term_search_case_insensitive: bool,
+    term_search_matches: Vec<crate::terminal::SearchMatch>,
+    term_search_current: usize,
 }
 
 /// A reusable command snippet (named command/script) persisted in snippets.json.
@@ -326,6 +332,45 @@ fn load_snippets() -> Vec<Snippet> {
 fn save_snippets(list: &[Snippet]) {
     if let Ok(json) = serde_json::to_string_pretty(list) {
         let _ = std::fs::write(snippets_path(), json);
+    }
+}
+
+/// Stable widget id for the Cmd+F search input so we can focus it on open.
+const TERM_SEARCH_INPUT_ID: &str = "term_search";
+
+/// Re-run search against the focused terminal's scrollback + grid.
+fn rerun_terminal_search(state: &mut NeoShell) {
+    state.term_search_matches.clear();
+    state.term_search_current = 0;
+    if state.term_search_query.is_empty() {
+        return;
+    }
+    if let Some(term) = state.focused_terminal().cloned() {
+        let grid = term.lock();
+        state.term_search_matches =
+            grid.search(&state.term_search_query, state.term_search_case_insensitive);
+    }
+}
+
+/// Adjust the terminal's scroll_offset so the current match sits roughly in
+/// the middle of the viewport. No-op if there are no matches.
+fn scroll_to_current_match(state: &mut NeoShell) {
+    let m_opt = state
+        .term_search_matches
+        .get(state.term_search_current)
+        .copied();
+    let term_opt = state.focused_terminal().cloned();
+    if let (Some(term), Some(m)) = (term_opt, m_opt) {
+        let mut grid = term.lock();
+        let sb_len = grid.scrollback.len();
+        let rows = grid.rows;
+        if m.abs_line >= sb_len {
+            grid.scroll_offset = 0;
+        } else {
+            let target = (sb_len as isize - m.abs_line as isize + (rows / 2) as isize).max(0) as usize;
+            grid.scroll_offset = target.min(sb_len);
+        }
+        grid.generation = grid.generation.wrapping_add(1);
     }
 }
 
@@ -588,6 +633,14 @@ pub enum Message {
     RzDetected(String),      // session_id — rz wants to receive a file
     SzDetected(String),      // session_id — sz wants to send a file
     RzUploadDone(String),    // session_id — upload finished
+
+    // Terminal search (Cmd+F)
+    ToggleTerminalSearch,
+    TerminalSearchChanged(String),
+    TerminalSearchNext,
+    TerminalSearchPrev,
+    TerminalSearchClose,
+    ToggleTerminalSearchCase,
 
     // Terminal scrollback & selection
     TerminalScrollUp(usize),
@@ -906,6 +959,11 @@ impl Default for NeoShell {
             snippet_edit_id: None,
             snippet_form_name: String::new(),
             snippet_form_body: String::new(),
+            term_search_active: false,
+            term_search_query: String::new(),
+            term_search_case_insensitive: true,
+            term_search_matches: Vec::new(),
+            term_search_current: 0,
         }
     }
 }
@@ -939,6 +997,31 @@ impl NeoShell {
             || self.process_detail.is_some()
             || self.selected_interface.is_some()
             || self.editor_file_path.is_some()
+    }
+
+    /// Terminal grid of the currently focused pane. For v0.6.22 there is still
+    /// exactly one terminal per tab; v0.6.24 will route this through the pane
+    /// tree without touching any of the callers.
+    #[inline]
+    fn focused_terminal(&self) -> Option<&Arc<parking_lot::Mutex<TerminalGrid>>> {
+        self.active_tab
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| &t.terminal)
+    }
+
+    /// Terminal grid that belongs to the given SSH `session_id`, regardless of
+    /// which tab it lives in. When split panes land, this will scan extra panes
+    /// as well — keeping the lookup behind a single helper means the ZMODEM /
+    /// data-event / close-event paths don't have to be rewritten.
+    #[inline]
+    fn find_terminal_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<&Arc<parking_lot::Mutex<TerminalGrid>>> {
+        self.tabs
+            .iter()
+            .find(|t| t.session_id == session_id)
+            .map(|t| &t.terminal)
     }
 }
 
@@ -1751,6 +1834,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                                 return Task::done(Message::CopySelection);
                             }
                         }
+                        "f" | "F" => return Task::done(Message::ToggleTerminalSearch),
                         "t" | "T" => return Task::done(Message::ShowConnectDialog),
                         "w" | "W" => {
                             // Cmd+W = close current tab
@@ -1811,6 +1895,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
 
             // ESC closes open dialogs
             if let keyboard::Key::Named(keyboard::key::Named::Escape) = &key {
+                if state.term_search_active {
+                    return Task::done(Message::TerminalSearchClose);
+                }
                 if state.show_error_dialog {
                     state.show_error_dialog = false;
                     state.error_message.clear();
@@ -2435,6 +2522,52 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             let path = state.current_dir.get(&sid).cloned()
                 .unwrap_or_else(|| "~".to_string());
             Task::done(Message::ChangeDir(sid, path))
+        }
+
+        // ---- terminal search (Cmd+F) ---------------------------------------
+        Message::ToggleTerminalSearch => {
+            state.term_search_active = !state.term_search_active;
+            if state.term_search_active {
+                rerun_terminal_search(state);
+                scroll_to_current_match(state);
+                text_input::focus(text_input::Id::new(TERM_SEARCH_INPUT_ID))
+            } else {
+                state.term_search_matches.clear();
+                Task::none()
+            }
+        }
+        Message::TerminalSearchChanged(q) => {
+            state.term_search_query = q;
+            rerun_terminal_search(state);
+            scroll_to_current_match(state);
+            Task::none()
+        }
+        Message::TerminalSearchNext => {
+            if !state.term_search_matches.is_empty() {
+                state.term_search_current =
+                    (state.term_search_current + 1) % state.term_search_matches.len();
+                scroll_to_current_match(state);
+            }
+            Task::none()
+        }
+        Message::TerminalSearchPrev => {
+            if !state.term_search_matches.is_empty() {
+                let n = state.term_search_matches.len();
+                state.term_search_current = (state.term_search_current + n - 1) % n;
+                scroll_to_current_match(state);
+            }
+            Task::none()
+        }
+        Message::TerminalSearchClose => {
+            state.term_search_active = false;
+            state.term_search_matches.clear();
+            Task::none()
+        }
+        Message::ToggleTerminalSearchCase => {
+            state.term_search_case_insensitive = !state.term_search_case_insensitive;
+            rerun_terminal_search(state);
+            scroll_to_current_match(state);
+            Task::none()
         }
         Message::SzDetected(sid) => {
             // Prevent duplicate: skip if already downloading
@@ -5187,6 +5320,117 @@ fn sidebar_divider() -> Element<'static, Message> {
         .into()
 }
 
+/// Overlay search bar that floats in the upper-right corner of the terminal.
+/// Rendered on top of the terminal canvas via `stack![]`. Uses `pick_next`
+/// wiring: typing into the input fires `TerminalSearchChanged`, pressing Enter
+/// fires `TerminalSearchNext`. ↑ / ↓ / Aa / × are explicit buttons.
+fn view_terminal_search_bar(state: &NeoShell) -> Element<'_, Message> {
+    let scale = state.ui_scale();
+    let c_primary = state.c_primary();
+    let c_accent = state.c_accent();
+
+    let count_label = if state.term_search_query.is_empty() {
+        String::new()
+    } else if state.term_search_matches.is_empty() {
+        i18n::t("search.no_matches").to_string()
+    } else {
+        format!(
+            "{}/{}",
+            state.term_search_current + 1,
+            state.term_search_matches.len()
+        )
+    };
+
+    let input = text_input(
+        &i18n::t("search.placeholder"),
+        &state.term_search_query,
+    )
+    .id(text_input::Id::new(TERM_SEARCH_INPUT_ID))
+    .on_input(Message::TerminalSearchChanged)
+    .on_submit(Message::TerminalSearchNext)
+    .padding(Padding::from([4, 8]))
+    .size(12.0 * scale)
+    .width(Length::Fixed(200.0 * scale));
+
+    let case_active = !state.term_search_case_insensitive;
+    let case_btn = button(
+        text("Aa")
+            .size(11.0 * scale)
+            .color(if case_active { Color::WHITE } else { c_primary }),
+    )
+    .on_press(Message::ToggleTerminalSearchCase)
+    .padding(Padding::from([4, 6]))
+    .style(move |_, _| button::Style {
+        background: Some(if case_active {
+            c_accent.into()
+        } else {
+            theme::BG_TERTIARY.into()
+        }),
+        text_color: if case_active { Color::WHITE } else { c_primary },
+        border: iced::Border {
+            radius: 4.0.into(),
+            width: 1.0,
+            color: theme::BORDER,
+        },
+        ..Default::default()
+    });
+
+    let nav_btn = |label: &'static str, msg: Message| {
+        button(text(label).size(12.0 * scale).color(c_primary))
+            .on_press(msg)
+            .padding(Padding::from([4, 8]))
+            .style(|_, _| button::Style {
+                background: Some(theme::BG_TERTIARY.into()),
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color: theme::BORDER,
+                },
+                ..Default::default()
+            })
+    };
+
+    let bar = container(
+        row![
+            input,
+            text(count_label)
+                .size(11.0 * scale)
+                .color(theme::TEXT_MUTED)
+                .width(Length::Fixed(56.0 * scale)),
+            nav_btn("↑", Message::TerminalSearchPrev),
+            nav_btn("↓", Message::TerminalSearchNext),
+            case_btn,
+            nav_btn("×", Message::TerminalSearchClose),
+        ]
+        .spacing(6)
+        .align_y(alignment::Vertical::Center),
+    )
+    .padding(Padding::from([8, 10]))
+    .style(|_| container::Style {
+        background: Some(theme::BG_SECONDARY.into()),
+        border: iced::Border {
+            radius: 8.0.into(),
+            width: 1.0,
+            color: theme::BORDER,
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
+        },
+        ..Default::default()
+    });
+
+    // Push the bar to the top-right using a column + row with Fill spacers.
+    column![
+        row![Space::with_width(Fill), bar, Space::with_width(Length::Fixed(12.0))]
+            .align_y(alignment::Vertical::Center),
+        Space::with_height(Fill),
+    ]
+    .padding(Padding::from([8, 0]))
+    .into()
+}
+
 fn section_header(title: &str) -> Element<'static, Message> {
     section_header_sized(title, 12.0)
 }
@@ -5289,9 +5533,21 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
                 ssh_manager: state.ssh_manager.clone(),
                 terminal_bg: state.theme_cfg.terminal_bg.to_color(),
                 terminal_fg: state.theme_cfg.terminal_fg.to_color(),
+                search_matches: state.term_search_matches.clone(),
+                search_current: if state.term_search_active && !state.term_search_matches.is_empty() {
+                    Some(state.term_search_current)
+                } else {
+                    None
+                },
             };
 
-            return canvas(term_view).width(Fill).height(Fill).into();
+            let canvas_el: Element<'_, Message> =
+                canvas(term_view).width(Fill).height(Fill).into();
+
+            if state.term_search_active {
+                return stack![canvas_el, view_terminal_search_bar(state)].into();
+            }
+            return canvas_el;
         }
     }
 
@@ -7597,6 +7853,12 @@ struct TerminalView {
     terminal_bg: Color,
     #[allow(dead_code)]
     terminal_fg: Color,
+    /// All Cmd+F matches in absolute-line coords; painted as yellow/orange
+    /// rectangles on top of the cell background.
+    search_matches: Vec<crate::terminal::SearchMatch>,
+    /// Index into `search_matches` for the currently selected match; painted
+    /// in a brighter color than the rest.
+    search_current: Option<usize>,
 }
 
 /// Persistent state for the terminal canvas. Created once by iced and reused
@@ -7842,6 +8104,29 @@ impl<Message> canvas::Program<Message> for TerminalView {
                             highlight_color,
                         );
                     }
+                }
+            }
+
+            // Cmd+F search highlights — draw after content so hits are clearly
+            // visible even over colored backgrounds. Current match uses a
+            // brighter fill than the rest.
+            if !self.search_matches.is_empty() {
+                let sb_len = grid.scrollback.len();
+                let top_abs = sb_len.saturating_sub(grid.scroll_offset);
+                let yellow = Color::from_rgba(0.95, 0.85, 0.20, 0.35);
+                let orange = Color::from_rgba(0.95, 0.50, 0.10, 0.70);
+                for (i, m) in self.search_matches.iter().enumerate() {
+                    if m.abs_line < top_abs { continue; }
+                    let vy = m.abs_line - top_abs;
+                    if vy >= grid.rows { continue; }
+                    let span = m.col_end.saturating_sub(m.col_start);
+                    if span == 0 { continue; }
+                    let color = if self.search_current == Some(i) { orange } else { yellow };
+                    frame.fill_rectangle(
+                        Point::new(m.col_start as f32 * cell_w, vy as f32 * cell_h),
+                        Size::new(span as f32 * cell_w, cell_h),
+                        color,
+                    );
                 }
             }
 

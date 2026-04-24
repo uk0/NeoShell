@@ -6837,10 +6837,12 @@ impl<Message> canvas::Program<Message> for TerminalView {
             state.last_generation.store(current_gen, Ordering::Relaxed);
         }
 
-        // Resize terminal grid to fit canvas bounds
+        // Resize terminal grid to fit canvas bounds.
+        // cell_h was 1.5x font_size — too loose, top/htop output looked
+        // double-spaced. 1.2x matches iTerm2/Windows Terminal defaults.
         let font_size: f32 = self.font_size;
         let cell_w = font_size * 0.6;
-        let cell_h = font_size * 1.5;
+        let cell_h = font_size * 1.2;
         let new_cols = ((bounds.width / cell_w).floor() as usize).max(2);
         let new_rows = ((bounds.height / cell_h).floor() as usize).max(2);
         let needs_resize = new_cols != grid.cols || new_rows != grid.rows;

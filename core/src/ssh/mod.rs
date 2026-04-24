@@ -633,6 +633,22 @@ impl SshManager {
             return Err("Authentication failed".to_string());
         }
 
+        // --- Capture SSH pre-auth banner (SSH_MSG_USERAUTH_BANNER). This is
+        // the "Welcome" / legal notice the server sends BEFORE opening the
+        // shell channel — separate from /etc/motd which flows through the
+        // shell. Without this, users on servers with pre-auth banners just
+        // never saw that text. We inject it into the terminal grid below,
+        // AFTER the reader thread is spawned and has a session_id wired up.
+        let auth_banner: Option<String> = session
+            .userauth_banner()
+            .ok()
+            .flatten()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(ref b) = auth_banner {
+            log::info!("SSH pre-auth banner: {} bytes", b.len());
+        }
+
         // --- Classify server — minimal SSH servers (MINA SSHD, embedded devices)
         // skip the second SSH connection (concurrency-limited). Exec commands
         // instead share the main session, serialized through the session mutex.
@@ -715,21 +731,18 @@ impl SshManager {
             .request_pty("xterm-256color", None, Some((120, 40, 0, 0)))
             .map_err(|e| format!("PTY request failed: {}", e))?;
 
-        // Set UTF-8 locale. Skip entirely for minimal servers — some of them
-        // (MINA SSHD 0.9.5, certain embedded firmware) treat unknown setenv as
-        // protocol violation and disconnect.
-        if !minimal_mode {
-            let _ = channel.setenv("LANG", "en_US.UTF-8");
-            let _ = channel.setenv("LC_ALL", "en_US.UTF-8");
-            let _ = channel.setenv("TERM", "xterm-256color");
-        }
+        // Don't setenv LC_ALL / LANG — many servers don't have en_US.UTF-8
+        // installed, resulting in "bash: warning: setlocale: LC_ALL: cannot
+        // change locale" noise on every new shell. Let the server-side login
+        // flow (/etc/profile, ~/.bashrc) handle locale.
 
         match &mode {
             SessionMode::Persistent(name) => {
-                // Create or attach to persistent tmux session with hidden UI
+                // tmux attach/create. No locale prefix — server's own login
+                // env handles it. `exec $SHELL -l` as fallback makes sure a
+                // login shell starts so /etc/motd and PAM banner fire.
                 let cmd = format!(
-                    "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color; \
-                     tmux has-session -t {n} 2>/dev/null && tmux attach-session -t {n} || \
+                    "tmux has-session -t {n} 2>/dev/null && tmux attach-session -t {n} || \
                      (tmux new-session -d -s {n} -x 80 -y 24 2>/dev/null && \
                       tmux set-option -t {n} status off 2>/dev/null && \
                       tmux set-option -t {n} escape-time 10 2>/dev/null && \
@@ -741,19 +754,13 @@ impl SshManager {
                     .map_err(|e| format!("Session setup failed: {}", e))?;
             }
             SessionMode::RawShell => {
-                // Minimal servers: use a plain SSH "shell" request — the widest-
-                // compatibility path. Embedded devices often don't support "exec".
-                if minimal_mode {
-                    channel
-                        .shell()
-                        .map_err(|e| format!("Shell request failed: {}", e))?;
-                } else {
-                    channel
-                        .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
-                        .unwrap_or_else(|_| {
-                            let _ = channel.shell();
-                        });
-                }
+                // Standard SSH "shell" request — equivalent to `ssh host` at
+                // the command line. The server runs the user's login shell,
+                // which sources /etc/profile + /etc/motd through PAM. This
+                // is the only path that gets the full Welcome motd flow.
+                channel
+                    .shell()
+                    .map_err(|e| format!("Shell request failed: {}", e))?;
             }
         }
 
@@ -961,6 +968,28 @@ impl SshManager {
         };
 
         self.sessions.write().insert(session_id.clone(), ssh_session);
+
+        // --- Inject pre-auth banner into the terminal feed AFTER UI has had
+        // a chance to wire up the tab's session_id (the SshConnected message
+        // maps session_id → tab asynchronously). A short delay is harmless
+        // and avoids the banner being dropped by the Data handler when it
+        // can't find a matching tab.
+        if let Some(banner) = auth_banner {
+            let tx = self.event_tx.clone();
+            let sid = session_id.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                // Normalize line endings (pre-auth banner often uses bare LF).
+                let mut bytes = Vec::with_capacity(banner.len() + 4);
+                for line in banner.split('\n') {
+                    bytes.extend_from_slice(line.as_bytes());
+                    bytes.extend_from_slice(b"\r\n");
+                }
+                // Visual separator so it stands out above the shell motd.
+                bytes.extend_from_slice(b"\r\n");
+                let _ = tx.send(SshEvent::Data { session_id: sid, data: bytes });
+            });
+        }
 
         Ok(session_id)
     }
@@ -1728,8 +1757,7 @@ fn reconnect_ssh(
     match mode {
         SessionMode::Persistent(name) => {
             let cmd = format!(
-                "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; \
-                 tmux set-option -t {n} escape-time 10 2>/dev/null; \
+                "tmux set-option -t {n} escape-time 10 2>/dev/null; \
                  tmux attach-session -t {n} 2>/dev/null || exec $SHELL -l",
                 n = name
             );
@@ -1738,13 +1766,7 @@ fn reconnect_ssh(
                 .map_err(|e| format!("Reattach failed: {}", e))?;
         }
         SessionMode::RawShell => {
-            if minimal_mode {
-                channel.shell().map_err(|e| format!("Shell failed: {}", e))?;
-            } else {
-                channel
-                    .exec("LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color exec $SHELL -l")
-                    .unwrap_or_else(|_| { let _ = channel.shell(); });
-            }
+            channel.shell().map_err(|e| format!("Shell failed: {}", e))?;
         }
     }
 

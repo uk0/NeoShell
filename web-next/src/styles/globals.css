@@ -1,0 +1,185 @@
+/* ===========================================================
+   NeoShell web — design tokens & primitives.
+   Aesthetic: deep navy + amber/teal accents, editorial spacing,
+   Bricolage display + Geist body + JetBrains Mono code.
+   =========================================================== */
+
+:root {
+  /* palette ------------------------------------------------------ */
+  --bg-deep:     #0a0b12;
+  --bg-surface:  #14162a;
+  --bg-elev:     #1d203f;
+  --ink:         #e7e4d9;
+  --ink-dim:     #9ca3b8;
+  --ink-faint:   #5a5e75;
+  --amber:       #f4b86b;
+  --amber-soft:  #e8a84c;
+  --teal:        #5de4c7;
+  --teal-soft:   #3bc6a9;
+  --danger:      #ff6b81;
+  --rule:        rgba(255, 255, 255, 0.06);
+  --rule-strong: rgba(255, 255, 255, 0.12);
+
+  /* spacing ------------------------------------------------------- */
+  --gutter: clamp(20px, 4vw, 48px);
+  --section-pad: clamp(80px, 10vw, 160px);
+
+  /* motion -------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in:  cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* type ---------------------------------------------------------- */
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-body:    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono:    "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Body typography relies on the platform UI font stack to stay out of
+   AI-slop territory (no Inter, no Roboto). macOS gets SF Pro, Windows
+   gets Segoe UI, Linux gets Cantarell/Noto. Display uses Bricolage
+   Grotesque (Google Font) for personality. */
+
+/* ===== reset ===== */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { margin: 0; padding: 0; min-height: 100%; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg-deep);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.005em;
+  overflow-x: hidden;
+}
+a { color: inherit; text-decoration: none; }
+button { font: inherit; background: none; border: none; color: inherit; cursor: pointer; padding: 0; }
+img, svg { display: block; max-width: 100%; }
+
+/* Global grid/film-grain atmosphere — a super-subtle noise overlay
+   gives the flat color just enough tooth to not look AI-generated. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image:
+    radial-gradient(circle at 25% 15%, rgba(244, 184, 107, 0.045), transparent 55%),
+    radial-gradient(circle at 80% 75%, rgba(93, 228, 199, 0.05), transparent 60%);
+  mix-blend-mode: screen;
+}
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.82' numOctaves='2' stitchTiles='stitch' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.35;
+  mix-blend-mode: overlay;
+}
+
+/* ========== shell ========== */
+.wrap {
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+  position: relative;
+  z-index: 10;
+}
+
+.mono { font-family: var(--font-mono); letter-spacing: 0; }
+.display { font-family: var(--font-display); font-weight: 700; letter-spacing: -0.035em; }
+
+/* section meta ------------------------------------------------------ */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--amber);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.eyebrow::before {
+  content: "";
+  width: 24px;
+  height: 1px;
+  background: var(--amber);
+  display: inline-block;
+}
+
+.section-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(40px, 6vw, 76px);
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+  margin: 14px 0 24px;
+}
+
+.section-lede {
+  font-family: var(--font-body);
+  font-size: clamp(15px, 1.1vw, 18px);
+  color: var(--ink-dim);
+  max-width: 560px;
+  line-height: 1.6;
+}
+
+/* underline ornament shared by accent links */
+.u-link {
+  position: relative;
+  padding-bottom: 2px;
+}
+.u-link::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0.6);
+  transform-origin: left;
+  transition: transform 0.5s var(--ease-out);
+}
+.u-link:hover::after { transform: scaleX(1); }
+
+/* hr -------------------------------------------------------------- */
+.hr-thin { height: 1px; background: var(--rule); border: 0; margin: 0; }
+
+/* Focus ring for keyboard users only ------------------------------ */
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* selection ------------------------------------------------------- */
+::selection {
+  background: rgba(244, 184, 107, 0.35);
+  color: var(--ink);
+}
+
+/* scrollbar — subtle but matches palette */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-deep); }
+::-webkit-scrollbar-thumb {
+  background: var(--bg-elev);
+  border-radius: 6px;
+  border: 2px solid var(--bg-deep);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--rule-strong); }
+
+/* reduced motion ------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

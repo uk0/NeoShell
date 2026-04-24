@@ -1,0 +1,189 @@
+.hero {
+  position: relative;
+  min-height: 100vh;
+  padding: 160px 0 120px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.hero-inner {
+  position: relative;
+  z-index: 5;
+  max-width: 1080px;
+}
+
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(244, 184, 107, 0.08);
+  border: 1px solid rgba(244, 184, 107, 0.24);
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  margin-bottom: 28px;
+}
+.hero-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 12px var(--amber);
+  animation: pulse 2.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(1.35); }
+}
+
+.hero-title {
+  font-family: var(--font-display);
+  font-size: clamp(56px, 10vw, 152px);
+  font-weight: 800;
+  line-height: 0.92;
+  letter-spacing: -0.045em;
+  margin: 0 0 36px;
+  color: var(--ink);
+}
+
+.hero-line-clip {
+  display: block;
+  overflow: hidden;
+  padding-bottom: 0.05em; /* keep descenders from being clipped */
+  line-height: 0.98;
+}
+.hero-line {
+  display: inline-block;
+  will-change: transform, opacity;
+}
+.hero-line-accent {
+  background: linear-gradient(90deg, var(--amber), var(--teal));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-style: italic;
+}
+
+.hero-lede {
+  max-width: 620px;
+  font-size: clamp(16px, 1.25vw, 19px);
+  line-height: 1.55;
+  color: var(--ink-dim);
+  margin: 0 0 40px;
+}
+
+.hero-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 22px;
+  margin-bottom: 80px;
+}
+
+/* CTA buttons ---------------------------------------------------------- */
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: transform 0.35s var(--ease-out), box-shadow 0.35s, background 0.35s, color 0.35s;
+  position: relative;
+}
+.cta-primary {
+  background: var(--amber);
+  color: var(--bg-deep);
+  box-shadow: 0 14px 42px -10px rgba(244, 184, 107, 0.5);
+}
+.cta-primary:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 54px -8px rgba(244, 184, 107, 0.7);
+}
+.cta-ghost {
+  border: 1px solid var(--rule-strong);
+  color: var(--ink);
+  background: transparent;
+}
+.cta-ghost:hover {
+  background: var(--bg-surface);
+  border-color: var(--ink-dim);
+  transform: translateY(-3px);
+}
+.cta-text {
+  color: var(--teal);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 0;
+}
+
+/* stats grid ----------------------------------------------------------- */
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 36px 48px;
+  border-top: 1px solid var(--rule);
+  padding-top: 36px;
+  max-width: 720px;
+}
+.hero-stat-val {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3vw, 42px);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.hero-stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  letter-spacing: 0.14em;
+}
+
+/* scroll hint ---------------------------------------------------------- */
+.hero-scroll-hint {
+  position: absolute;
+  bottom: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-faint);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  z-index: 5;
+}
+.hero-scroll-line {
+  width: 1px;
+  height: 36px;
+  background: linear-gradient(to bottom, var(--ink-faint), transparent);
+  position: relative;
+  overflow: hidden;
+}
+.hero-scroll-line::after {
+  content: "";
+  position: absolute;
+  top: -50%;
+  left: 0;
+  width: 1px;
+  height: 50%;
+  background: var(--amber);
+  animation: trickle 2.4s linear infinite;
+}
+@keyframes trickle {
+  0%   { transform: translateY(0);    opacity: 1; }
+  80%  { opacity: 1; }
+  100% { transform: translateY(300%); opacity: 0; }
+}
+
+@media (min-width: 720px) {
+  .hero-stats { grid-template-columns: repeat(4, 1fr); }
+}

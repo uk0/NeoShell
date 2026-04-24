@@ -1,0 +1,97 @@
+.changelog-head { margin-bottom: 72px; max-width: 760px; }
+.changelog-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+.changelog-ver {
+  color: var(--teal);
+  padding: 4px 10px;
+  border: 1px solid rgba(93, 228, 199, 0.32);
+  border-radius: 4px;
+  background: rgba(93, 228, 199, 0.08);
+}
+.changelog-date { color: var(--ink-dim); }
+.changelog-latest {
+  margin-left: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--amber);
+  color: var(--bg-deep);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+.changelog-dot { opacity: 0.45; }
+
+.changelog-grid {
+  display: grid;
+  gap: 40px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 900px) {
+  .changelog-grid { grid-template-columns: 1.3fr 1fr 1fr; gap: 56px; }
+}
+
+.cl-block {
+  border-left: 1px solid var(--rule);
+  padding-left: 24px;
+  position: relative;
+}
+.cl-block-added  .cl-block-dot { background: var(--teal); box-shadow: 0 0 14px var(--teal); }
+.cl-block-changed .cl-block-dot { background: var(--amber); box-shadow: 0 0 14px var(--amber); }
+.cl-block-fixed  .cl-block-dot { background: var(--danger); box-shadow: 0 0 14px var(--danger); }
+
+.cl-block-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.cl-block-dot {
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.cl-block-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--ink);
+}
+.cl-block-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.14em;
+}
+
+.cl-block-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.cl-block-list li {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+  padding-left: 14px;
+  position: relative;
+}
+.cl-block-list li::before {
+  content: "—";
+  position: absolute;
+  left: 0;
+  color: var(--ink-faint);
+}

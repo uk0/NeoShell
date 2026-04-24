@@ -1,0 +1,188 @@
+.contact-section { padding: calc(var(--section-pad) * 0.85) 0; }
+
+.contact-card {
+  position: relative;
+  overflow: hidden;
+  padding: 56px 40px;
+  border-radius: 24px;
+  border: 1px solid var(--rule);
+  background:
+    radial-gradient(circle at 80% 20%, rgba(244, 184, 107, 0.08), transparent 60%),
+    linear-gradient(180deg, var(--bg-surface), var(--bg-deep));
+}
+@media (min-width: 860px) {
+  .contact-card { padding: 96px 80px; }
+}
+
+.contact-ornament {
+  position: absolute;
+  top: -60px;
+  right: -120px;
+  pointer-events: none;
+  opacity: 0.45;
+  mix-blend-mode: screen;
+  animation: spin 42s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.contact-grid {
+  display: grid;
+  gap: 48px;
+  grid-template-columns: 1fr;
+  align-items: center;
+  position: relative;
+  z-index: 1;
+}
+@media (min-width: 860px) {
+  .contact-grid { grid-template-columns: 1.3fr 0.9fr; gap: 72px; }
+}
+
+/* Left — copy + CTAs ---------------------------------------------- */
+.contact-copy { max-width: 560px; }
+.contact-title { margin-top: 12px; }
+.contact-lede { margin: 12px 0 40px; max-width: 480px; }
+
+.contact-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.channel-link {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 22px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--rule);
+  transition: transform 0.35s var(--ease-out), background 0.35s, border-color 0.35s;
+}
+.channel-link:hover {
+  background: rgba(244, 184, 107, 0.08);
+  border-color: rgba(244, 184, 107, 0.4);
+  transform: translateX(4px);
+}
+
+.channel-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(244, 184, 107, 0.12);
+  color: var(--amber);
+  border: 1px solid rgba(244, 184, 107, 0.25);
+  flex: 0 0 auto;
+}
+
+.channel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+.channel-label {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+.channel-meta {
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.channel-arrow {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  transition: transform 0.35s var(--ease-out), color 0.35s;
+}
+.channel-link:hover .channel-arrow {
+  color: var(--amber);
+  transform: translateX(4px);
+}
+
+/* Right — QR card ------------------------------------------------- */
+.contact-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 28px 24px 22px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--rule);
+  position: relative;
+  transition: transform 0.45s var(--ease-out), border-color 0.45s;
+}
+.contact-qr:hover {
+  transform: translateY(-4px);
+  border-color: rgba(93, 228, 199, 0.35);
+}
+
+.contact-qr-frame {
+  position: relative;
+  padding: 14px;
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 12px 36px -12px rgba(0, 0, 0, 0.6);
+}
+.contact-qr-img {
+  display: block;
+  width: 200px;
+  height: 200px;
+  object-fit: contain;
+}
+
+.contact-qr-scan {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 14px;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--amber) 40%, var(--teal) 60%, transparent);
+  filter: blur(1px);
+  opacity: 0;
+  animation: scan 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes scan {
+  0%   { transform: translateY(0);      opacity: 0; }
+  15%  { opacity: 0.8; }
+  85%  { opacity: 0.8; }
+  100% { transform: translateY(172px);  opacity: 0; }
+}
+
+.contact-qr-corner {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--amber);
+  opacity: 0.9;
+}
+.contact-qr-corner.tl { top: 4px; left: 4px; border-right: 0; border-bottom: 0; border-top-left-radius: 4px; }
+.contact-qr-corner.tr { top: 4px; right: 4px; border-left: 0; border-bottom: 0; border-top-right-radius: 4px; }
+.contact-qr-corner.bl { bottom: 4px; left: 4px; border-right: 0; border-top: 0; border-bottom-left-radius: 4px; }
+.contact-qr-corner.br { bottom: 4px; right: 4px; border-left: 0; border-top: 0; border-bottom-right-radius: 4px; }
+
+.contact-qr-meta {
+  text-align: center;
+  max-width: 220px;
+}
+.contact-qr-label {
+  font-size: 11px;
+  color: var(--teal);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.contact-qr-hint {
+  font-size: 12px;
+  color: var(--ink-faint);
+  line-height: 1.5;
+}

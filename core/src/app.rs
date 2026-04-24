@@ -304,6 +304,10 @@ pub struct NeoShell {
     term_search_case_insensitive: bool,
     term_search_matches: Vec<crate::terminal::SearchMatch>,
     term_search_current: usize,
+    /// When true, hide the bottom panel (Monitor/Files/QuickCmd) entirely so
+    /// the terminal takes the full height. Toggled by the chevron button in
+    /// the splitter.
+    bottom_panel_collapsed: bool,
 }
 
 /// A reusable command snippet (named command/script) persisted in snippets.json.
@@ -633,6 +637,9 @@ pub enum Message {
     RzDetected(String),      // session_id — rz wants to receive a file
     SzDetected(String),      // session_id — sz wants to send a file
     RzUploadDone(String),    // session_id — upload finished
+
+    // Bottom panel collapse / expand
+    ToggleBottomPanel,
 
     // Terminal search (Cmd+F)
     ToggleTerminalSearch,
@@ -964,6 +971,7 @@ impl Default for NeoShell {
             term_search_case_insensitive: true,
             term_search_matches: Vec::new(),
             term_search_current: 0,
+            bottom_panel_collapsed: false,
         }
     }
 }
@@ -1835,6 +1843,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                             }
                         }
                         "f" | "F" => return Task::done(Message::ToggleTerminalSearch),
+                        "j" | "J" => return Task::done(Message::ToggleBottomPanel),
                         "t" | "T" => return Task::done(Message::ShowConnectDialog),
                         "w" | "W" => {
                             // Cmd+W = close current tab
@@ -2512,6 +2521,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 },
             )
         }
+        Message::ToggleBottomPanel => {
+            state.bottom_panel_collapsed = !state.bottom_panel_collapsed;
+            Task::none()
+        }
+
         Message::RzUploadDone(sid) => {
             state.transfer_progress = None;
             if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
@@ -2660,7 +2674,8 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             // Layout from top: toolbar(30) + tabbar(34) + terminal(Fill) + splitter(4) + bottom(H) + status(24)
             // Splitter center Y ≈ window_height - bottom_panel_height - 24 - 2
             let splitter_y = state.window_height - state.bottom_panel_height - 24.0 - 2.0;
-            let hit = (state.cursor_y - splitter_y).abs() < 8.0;
+            let hit = !state.bottom_panel_collapsed
+                && (state.cursor_y - splitter_y).abs() < 8.0;
 
             if hit && !state.dragging_splitter {
                 state.dragging_splitter = true;
@@ -3727,27 +3742,65 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
             }
         }
 
-        // Drag splitter handle
+        // Drag splitter handle with centered collapse/expand chevron button.
+        // Drag still works on either side of the chevron (button captures its
+        // own click, everything else on the splitter bar hits TerminalMouseDown
+        // via the Ignored-status path).
         let drag_color = if state.dragging_splitter { theme::ACCENT } else { theme::BORDER };
-        let splitter: Element<'_, Message> = container(Space::new(Fill, 4))
-            .width(Fill)
-            .height(4)
-            .style(move |_| container::Style {
-                background: Some(drag_color.into()),
-                ..Default::default()
-            })
-            .into();
+        let chevron_label = if state.bottom_panel_collapsed { "∧" } else { "∨" };
+        let collapsed = state.bottom_panel_collapsed;
+        let _ = collapsed;
+        let chevron_btn = button(
+            text(chevron_label)
+                .size(11.0 * scale)
+                .color(theme::TEXT_SECONDARY),
+        )
+        .on_press(Message::ToggleBottomPanel)
+        .padding(Padding::from([0, 14]))
+        .style(|_, _| button::Style {
+            background: Some(theme::BG_TERTIARY.into()),
+            text_color: theme::TEXT_SECONDARY,
+            border: iced::Border {
+                radius: 4.0.into(),
+                width: 1.0,
+                color: theme::BORDER,
+            },
+            ..Default::default()
+        });
+        let splitter: Element<'_, Message> = container(
+            row![
+                Space::with_width(Fill),
+                chevron_btn,
+                Space::with_width(Fill),
+            ]
+            .align_y(alignment::Vertical::Center),
+        )
+        .width(Fill)
+        .height(Length::Fixed(14.0))
+        .style(move |_| container::Style {
+            background: Some(drag_color.into()),
+            ..Default::default()
+        })
+        .into();
 
-        // Bottom panel with tabs: Monitor | Files | QuickCmd
-        let bottom_panel = view_bottom_panel(state);
-
-        column![
-            terminal_col.height(Fill),
-            splitter,
-            container(bottom_panel).height(state.bottom_panel_height),
-        ]
-        .height(Fill)
-        .into()
+        if state.bottom_panel_collapsed {
+            column![
+                terminal_col.height(Fill),
+                splitter,
+            ]
+            .height(Fill)
+            .into()
+        } else {
+            // Bottom panel with tabs: Monitor | Files | QuickCmd
+            let bottom_panel = view_bottom_panel(state);
+            column![
+                terminal_col.height(Fill),
+                splitter,
+                container(bottom_panel).height(state.bottom_panel_height),
+            ]
+            .height(Fill)
+            .into()
+        }
     } else {
         // No active tab → welcome screen
         view_welcome()
@@ -5397,10 +5450,10 @@ fn view_terminal_search_bar(state: &NeoShell) -> Element<'_, Message> {
                 .size(11.0 * scale)
                 .color(theme::TEXT_MUTED)
                 .width(Length::Fixed(56.0 * scale)),
-            nav_btn("↑", Message::TerminalSearchPrev),
-            nav_btn("↓", Message::TerminalSearchNext),
+            nav_btn(i18n::t("search.prev"), Message::TerminalSearchPrev),
+            nav_btn(i18n::t("search.next"), Message::TerminalSearchNext),
             case_btn,
-            nav_btn("×", Message::TerminalSearchClose),
+            nav_btn(i18n::t("search.close"), Message::TerminalSearchClose),
         ]
         .spacing(6)
         .align_y(alignment::Vertical::Center),
@@ -6933,38 +6986,98 @@ fn view_about_dialog(_state: &NeoShell) -> Element<'static, Message> {
 // ---- Keyboard shortcuts help ----------------------------------------------
 
 fn view_shortcuts_help() -> Element<'static, Message> {
+    // Platform-specific modifier key label. On macOS the command key is the
+    // primary modifier, on Windows/Linux it's Ctrl. Same binding code — the
+    // `modifiers.command()` check in update() maps to whichever is native.
     #[cfg(target_os = "macos")]
-    let mod_key = "Cmd";
+    let m_key = "⌘";
     #[cfg(not(target_os = "macos"))]
-    let mod_key = "Ctrl";
+    let m_key = "Ctrl";
 
-    let shortcuts: &[(String, &'static str)] = &[
-        (format!("{}+T", mod_key), "open connection dialog"),
-        (format!("{}+W", mod_key), "close active tab"),
-        (format!("{}+1-9", mod_key), "switch to tab N"),
-        (format!("{}+V", mod_key), "paste clipboard into terminal"),
-        (format!("{}+C", mod_key), "copy selection"),
-        (format!("{}+H", mod_key), "open command history"),
-        (format!("{}+/", mod_key), "toggle this help panel"),
-        (format!("{}+Shift+Q", mod_key), "quit application (close × only minimizes)"),
-        ("Ctrl+Tab".into(), "next tab"),
-        ("F1".into(), "toggle this help panel"),
-        ("Right-click".into(), "paste into terminal"),
-        ("Esc".into(), "close dialogs"),
+    // Groups of shortcuts. Each entry is (accelerator-label, i18n-desc-key).
+    // The accelerator column is rendered in a monospace pill so Cmd/Ctrl
+    // columns stay aligned regardless of translation width.
+    let groups: &[(&'static str, Vec<(String, &'static str)>)] = &[
+        (
+            "shortcuts.group.tabs",
+            vec![
+                (format!("{}+T", m_key), "shortcuts.desc.connect"),
+                (format!("{}+W", m_key), "shortcuts.desc.close_tab"),
+                (format!("{}+1…9", m_key), "shortcuts.desc.switch_tab"),
+                ("Ctrl+Tab".into(), "shortcuts.desc.next_tab"),
+                ("Ctrl+Shift+Tab".into(), "shortcuts.desc.prev_tab"),
+            ],
+        ),
+        (
+            "shortcuts.group.terminal",
+            vec![
+                (format!("{}+V", m_key), "shortcuts.desc.paste"),
+                (format!("{}+C", m_key), "shortcuts.desc.copy"),
+                ("Right-click".into(), "shortcuts.desc.right_click"),
+                (format!("{}+F", m_key), "shortcuts.desc.search"),
+                ("Enter".into(), "shortcuts.desc.search_next"),
+                ("Esc".into(), "shortcuts.desc.search_close"),
+            ],
+        ),
+        (
+            "shortcuts.group.panels",
+            vec![
+                (format!("{}+J", m_key), "shortcuts.desc.bottom_toggle"),
+                (format!("{}+H", m_key), "shortcuts.desc.history"),
+                (format!("{}+/", m_key), "shortcuts.desc.help"),
+                ("F1".into(), "shortcuts.desc.help"),
+            ],
+        ),
+        (
+            "shortcuts.group.other",
+            vec![
+                (format!("{}+S", m_key), "shortcuts.desc.editor_save"),
+                ("Esc".into(), "shortcuts.desc.close_dialog"),
+                (format!("{}+Shift+Q", m_key), "shortcuts.desc.quit"),
+            ],
+        ),
     ];
 
     let title = text(i18n::t("shortcuts.title").to_string())
-        .size(20).color(theme::TEXT_PRIMARY);
+        .size(22).color(theme::TEXT_PRIMARY);
 
-    let mut rows_col = column![].spacing(6);
-    for (key, desc) in shortcuts {
+    let mut rows_col = column![].spacing(14);
+    for (group_key, entries) in groups {
         rows_col = rows_col.push(
-            row![
-                container(text(key.clone()).font(Font::MONOSPACE).color(theme::ACCENT).size(13))
-                    .width(140),
-                text(*desc).color(theme::TEXT_SECONDARY).size(13),
-            ].spacing(12).align_y(alignment::Vertical::Center)
+            text(i18n::t(group_key).to_string())
+                .color(theme::TEXT_MUTED)
+                .size(11)
         );
+        let mut group_col = column![].spacing(4);
+        for (accel, desc_key) in entries {
+            group_col = group_col.push(
+                row![
+                    container(
+                        text(accel.clone())
+                            .font(Font::MONOSPACE)
+                            .color(theme::ACCENT)
+                            .size(12)
+                    )
+                    .padding(Padding::from([2, 8]))
+                    .style(|_| container::Style {
+                        background: Some(theme::BG_TERTIARY.into()),
+                        border: iced::Border {
+                            radius: 4.0.into(),
+                            width: 1.0,
+                            color: theme::BORDER,
+                        },
+                        ..Default::default()
+                    })
+                    .width(Length::Fixed(150.0)),
+                    text(i18n::t(desc_key).to_string())
+                        .color(theme::TEXT_SECONDARY)
+                        .size(12),
+                ]
+                .spacing(12)
+                .align_y(alignment::Vertical::Center),
+            );
+        }
+        rows_col = rows_col.push(group_col);
     }
 
     let close_btn = button(
@@ -6976,14 +7089,14 @@ fn view_shortcuts_help() -> Element<'static, Message> {
 
     let content = column![
         title,
-        vertical_space().height(12),
+        vertical_space().height(14),
         rows_col,
-        vertical_space().height(16),
+        vertical_space().height(18),
         close_btn,
     ]
     .align_x(alignment::Horizontal::Center)
     .padding(28)
-    .width(460);
+    .width(500);
 
     let card = container(content).style(|_| container::Style {
         background: Some(theme::BG_SECONDARY.into()),

@@ -1,10 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Build output goes directly into ../website/dist so we can rsync only the
-// built assets up to bwg1 without any extra layer.
+// Build output goes directly into dist/ so we can rsync only the built
+// assets up to bwg1 without any extra layer.
+const BUILD_ID = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
+
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,

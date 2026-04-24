@@ -69,6 +69,21 @@
   gap: 14px;
 }
 
+.build-badge {
+  font-size: 10px;
+  color: var(--teal);
+  letter-spacing: 0.14em;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(93, 228, 199, 0.08);
+  border: 1px solid rgba(93, 228, 199, 0.28);
+  text-transform: uppercase;
+  display: none;
+}
+@media (min-width: 720px) {
+  .build-badge { display: inline-flex; }
+}
+
 .lang-toggle {
   display: inline-flex;
   align-items: center;

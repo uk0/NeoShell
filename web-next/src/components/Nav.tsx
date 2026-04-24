@@ -37,6 +37,9 @@ export function Nav() {
         </nav>
 
         <div className="nav-meta">
+          <span className="build-badge mono" title="Site build ID">
+            build {__BUILD_ID__}
+          </span>
           <button
             onClick={toggle}
             className="lang-toggle"

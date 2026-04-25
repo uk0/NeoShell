@@ -1831,17 +1831,31 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             if state.show_form { return Task::none(); }
             if state.selected_interface.is_some() { return Task::none(); }
 
-            // Cmd+key shortcuts
+            // Cmd/Ctrl+key shortcuts. Note the C/V special case below:
+            //   macOS:        ⌘+C / ⌘+V copy & paste (no shift).
+            //   Win / Linux:  Ctrl+Shift+C / Ctrl+Shift+V copy & paste,
+            //                 so plain Ctrl+C still reaches the terminal as
+            //                 the SIGINT byte 0x03 and Ctrl+V as a literal
+            //                 0x16 (quoted-insert). This matches Windows
+            //                 Terminal / Tabby / Xshell / mintty.
             if modifiers.command() {
+                let clipboard_mod = if cfg!(target_os = "macos") {
+                    !modifiers.shift()
+                } else {
+                    modifiers.shift()
+                };
                 if let keyboard::Key::Character(c) = &key {
                     match c.as_str() {
-                        "v" | "V" => return Task::done(Message::PasteClipboard),
-                        "c" | "C" => {
-                            // Cmd+C = copy selection (if any)
+                        "v" | "V" if clipboard_mod => return Task::done(Message::PasteClipboard),
+                        "c" | "C" if clipboard_mod => {
                             if state.selection_start.is_some() && state.selection_end.is_some() {
                                 return Task::done(Message::CopySelection);
                             }
+                            return Task::none();
                         }
+                        // Plain Ctrl+C / Ctrl+V on non-macOS: fall through
+                        // to the terminal byte handler (SIGINT / literal).
+                        "c" | "C" | "v" | "V" if !cfg!(target_os = "macos") => {}
                         "f" | "F" => return Task::done(Message::ToggleTerminalSearch),
                         "j" | "J" => return Task::done(Message::ToggleBottomPanel),
                         "t" | "T" => return Task::done(Message::ShowConnectDialog),
@@ -1882,7 +1896,13 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         _ => {}
                     }
                 }
-                return Task::none();
+                // macOS: any unmatched ⌘+key is swallowed (GUI convention).
+                // Win/Linux: let unmatched Ctrl+key fall through to the
+                // terminal byte handler so Ctrl+C/V (and Ctrl+A, Ctrl+R,
+                // Ctrl+L, etc.) reach the remote shell.
+                if cfg!(target_os = "macos") {
+                    return Task::none();
+                }
             }
 
             // F1 toggles shortcut help (no modifier required)
@@ -7011,9 +7031,19 @@ fn view_shortcuts_help() -> Element<'static, Message> {
         (
             "shortcuts.group.terminal",
             vec![
-                (format!("{}+V", m_key), "shortcuts.desc.paste"),
-                (format!("{}+C", m_key), "shortcuts.desc.copy"),
-                ("Right-click".into(), "shortcuts.desc.right_click"),
+                // Platform-aware copy/paste accelerators. Win/Linux uses
+                // Ctrl+Shift+C/V so plain Ctrl+C still sends SIGINT.
+                (
+                    if cfg!(target_os = "macos") { format!("{}+V", m_key) } else { "Ctrl+Shift+V".into() },
+                    "shortcuts.desc.paste",
+                ),
+                (
+                    if cfg!(target_os = "macos") { format!("{}+C", m_key) } else { "Ctrl+Shift+C".into() },
+                    "shortcuts.desc.copy",
+                ),
+                ("Drag".into(),       "shortcuts.desc.mouse_select"),
+                ("Right-click".into(),"shortcuts.desc.right_click"),
+                ("Ctrl+C".into(),     "shortcuts.desc.sigint"),
                 (format!("{}+F", m_key), "shortcuts.desc.search"),
                 ("Enter".into(), "shortcuts.desc.search_next"),
                 ("Esc".into(), "shortcuts.desc.search_close"),

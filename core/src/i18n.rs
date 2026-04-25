@@ -111,7 +111,9 @@ static EN: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("shortcuts.desc.prev_tab",        "Previous tab");
     m.insert("shortcuts.desc.paste",           "Paste clipboard into terminal");
     m.insert("shortcuts.desc.copy",            "Copy selection to clipboard");
-    m.insert("shortcuts.desc.right_click",     "Paste clipboard (right-click)");
+    m.insert("shortcuts.desc.right_click",     "Paste clipboard (right-click in session)");
+    m.insert("shortcuts.desc.mouse_select",    "Drag-select with left button — auto-copies to clipboard on release");
+    m.insert("shortcuts.desc.sigint",          "Send SIGINT to the running command (interrupt)");
     m.insert("shortcuts.desc.search",          "Find in terminal scrollback");
     m.insert("shortcuts.desc.search_next",     "Next search match");
     m.insert("shortcuts.desc.search_close",    "Close search bar");
@@ -387,7 +389,9 @@ static ZH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("shortcuts.desc.prev_tab",        "上一个标签页");
     m.insert("shortcuts.desc.paste",           "粘贴剪贴板到终端");
     m.insert("shortcuts.desc.copy",            "复制选中文本到剪贴板");
-    m.insert("shortcuts.desc.right_click",     "右键粘贴剪贴板");
+    m.insert("shortcuts.desc.right_click",     "右键粘贴剪贴板（在 session 内）");
+    m.insert("shortcuts.desc.mouse_select",    "左键拖动选中文本 — 释放鼠标自动复制到剪贴板");
+    m.insert("shortcuts.desc.sigint",          "中断当前正在运行的命令（发 SIGINT）");
     m.insert("shortcuts.desc.search",          "在终端 scrollback 中搜索");
     m.insert("shortcuts.desc.search_next",     "跳到下一个匹配");
     m.insert("shortcuts.desc.search_close",    "关闭搜索栏");

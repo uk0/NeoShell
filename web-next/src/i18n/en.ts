@@ -6,13 +6,13 @@ export const en = {
   "nav.download": "Download",
   "nav.github": "GitHub",
 
-  "hero.badge": "v0.6.26 · Pure Rust · Native GPU",
+  "hero.badge": "v0.6.27 · Pure Rust · Native GPU",
   "hero.title_a": "The terminal",
   "hero.title_b": "you actually",
   "hero.title_c": "want to use.",
   "hero.lede":
     "NeoShell is a native SSH workstation built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP — all in a single 6 MB binary. No Electron. No JavaScript runtime.",
-  "hero.cta.primary": "Download v0.6.26",
+  "hero.cta.primary": "Download v0.6.27",
   "hero.cta.secondary": "Explore features",
   "hero.cta.source": "Source on GitHub →",
   "hero.stat.binary": "Binary size",
@@ -72,7 +72,7 @@ export const en = {
 
   "dl.eyebrow": "Get started",
   "dl.title": "Download NeoShell",
-  "dl.lede": "v0.6.26 — single binary, no installer dependencies.",
+  "dl.lede": "v0.6.27 — single binary, no installer dependencies.",
   "dl.macos": "macOS",
   "dl.macos_arm": "Apple Silicon (ARM64)",
   "dl.macos_intel": "Intel (x86_64)",
@@ -85,7 +85,7 @@ export const en = {
   "dl.update_note": "Already installed? App auto-updates within 1 hour.",
 
   "cl.eyebrow": "Release log",
-  "cl.title": "What shipped in v0.6.26",
+  "cl.title": "What shipped in v0.6.27",
   "cl.date": "2026-04-25",
   "cl.latest": "Latest",
   "cl.category.added": "Added",
@@ -109,6 +109,10 @@ export const en = {
     "Toolbar buttons now toggle open/close on click — no more hunting for the × button.",
   "cl.changed.3":
     "Shortcuts help panel rebuilt — platform-aware (⌘ on macOS, Ctrl elsewhere), EN+ZH i18n, grouped by domain.",
+  "cl.changed.4":
+    "Ctrl+C now sends SIGINT on Windows/Linux as expected — clipboard ops moved to Ctrl+Shift+C / Ctrl+Shift+V (Windows Terminal convention). macOS keeps ⌘+C / ⌘+V.",
+  "cl.changed.5":
+    "Shortcuts help spells out mouse behavior — drag-select auto-copies on release, right-click pastes inside a session, plus a dedicated row for Ctrl+C → SIGINT.",
   "cl.fixed.1":
     "Overlay scroll-through & click-through — terminal below stops reacting while any overlay is open.",
 

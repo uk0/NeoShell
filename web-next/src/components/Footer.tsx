@@ -13,7 +13,7 @@ export function Footer() {
         <div className="footer-right">
           <div className="footer-version">
             <span className="footer-version-label mono">{t("footer.version")}</span>
-            <span className="footer-version-value display">v0.6.26</span>
+            <span className="footer-version-value display">v0.6.27</span>
           </div>
           <div className="footer-links">
             <a href="https://github.com/uk0/NeoShell" target="_blank" rel="noopener" className="u-link">GitHub</a>

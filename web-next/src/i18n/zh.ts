@@ -8,13 +8,13 @@ export const zh: Dict = {
   "nav.download": "下载",
   "nav.github": "GitHub",
 
-  "hero.badge": "v0.6.26 · 纯 Rust · 原生 GPU",
+  "hero.badge": "v0.6.27 · 纯 Rust · 原生 GPU",
   "hero.title_a": "你真正",
   "hero.title_b": "想用的",
   "hero.title_c": "那款终端。",
   "hero.lede":
     "NeoShell 是一款完全用 Rust 打造的原生 SSH 工作台。加密凭据库、实时监控、多标签终端、SFTP —— 全部集成在一个 6MB 的单文件可执行程序中。无 Electron、无 JavaScript 运行时。",
-  "hero.cta.primary": "下载 v0.6.26",
+  "hero.cta.primary": "下载 v0.6.27",
   "hero.cta.secondary": "探索功能",
   "hero.cta.source": "查看源码 →",
   "hero.stat.binary": "程序体积",
@@ -73,7 +73,7 @@ export const zh: Dict = {
 
   "dl.eyebrow": "立即开始",
   "dl.title": "下载 NeoShell",
-  "dl.lede": "v0.6.26 —— 单文件可执行，无需安装依赖。",
+  "dl.lede": "v0.6.27 —— 单文件可执行，无需安装依赖。",
   "dl.macos": "macOS",
   "dl.macos_arm": "Apple Silicon（ARM64）",
   "dl.macos_intel": "Intel（x86_64）",
@@ -86,7 +86,7 @@ export const zh: Dict = {
   "dl.update_note": "已安装用户？App 会在 1 小时内自动升级。",
 
   "cl.eyebrow": "发布日志",
-  "cl.title": "v0.6.26 里有什么",
+  "cl.title": "v0.6.27 里有什么",
   "cl.date": "2026-04-25",
   "cl.latest": "最新",
   "cl.category.added": "新增",
@@ -110,6 +110,10 @@ export const zh: Dict = {
     "工具栏按钮支持点开/点关切换，不用再找 × 按钮。",
   "cl.changed.3":
     "快捷键帮助面板大改：平台自适应（macOS 显示 ⌘，其他 Ctrl）、中英文 i18n、按领域分组。",
+  "cl.changed.4":
+    "Windows / Linux 上 Ctrl+C 现在正确发 SIGINT 中断命令——复制粘贴改用 Ctrl+Shift+C / Ctrl+Shift+V（Windows Terminal 约定）。macOS 仍用 ⌘+C / ⌘+V。",
+  "cl.changed.5":
+    "帮助面板写出鼠标行为——左键拖选释放后自动复制、session 内右键粘贴，外加单独一条 Ctrl+C → SIGINT 提示。",
   "cl.fixed.1":
     "Overlay 滚动穿透 & 点击穿透 —— 打开任意 overlay 时，下面的终端不再响应滚轮或点击。",
 

@@ -3,7 +3,7 @@ import { useRef } from "react";
 import { useI18n } from "../i18n/context";
 import "./Download.css";
 
-const VERSION = "0.6.26";
+const VERSION = "0.6.27";
 const BASE = "/downloads";
 
 type Asset = { href: string; label: string; accent?: boolean };

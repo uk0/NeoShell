@@ -7,12 +7,12 @@ type Dict = ReturnType<typeof useI18n>["t"];
 
 const entries = (t: Dict) => [
   { cat: "added", items: ["cl.added.1","cl.added.2","cl.added.3","cl.added.4","cl.added.5","cl.added.6"] },
-  { cat: "changed", items: ["cl.changed.1","cl.changed.2","cl.changed.3"] },
+  { cat: "changed", items: ["cl.changed.4","cl.changed.5","cl.changed.1","cl.changed.2","cl.changed.3"] },
   { cat: "fixed", items: ["cl.fixed.1"] },
 ].map(b => ({ ...b, title: t(`cl.category.${b.cat}` as any), lines: b.items.map(k => t(k as any)) }));
 
 /**
- * Changelog — single rollup entry for v0.6.26, rendered as a timeline
+ * Changelog — single rollup entry for v0.6.27, rendered as a timeline
  * with Added / Changed / Fixed columns. Each line reveals on scroll.
  */
 export function Changelog() {
@@ -28,7 +28,7 @@ export function Changelog() {
           <div className="eyebrow">{t("cl.eyebrow")}</div>
           <h2 className="section-title">{t("cl.title")}</h2>
           <div className="changelog-meta">
-            <span className="mono changelog-ver">v0.6.26</span>
+            <span className="mono changelog-ver">v0.6.27</span>
             <span className="changelog-dot">·</span>
             <span className="mono changelog-date">{t("cl.date")}</span>
             <span className="changelog-latest">{t("cl.latest")}</span>

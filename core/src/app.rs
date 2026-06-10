@@ -308,6 +308,111 @@ pub struct NeoShell {
     /// the terminal takes the full height. Toggled by the chevron button in
     /// the splitter.
     bottom_panel_collapsed: bool,
+
+    // ---- v0.7.0: command palette (Cmd+K) ----
+    show_palette: bool,
+    palette_query: String,
+    palette_selected: usize,
+    // ---- v0.7.0: tab rename (double-click a tab) ----
+    tab_rename: Option<usize>,
+    tab_rename_input: String,
+    last_tab_click: Option<(usize, std::time::Instant)>,
+    // ---- v0.7.0: collapsible sidebar groups ----
+    collapsed_groups: HashSet<String>,
+    // ---- v0.7.0: live sync input (fan keystrokes out to N sessions) ----
+    sync_input_on: bool,
+    // ---- v0.7.0: resource threshold alerts ----
+    alert_cfg: AlertConfig,
+    /// session_id -> list of breach descriptions ("CPU 95%", ...)
+    alerts_active: HashMap<String, Vec<String>>,
+    // ---- v0.7.0: SSH key manager ----
+    show_key_manager: bool,
+    local_keys: Vec<crate::sshkeys::LocalKey>,
+    key_form_name: String,
+    key_form_comment: String,
+    /// Key path currently in "pick a connection to deploy to" mode.
+    key_deploying: Option<String>,
+    key_deploy_status: Option<String>,
+}
+
+/// Resource alert thresholds, persisted to alerts.json.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AlertConfig {
+    pub enabled: bool,
+    pub cpu_pct: f32,
+    pub mem_pct: f32,
+    pub disk_pct: f32,
+}
+
+impl Default for AlertConfig {
+    fn default() -> Self {
+        Self { enabled: true, cpu_pct: 90.0, mem_pct: 90.0, disk_pct: 90.0 }
+    }
+}
+
+fn alerts_path() -> std::path::PathBuf {
+    let dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("neoshell");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("alerts.json")
+}
+
+fn load_alerts() -> AlertConfig {
+    std::fs::read_to_string(alerts_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_alerts(cfg: &AlertConfig) {
+    if let Ok(json) = serde_json::to_string_pretty(cfg) {
+        let _ = std::fs::write(alerts_path(), json);
+    }
+}
+
+/// One entry in the Cmd+K command palette.
+struct PaletteItem {
+    label: String,
+    meta: String,
+    /// Short i18n'd kind tag rendered as a chip: 连接 / 动作 / 片段.
+    kind: &'static str,
+    msg: Message,
+    score: i32,
+}
+
+/// Case-insensitive subsequence fuzzy match. Returns None when `query`
+/// is not a subsequence of `target`; higher score = better match
+/// (prefix + consecutive-run bonuses, mild length penalty).
+fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let q: Vec<char> = query.to_lowercase().chars().collect();
+    let t: Vec<char> = target.to_lowercase().chars().collect();
+    let mut qi = 0usize;
+    let mut score = 0i32;
+    let mut last_hit: Option<usize> = None;
+    for (ti, &tc) in t.iter().enumerate() {
+        if qi < q.len() && tc == q[qi] {
+            score += 10;
+            if ti == 0 {
+                score += 8;
+            }
+            if let Some(lh) = last_hit {
+                if ti == lh + 1 {
+                    score += 6;
+                }
+            }
+            last_hit = Some(ti);
+            qi += 1;
+        }
+    }
+    if qi == q.len() {
+        Some(score - (t.len() as i32) / 4)
+    } else {
+        None
+    }
 }
 
 /// A reusable command snippet (named command/script) persisted in snippets.json.
@@ -341,6 +446,10 @@ fn save_snippets(list: &[Snippet]) {
 
 /// Stable widget id for the Cmd+F search input so we can focus it on open.
 const TERM_SEARCH_INPUT_ID: &str = "term_search";
+/// Stable widget id for the Cmd+K palette input.
+const PALETTE_INPUT_ID: &str = "palette_input";
+/// Stable widget id for the tab-rename input.
+const TAB_RENAME_INPUT_ID: &str = "tab_rename_input";
 
 /// Re-run search against the focused terminal's scrollback + grid.
 fn rerun_terminal_search(state: &mut NeoShell) {
@@ -415,6 +524,44 @@ struct TerminalTab {
     connection_id: String,
     title: String,
     terminal: Arc<parking_lot::Mutex<TerminalGrid>>,
+    /// User-set tab name (double-click the tab to edit). Overrides `title`
+    /// in the tab bar; cleared by renaming to an empty string.
+    custom_title: Option<String>,
+    /// Optional second pane (v0.7.0 split). At most one split per tab.
+    split: Option<SplitPane>,
+    /// When a split exists: true = the split pane has keyboard focus.
+    focus_split: bool,
+}
+
+impl TerminalTab {
+    /// Title shown in the tab bar (custom name wins).
+    fn display_title(&self) -> &str {
+        self.custom_title.as_deref().unwrap_or(&self.title)
+    }
+
+    /// Session id of the pane that currently has keyboard focus.
+    fn focused_session(&self) -> &str {
+        match (&self.split, self.focus_split) {
+            (Some(sp), true) => &sp.session_id,
+            _ => &self.session_id,
+        }
+    }
+
+    /// Terminal grid of the pane that currently has keyboard focus.
+    fn focused_grid(&self) -> &Arc<parking_lot::Mutex<TerminalGrid>> {
+        match (&self.split, self.focus_split) {
+            (Some(sp), true) => &sp.terminal,
+            _ => &self.terminal,
+        }
+    }
+}
+
+/// Second pane of a split tab. `vertical == true` means panes sit
+/// side-by-side (vertical divider); false stacks them (horizontal divider).
+struct SplitPane {
+    session_id: String,
+    terminal: Arc<parking_lot::Mutex<TerminalGrid>>,
+    vertical: bool,
 }
 
 #[derive(Default, Clone)]
@@ -640,6 +787,44 @@ pub enum Message {
 
     // Bottom panel collapse / expand
     ToggleBottomPanel,
+
+    // ---- v0.7.0 ----
+    // Command palette (Cmd+K)
+    TogglePalette,
+    PaletteQueryChanged(String),
+    PaletteNavUp,
+    PaletteNavDown,
+    PaletteExecute,
+    PaletteExecuteIndex(usize),
+    // Tab rename (double-click)
+    TabRenameInput(String),
+    TabRenameCommit,
+    TabRenameCancel,
+    // Sidebar group collapse
+    ToggleGroupCollapsed(String),
+    // Live sync input
+    ToggleSyncInput,
+    // Threshold alerts
+    AlertEnabledToggled(bool),
+    AlertCpuChanged(f32),
+    AlertMemChanged(f32),
+    AlertDiskChanged(f32),
+    // SSH key manager
+    ShowKeyManager,
+    HideKeyManager,
+    KeyFormNameChanged(String),
+    KeyFormCommentChanged(String),
+    KeyGenerate,
+    KeyCopyPubkey(String),       // key path
+    KeyDeployStart(String),      // key path → show connection picker
+    KeyDeployTo(String, String), // (key path, connection id)
+    KeyDeployDone(Result<String, String>),
+    KeyDeployCancel,
+    // Split panes
+    SplitTab(bool),                          // vertical?
+    SplitConnected(String, bool, String),    // (tab_id, vertical, session_id)
+    SplitFocusToggle,
+    CloseFocusedPane,
 
     // Terminal search (Cmd+F)
     ToggleTerminalSearch,
@@ -972,6 +1157,22 @@ impl Default for NeoShell {
             term_search_matches: Vec::new(),
             term_search_current: 0,
             bottom_panel_collapsed: false,
+            show_palette: false,
+            palette_query: String::new(),
+            palette_selected: 0,
+            tab_rename: None,
+            tab_rename_input: String::new(),
+            last_tab_click: None,
+            collapsed_groups: HashSet::new(),
+            sync_input_on: false,
+            alert_cfg: load_alerts(),
+            alerts_active: HashMap::new(),
+            show_key_manager: false,
+            local_keys: Vec::new(),
+            key_form_name: String::new(),
+            key_form_comment: String::new(),
+            key_deploying: None,
+            key_deploy_status: None,
         }
     }
 }
@@ -1002,34 +1203,133 @@ impl NeoShell {
             || self.show_log_viewer
             || self.show_broadcast_dialog
             || self.show_snippets_panel
+            || self.show_palette
+            || self.show_key_manager
+            || self.tab_rename.is_some()
             || self.process_detail.is_some()
             || self.selected_interface.is_some()
             || self.editor_file_path.is_some()
     }
 
-    /// Terminal grid of the currently focused pane. For v0.6.22 there is still
-    /// exactly one terminal per tab; v0.6.24 will route this through the pane
-    /// tree without touching any of the callers.
+    /// Terminal grid of the currently focused pane (split-aware).
     #[inline]
     fn focused_terminal(&self) -> Option<&Arc<parking_lot::Mutex<TerminalGrid>>> {
         self.active_tab
             .and_then(|i| self.tabs.get(i))
-            .map(|t| &t.terminal)
+            .map(|t| t.focused_grid())
+    }
+
+    /// SSH session id of the currently focused pane (split-aware).
+    #[inline]
+    fn focused_session_id(&self) -> Option<String> {
+        self.active_tab
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| t.focused_session().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     /// Terminal grid that belongs to the given SSH `session_id`, regardless of
-    /// which tab it lives in. When split panes land, this will scan extra panes
-    /// as well — keeping the lookup behind a single helper means the ZMODEM /
-    /// data-event / close-event paths don't have to be rewritten.
+    /// which tab or pane it lives in.
     #[inline]
     fn find_terminal_for_session(
         &self,
         session_id: &str,
     ) -> Option<&Arc<parking_lot::Mutex<TerminalGrid>>> {
-        self.tabs
-            .iter()
-            .find(|t| t.session_id == session_id)
-            .map(|t| &t.terminal)
+        for t in &self.tabs {
+            if t.session_id == session_id {
+                return Some(&t.terminal);
+            }
+            if let Some(sp) = &t.split {
+                if sp.session_id == session_id {
+                    return Some(&sp.terminal);
+                }
+            }
+        }
+        None
+    }
+
+    /// All live session ids across tabs and split panes.
+    fn all_session_ids(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.tabs.len() * 2);
+        for t in &self.tabs {
+            if !t.session_id.is_empty() {
+                out.push(t.session_id.clone());
+            }
+            if let Some(sp) = &t.split {
+                if !sp.session_id.is_empty() {
+                    out.push(sp.session_id.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Build the Cmd+K palette item list for the current query, sorted by
+    /// fuzzy score. Connections first-class, then actions, then snippets.
+    fn palette_items(&self) -> Vec<PaletteItem> {
+        let q = self.palette_query.trim();
+        let mut items: Vec<PaletteItem> = Vec::new();
+
+        for c in &self.connections {
+            let label = c.name.clone();
+            let meta = format!("{}@{}:{}", c.username, c.host, c.port);
+            let hay = format!("{} {} {}", c.name, meta, c.group);
+            if let Some(s) = fuzzy_score(q, &hay) {
+                items.push(PaletteItem {
+                    label,
+                    meta,
+                    kind: "palette.kind.conn",
+                    msg: Message::ConnectTo(c.id.clone()),
+                    score: s + 5, // connections get a small priority bump
+                });
+            }
+        }
+
+        let actions: &[(&str, Message)] = &[
+            ("palette.act.new_conn",   Message::ShowForm(None)),
+            ("palette.act.connect",    Message::ShowConnectDialog),
+            ("palette.act.settings",   Message::ShowSettings),
+            ("palette.act.broadcast",  Message::ShowBroadcastDialog),
+            ("palette.act.snippets",   Message::ShowSnippetsPanel),
+            ("palette.act.keys",       Message::ShowKeyManager),
+            ("palette.act.tunnels",    Message::ShowTunnelManager),
+            ("palette.act.proxies",    Message::ShowProxyManager),
+            ("palette.act.history",    Message::ShowHistory),
+            ("palette.act.logs",       Message::ShowLogViewer),
+            ("palette.act.sync",       Message::ToggleSyncInput),
+            ("palette.act.split_v",    Message::SplitTab(true)),
+            ("palette.act.split_h",    Message::SplitTab(false)),
+            ("palette.act.import_ssh", Message::ImportAllSshConfigs),
+        ];
+        for (key, msg) in actions {
+            let label = i18n::t(key).to_string();
+            if let Some(s) = fuzzy_score(q, &label) {
+                items.push(PaletteItem {
+                    label,
+                    meta: String::new(),
+                    kind: "palette.kind.action",
+                    msg: msg.clone(),
+                    score: s,
+                });
+            }
+        }
+
+        for sn in &self.snippets {
+            let hay = format!("{} {}", sn.name, sn.body);
+            if let Some(s) = fuzzy_score(q, &hay) {
+                items.push(PaletteItem {
+                    label: sn.name.clone(),
+                    meta: sn.body.chars().take(40).collect(),
+                    kind: "palette.kind.snippet",
+                    msg: Message::SnippetSend(sn.id.clone()),
+                    score: s,
+                });
+            }
+        }
+
+        items.sort_by(|a, b| b.score.cmp(&a.score).then(a.label.cmp(&b.label)));
+        items.truncate(12);
+        items
     }
 }
 
@@ -1178,6 +1478,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 connection_id: id.clone(),
                 title: "Connecting...".to_string(),
                 terminal,
+                custom_title: None,
+                split: None,
+                focus_split: false,
             });
             state.active_tab = Some(state.tabs.len() - 1);
 
@@ -1630,6 +1933,22 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             )
         }
         Message::TabSelected(idx) => {
+            // Double-click (two clicks on the same tab within 400 ms) opens
+            // the rename dialog instead of just re-selecting.
+            let now = std::time::Instant::now();
+            if let Some((last_idx, t)) = state.last_tab_click {
+                if last_idx == idx
+                    && now.duration_since(t) < Duration::from_millis(400)
+                    && idx < state.tabs.len()
+                {
+                    state.last_tab_click = None;
+                    state.tab_rename = Some(idx);
+                    state.tab_rename_input =
+                        state.tabs[idx].display_title().to_string();
+                    return text_input::focus(text_input::Id::new(TAB_RENAME_INPUT_ID));
+                }
+            }
+            state.last_tab_click = Some((idx, now));
             if idx < state.tabs.len() {
                 state.active_tab = Some(idx);
             }
@@ -1638,6 +1957,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::TabClosed(idx) => {
             if idx < state.tabs.len() {
                 let session_id = state.tabs[idx].session_id.clone();
+                // Closing a tab also tears down its split pane's session.
+                let split_sid = state.tabs[idx]
+                    .split
+                    .as_ref()
+                    .map(|s| s.session_id.clone());
                 let ssh = state.ssh_manager.clone();
                 state.tabs.remove(idx);
                 // Cleanup monitoring/file data for this session
@@ -1645,6 +1969,12 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 state.top_processes.remove(&session_id);
                 state.file_entries.remove(&session_id);
                 state.current_dir.remove(&session_id);
+                state.alerts_active.remove(&session_id);
+                state.broadcast_selected.remove(&session_id);
+                if let Some(sp) = &split_sid {
+                    state.alerts_active.remove(sp);
+                    state.broadcast_selected.remove(sp);
+                }
                 if state.tabs.is_empty() {
                     state.active_tab = None;
                 } else {
@@ -1653,6 +1983,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 Task::perform(
                     async move {
                         let _ = ssh.disconnect(&session_id);
+                        if let Some(sp) = split_sid {
+                            let _ = ssh.disconnect(&sp);
+                        }
                     },
                     |_| Message::None,
                 )
@@ -1728,28 +2061,65 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                             }
 
                             // Normal data — write to terminal
-                            if let Some(tab) =
-                                state.tabs.iter().find(|t| t.session_id == session_id)
+                            // Split-aware lookup: data may belong to a main
+                            // pane or a split pane.
+                            if let Some(term) =
+                                state.find_terminal_for_session(&session_id).cloned()
                             {
-                                let mut grid = tab.terminal.lock();
+                                let mut grid = term.lock();
                                 grid.write(&data);
                                 grid.scroll_offset = 0; // Auto-scroll to bottom on new data
                             }
                         }
                         SshEvent::Closed { session_id } => {
                             state.zmodem_active.remove(&session_id);
-                            if let Some(idx) =
-                                state.tabs.iter().position(|t| t.session_id == session_id)
-                            {
-                                state.tabs.remove(idx);
-                                state.server_stats.remove(&session_id);
-                                state.top_processes.remove(&session_id);
-                                state.file_entries.remove(&session_id);
-                                state.current_dir.remove(&session_id);
-                                if state.tabs.is_empty() {
-                                    state.active_tab = None;
-                                } else {
-                                    state.active_tab = Some(idx.min(state.tabs.len() - 1));
+                            state.broadcast_selected.remove(&session_id);
+                            state.alerts_active.remove(&session_id);
+                            state.server_stats.remove(&session_id);
+                            state.top_processes.remove(&session_id);
+                            state.file_entries.remove(&session_id);
+                            state.current_dir.remove(&session_id);
+
+                            // Split pane closed → drop just that pane; main
+                            // pane closed with a live split → promote the
+                            // split to main. Only a tab with no split left
+                            // is removed outright.
+                            let mut handled = false;
+                            for tab in state.tabs.iter_mut() {
+                                if tab
+                                    .split
+                                    .as_ref()
+                                    .map(|s| s.session_id == session_id)
+                                    .unwrap_or(false)
+                                {
+                                    tab.split = None;
+                                    tab.focus_split = false;
+                                    handled = true;
+                                    break;
+                                }
+                                if tab.session_id == session_id {
+                                    if let Some(sp) = tab.split.take() {
+                                        tab.session_id = sp.session_id;
+                                        tab.terminal = sp.terminal;
+                                        tab.focus_split = false;
+                                        handled = true;
+                                    }
+                                    break;
+                                }
+                            }
+                            if !handled {
+                                if let Some(idx) = state
+                                    .tabs
+                                    .iter()
+                                    .position(|t| t.session_id == session_id)
+                                {
+                                    state.tabs.remove(idx);
+                                    if state.tabs.is_empty() {
+                                        state.active_tab = None;
+                                    } else {
+                                        state.active_tab =
+                                            Some(idx.min(state.tabs.len() - 1));
+                                    }
                                 }
                             }
                         }
@@ -1817,6 +2187,48 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         // ---- keyboard -------------------------------------------------------
         Message::KeyboardEvent(key, modifiers, text) => {
             if state.screen != Screen::Main { return Task::none(); }
+
+            // Palette gets first dibs on navigation keys; typed characters
+            // reach the focused text_input through the widget tree, so we
+            // swallow everything else here.
+            if state.show_palette {
+                match &key {
+                    keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                        return Task::done(Message::PaletteNavUp);
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                        return Task::done(Message::PaletteNavDown);
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                        return Task::done(Message::PaletteExecute);
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                        state.show_palette = false;
+                        return Task::none();
+                    }
+                    keyboard::Key::Character(c)
+                        if modifiers.command() && matches!(c.as_str(), "k" | "K") =>
+                    {
+                        state.show_palette = false;
+                        return Task::none();
+                    }
+                    _ => return Task::none(),
+                }
+            }
+
+            // Tab-rename modal: Enter commits, Esc cancels.
+            if state.tab_rename.is_some() {
+                match &key {
+                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                        return Task::done(Message::TabRenameCommit);
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                        return Task::done(Message::TabRenameCancel);
+                    }
+                    _ => return Task::none(),
+                }
+            }
+
             if state.editor_file_path.is_some() {
                 // Allow Cmd+S to save the open editor
                 if modifiers.command() {
@@ -1858,9 +2270,19 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         "c" | "C" | "v" | "V" if !cfg!(target_os = "macos") => {}
                         "f" | "F" => return Task::done(Message::ToggleTerminalSearch),
                         "j" | "J" => return Task::done(Message::ToggleBottomPanel),
+                        "k" | "K" => return Task::done(Message::TogglePalette),
+                        // Cmd+D / Cmd+Shift+D — split the active tab
+                        // (vertical divider / horizontal divider).
+                        "d" | "D" => return Task::done(Message::SplitTab(!modifiers.shift())),
+                        // Cmd+] — toggle pane focus inside a split tab.
+                        "]" => return Task::done(Message::SplitFocusToggle),
                         "t" | "T" => return Task::done(Message::ShowConnectDialog),
                         "w" | "W" => {
-                            // Cmd+W = close current tab
+                            // Cmd+Shift+W = close focused pane (split-aware);
+                            // Cmd+W = close current tab.
+                            if modifiers.shift() {
+                                return Task::done(Message::CloseFocusedPane);
+                            }
                             if let Some(idx) = state.active_tab {
                                 return Task::done(Message::TabClosed(idx));
                             }
@@ -1964,12 +2386,27 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
 
 
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let session_id = tab.session_id.clone();
-                    if let Some(data) = key_to_terminal_bytes(&key, &modifiers, text.as_deref()) {
-                        return Task::done(Message::TerminalInput(session_id, data));
+            // Overlay guard: when any modal / panel is open, keystrokes are
+            // meant for its inputs — never forward them to the terminal.
+            // (Fixes hex typed in Settings → Appearance echoing in the shell.)
+            if state.any_overlay_open() {
+                return Task::none();
+            }
+
+            if let Some(session_id) = state.focused_session_id() {
+                if let Some(data) = key_to_terminal_bytes(&key, &modifiers, text.as_deref()) {
+                    // Live sync mode: fan the keystroke out to every ticked
+                    // session (the focused one included, deduped).
+                    if state.sync_input_on && !state.broadcast_selected.is_empty() {
+                        let mut targets = state.broadcast_selected.clone();
+                        targets.insert(session_id);
+                        let tasks: Vec<Task<Message>> = targets
+                            .into_iter()
+                            .map(|sid| Task::done(Message::TerminalInput(sid, data.clone())))
+                            .collect();
+                        return Task::batch(tasks);
                     }
+                    return Task::done(Message::TerminalInput(session_id, data));
                 }
             }
             Task::none()
@@ -1980,25 +2417,33 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             // right-click on the overlay backdrop shouldn't send paste chars
             // into the hidden terminal.
             if state.any_overlay_open() { return Task::none(); }
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let session_id = tab.session_id.clone();
-                    let ssh = state.ssh_manager.clone();
-                    return Task::perform(
-                        async move {
-                            let mut clipboard = arboard::Clipboard::new()
-                                .map_err(|e| format!("Clipboard error: {}", e))?;
-                            let content = clipboard.get_text()
-                                .map_err(|e| format!("Clipboard read error: {}", e))?;
-                            ssh.send_data(&session_id, content.as_bytes())?;
-                            Ok(())
-                        },
-                        |r: Result<(), String>| match r {
-                            Ok(()) => Message::None,
-                            Err(e) => Message::Error(e),
-                        },
-                    );
+            if let Some(session_id) = state.focused_session_id() {
+                let ssh = state.ssh_manager.clone();
+                // Sync mode mirrors the paste to every ticked session too.
+                let mut targets: Vec<String> = if state.sync_input_on {
+                    state.broadcast_selected.iter().cloned().collect()
+                } else {
+                    Vec::new()
+                };
+                if !targets.contains(&session_id) {
+                    targets.push(session_id);
                 }
+                return Task::perform(
+                    async move {
+                        let mut clipboard = arboard::Clipboard::new()
+                            .map_err(|e| format!("Clipboard error: {}", e))?;
+                        let content = clipboard.get_text()
+                            .map_err(|e| format!("Clipboard read error: {}", e))?;
+                        for sid in &targets {
+                            ssh.send_data(sid, content.as_bytes())?;
+                        }
+                        Ok(())
+                    },
+                    |r: Result<(), String>| match r {
+                        Ok(()) => Message::None,
+                        Err(e) => Message::Error(e),
+                    },
+                );
             }
             Task::none()
         }
@@ -2059,6 +2504,31 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.prev_net_rx.insert(sid.clone(), stats.net_rx_bytes);
             state.prev_net_tx.insert(sid.clone(), stats.net_tx_bytes);
             state.prev_net_time.insert(sid.clone(), now);
+
+            // Threshold alerts: CPU is approximated as load_1m / cores
+            // (matches what the monitor panel shows); mem/disk straight %.
+            if state.alert_cfg.enabled {
+                let mut breaches: Vec<String> = Vec::new();
+                let cpu_pct = if stats.cpu_cores > 0 {
+                    (stats.load_1m / stats.cpu_cores as f64 * 100.0).min(999.0)
+                } else {
+                    0.0
+                };
+                if cpu_pct >= state.alert_cfg.cpu_pct as f64 {
+                    breaches.push(format!("CPU {:.0}%", cpu_pct));
+                }
+                if stats.mem_percent >= state.alert_cfg.mem_pct as f64 {
+                    breaches.push(format!("MEM {:.0}%", stats.mem_percent));
+                }
+                if stats.disk_percent >= state.alert_cfg.disk_pct as f64 {
+                    breaches.push(format!("DISK {:.0}%", stats.disk_percent));
+                }
+                if breaches.is_empty() {
+                    state.alerts_active.remove(&sid);
+                } else {
+                    state.alerts_active.insert(sid.clone(), breaches);
+                }
+            }
 
             state.server_stats.insert(sid.clone(), stats);
             state.top_processes.insert(sid.clone(), procs);
@@ -2445,14 +2915,10 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
         Message::SnippetSend(id) => {
             if let Some(sn) = state.snippets.iter().find(|s| s.id == id).cloned() {
-                if let Some(idx) = state.active_tab {
-                    if let Some(tab) = state.tabs.get(idx) {
-                        let sid = tab.session_id.clone();
-                        if !sid.is_empty() {
-                            let body = if sn.body.ends_with('\n') { sn.body.clone() } else { format!("{}\n", sn.body) };
-                            let _ = state.ssh_manager.send_data(&sid, body.as_bytes());
-                        }
-                    }
+                // Split-aware: snippet lands in the focused pane.
+                if let Some(sid) = state.focused_session_id() {
+                    let body = if sn.body.ends_with('\n') { sn.body.clone() } else { format!("{}\n", sn.body) };
+                    let _ = state.ssh_manager.send_data(&sid, body.as_bytes());
                 }
                 state.show_snippets_panel = false;
             }
@@ -2543,6 +3009,294 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
         Message::ToggleBottomPanel => {
             state.bottom_panel_collapsed = !state.bottom_panel_collapsed;
+            Task::none()
+        }
+
+        // ---- v0.7.0: command palette (Cmd+K) --------------------------------
+        Message::TogglePalette => {
+            state.show_palette = !state.show_palette;
+            if state.show_palette {
+                state.palette_query.clear();
+                state.palette_selected = 0;
+                return Task::batch(vec![
+                    Task::done(Message::LoadConnections),
+                    text_input::focus(text_input::Id::new(PALETTE_INPUT_ID)),
+                ]);
+            }
+            Task::none()
+        }
+        Message::PaletteQueryChanged(q) => {
+            state.palette_query = q;
+            state.palette_selected = 0;
+            Task::none()
+        }
+        Message::PaletteNavUp => {
+            let n = state.palette_items().len();
+            if n > 0 {
+                state.palette_selected = (state.palette_selected + n - 1) % n;
+            }
+            Task::none()
+        }
+        Message::PaletteNavDown => {
+            let n = state.palette_items().len();
+            if n > 0 {
+                state.palette_selected = (state.palette_selected + 1) % n;
+            }
+            Task::none()
+        }
+        Message::PaletteExecute => {
+            let sel = state.palette_selected;
+            return Task::done(Message::PaletteExecuteIndex(sel));
+        }
+        Message::PaletteExecuteIndex(i) => {
+            let items = state.palette_items();
+            if let Some(item) = items.into_iter().nth(i) {
+                state.show_palette = false;
+                return Task::done(item.msg);
+            }
+            Task::none()
+        }
+
+        // ---- v0.7.0: tab rename ---------------------------------------------
+        Message::TabRenameInput(s) => {
+            state.tab_rename_input = s;
+            Task::none()
+        }
+        Message::TabRenameCommit => {
+            if let Some(idx) = state.tab_rename.take() {
+                if let Some(tab) = state.tabs.get_mut(idx) {
+                    let v = state.tab_rename_input.trim().to_string();
+                    tab.custom_title = if v.is_empty() { None } else { Some(v) };
+                }
+            }
+            Task::none()
+        }
+        Message::TabRenameCancel => {
+            state.tab_rename = None;
+            Task::none()
+        }
+
+        // ---- v0.7.0: sidebar group collapse -----------------------------------
+        Message::ToggleGroupCollapsed(g) => {
+            if !state.collapsed_groups.remove(&g) {
+                state.collapsed_groups.insert(g);
+            }
+            Task::none()
+        }
+
+        // ---- v0.7.0: live sync input ------------------------------------------
+        Message::ToggleSyncInput => {
+            state.sync_input_on = !state.sync_input_on;
+            Task::none()
+        }
+
+        // ---- v0.7.0: threshold alerts -----------------------------------------
+        Message::AlertEnabledToggled(v) => {
+            state.alert_cfg.enabled = v;
+            if !v {
+                state.alerts_active.clear();
+            }
+            save_alerts(&state.alert_cfg);
+            Task::none()
+        }
+        Message::AlertCpuChanged(v) => {
+            state.alert_cfg.cpu_pct = v;
+            save_alerts(&state.alert_cfg);
+            Task::none()
+        }
+        Message::AlertMemChanged(v) => {
+            state.alert_cfg.mem_pct = v;
+            save_alerts(&state.alert_cfg);
+            Task::none()
+        }
+        Message::AlertDiskChanged(v) => {
+            state.alert_cfg.disk_pct = v;
+            save_alerts(&state.alert_cfg);
+            Task::none()
+        }
+
+        // ---- v0.7.0: SSH key manager ------------------------------------------
+        Message::ShowKeyManager => {
+            // Toolbar buttons toggle (v0.6.19 convention).
+            if state.show_key_manager {
+                state.show_key_manager = false;
+                state.key_deploying = None;
+                return Task::none();
+            }
+            state.show_key_manager = true;
+            state.local_keys = crate::sshkeys::list_keys();
+            state.key_deploy_status = None;
+            Task::done(Message::LoadConnections)
+        }
+        Message::HideKeyManager => {
+            state.show_key_manager = false;
+            state.key_deploying = None;
+            Task::none()
+        }
+        Message::KeyFormNameChanged(s) => {
+            state.key_form_name = s;
+            Task::none()
+        }
+        Message::KeyFormCommentChanged(s) => {
+            state.key_form_comment = s;
+            Task::none()
+        }
+        Message::KeyGenerate => {
+            let name = state.key_form_name.trim().to_string();
+            let name = if name.is_empty() {
+                "id_ed25519_neoshell".to_string()
+            } else {
+                name
+            };
+            let comment = state.key_form_comment.trim().to_string();
+            match crate::sshkeys::generate_ed25519(&name, &comment) {
+                Ok(_) => {
+                    state.key_form_name.clear();
+                    state.key_form_comment.clear();
+                    state.local_keys = crate::sshkeys::list_keys();
+                    state.key_deploy_status = Some(i18n::t("keys.generated").to_string());
+                }
+                Err(e) => {
+                    state.key_deploy_status = Some(format!("✗ {}", e));
+                }
+            }
+            Task::none()
+        }
+        Message::KeyCopyPubkey(path) => {
+            if let Some(k) = state.local_keys.iter().find(|k| k.path == path) {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(&k.pubkey);
+                }
+                state.key_deploy_status = Some(i18n::t("keys.copied").to_string());
+            }
+            Task::none()
+        }
+        Message::KeyDeployStart(path) => {
+            state.key_deploying = Some(path);
+            state.key_deploy_status = None;
+            Task::none()
+        }
+        Message::KeyDeployCancel => {
+            state.key_deploying = None;
+            Task::none()
+        }
+        Message::KeyDeployTo(path, conn_id) => {
+            let pubkey = state
+                .local_keys
+                .iter()
+                .find(|k| k.path == path)
+                .map(|k| k.pubkey.clone());
+            let Some(pubkey) = pubkey else {
+                return Task::none();
+            };
+            state.key_deploying = None;
+            state.key_deploy_status = Some(i18n::t("keys.deploying").to_string());
+            let store = state.store.clone();
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let config = store.get_connection(&conn_id)?;
+                        crate::ssh::deploy_pubkey(&config, &pubkey)
+                    })
+                    .await
+                    .map_err(|e| format!("Task: {}", e))?
+                },
+                Message::KeyDeployDone,
+            )
+        }
+        Message::KeyDeployDone(result) => {
+            state.key_deploy_status = Some(match result {
+                Ok(host) => format!("{} {}", i18n::t("keys.deploy_ok"), host),
+                Err(e) => format!("✗ {}", e),
+            });
+            Task::none()
+        }
+
+        // ---- v0.7.0: split panes ----------------------------------------------
+        Message::SplitTab(vertical) => {
+            let Some(idx) = state.active_tab else {
+                return Task::none();
+            };
+            let Some(tab) = state.tabs.get(idx) else {
+                return Task::none();
+            };
+            // One split per tab; need a live main session to duplicate.
+            if tab.split.is_some() || tab.session_id.is_empty() {
+                return Task::none();
+            }
+            let tab_id = tab.id.clone();
+            let conn_id = tab.connection_id.clone();
+            let store = state.store.clone();
+            let ssh = state.ssh_manager.clone();
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let config = store.get_connection(&conn_id)?;
+                        let session_id = ssh.connect_config(&config)?;
+                        Ok((tab_id, vertical, session_id))
+                    })
+                    .await
+                    .map_err(|e| format!("Task: {}", e))?
+                },
+                |result: Result<(String, bool, String), String>| match result {
+                    Ok((tab_id, vertical, session_id)) => {
+                        Message::SplitConnected(tab_id, vertical, session_id)
+                    }
+                    Err(e) => Message::Error(e),
+                },
+            )
+        }
+        Message::SplitConnected(tab_id, vertical, session_id) => {
+            if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
+                if tab.split.is_none() {
+                    let terminal =
+                        Arc::new(parking_lot::Mutex::new(TerminalGrid::new(80, 24)));
+                    tab.split = Some(SplitPane {
+                        session_id,
+                        terminal,
+                        vertical,
+                    });
+                    tab.focus_split = true;
+                    return Task::none();
+                }
+            }
+            // Tab vanished (or already split) while we were connecting —
+            // don't leak the session.
+            let ssh = state.ssh_manager.clone();
+            Task::perform(
+                async move {
+                    let _ = ssh.disconnect(&session_id);
+                },
+                |_| Message::None,
+            )
+        }
+        Message::SplitFocusToggle => {
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get_mut(idx) {
+                    if tab.split.is_some() {
+                        tab.focus_split = !tab.focus_split;
+                    }
+                }
+            }
+            Task::none()
+        }
+        Message::CloseFocusedPane => {
+            if let Some(idx) = state.active_tab {
+                if let Some(tab) = state.tabs.get(idx) {
+                    if tab.split.is_some() {
+                        let sid = tab.focused_session().to_string();
+                        let ssh = state.ssh_manager.clone();
+                        // The Closed event does the promote / drop dance.
+                        return Task::perform(
+                            async move {
+                                let _ = ssh.disconnect(&sid);
+                            },
+                            |_| Message::None,
+                        );
+                    }
+                    return Task::done(Message::TabClosed(idx));
+                }
+            }
             Task::none()
         }
 
@@ -2667,19 +3421,15 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             // Passthrough guard: if any overlay is open, the user is scrolling
             // inside it — don't let the event also scroll the terminal below.
             if state.any_overlay_open() { return Task::none(); }
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    tab.terminal.lock().scroll_view_up(lines);
-                }
+            if let Some(term) = state.focused_terminal() {
+                term.lock().scroll_view_up(lines);
             }
             Task::none()
         }
         Message::TerminalScrollDown(lines) => {
             if state.any_overlay_open() { return Task::none(); }
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    tab.terminal.lock().scroll_view_down(lines);
-                }
+            if let Some(term) = state.focused_terminal() {
+                term.lock().scroll_view_down(lines);
             }
             Task::none()
         }
@@ -2712,11 +3462,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.selection_start = None;
             state.selection_end = None;
             // Invalidate canvas cache so old selection is cleared
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let mut grid = tab.terminal.lock();
-                    grid.generation = grid.generation.wrapping_add(1);
-                }
+            if let Some(term) = state.focused_terminal() {
+                let mut grid = term.lock();
+                grid.generation = grid.generation.wrapping_add(1);
             }
             Task::none()
         }
@@ -2737,11 +3485,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                     }
                     state.selection_end = Some(pos);
                     // Invalidate canvas cache to update selection highlight
-                    if let Some(idx) = state.active_tab {
-                        if let Some(tab) = state.tabs.get(idx) {
-                            let mut grid = tab.terminal.lock();
-                            grid.generation = grid.generation.wrapping_add(1);
-                        }
+                    if let Some(term) = state.focused_terminal() {
+                        let mut grid = term.lock();
+                        grid.generation = grid.generation.wrapping_add(1);
                     }
                 }
             }
@@ -2758,14 +3504,12 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
         Message::CopySelection => {
             if let (Some(start), Some(end)) = (state.selection_start, state.selection_end) {
-                if let Some(idx) = state.active_tab {
-                    if let Some(tab) = state.tabs.get(idx) {
-                        let grid = tab.terminal.lock();
-                        let text = extract_selection(&grid, start, end);
-                        if !text.is_empty() {
-                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                let _ = clipboard.set_text(&text);
-                            }
+                if let Some(term) = state.focused_terminal() {
+                    let grid = term.lock();
+                    let text = extract_selection(&grid, start, end);
+                    if !text.is_empty() {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&text);
                         }
                     }
                 }
@@ -2773,11 +3517,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.selection_start = None;
             state.selection_end = None;
             // Invalidate canvas cache to clear selection highlight
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let mut grid = tab.terminal.lock();
-                    grid.generation = grid.generation.wrapping_add(1);
-                }
+            if let Some(term) = state.focused_terminal() {
+                let mut grid = term.lock();
+                grid.generation = grid.generation.wrapping_add(1);
             }
             Task::none()
         }
@@ -3982,6 +4724,36 @@ fn view_main(state: &NeoShell) -> Element<'_, Message> {
     }
 
     // Keyboard shortcuts help panel
+    // Command palette — topmost overlay, wins over everything else.
+    if state.show_palette {
+        let overlay = view_palette(state);
+        return container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            overlay,
+        ]))
+        .width(Fill).height(Fill).into();
+    }
+
+    // Tab rename mini-dialog
+    if state.tab_rename.is_some() {
+        let overlay = view_tab_rename(state);
+        return container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            overlay,
+        ]))
+        .width(Fill).height(Fill).into();
+    }
+
+    // SSH key manager
+    if state.show_key_manager {
+        let overlay = view_key_manager(state);
+        return container(stack([
+            container(main_layout).width(Fill).height(Fill).into(),
+            overlay,
+        ]))
+        .width(Fill).height(Fill).into();
+    }
+
     if state.show_shortcuts_help {
         let help_overlay = view_shortcuts_help();
         return container(stack([
@@ -4356,6 +5128,8 @@ fn view_toolbar(state: &NeoShell) -> Element<'_, Message> {
         .on_press(Message::ShowSnippetsPanel).padding(Padding::from([4, 10])).style(toolbar_style);
     let btn_broadcast = button(text(i18n::t("btn.broadcast")).color(theme::TEXT_SECONDARY).size(12.0 * scale))
         .on_press(Message::ShowBroadcastDialog).padding(Padding::from([4, 10])).style(toolbar_style);
+    let btn_keys = button(text(i18n::t("btn.keys")).color(theme::TEXT_SECONDARY).size(12.0 * scale))
+        .on_press(Message::ShowKeyManager).padding(Padding::from([4, 10])).style(toolbar_style);
     let btn_settings = button(text(i18n::t("settings.title")).color(theme::TEXT_SECONDARY).size(12.0 * scale))
         .on_press(Message::ShowSettings).padding(Padding::from([4, 10])).style(toolbar_style);
 
@@ -4367,6 +5141,7 @@ fn view_toolbar(state: &NeoShell) -> Element<'_, Message> {
         btn_tunnel,
         btn_snippets,
         btn_broadcast,
+        btn_keys,
         btn_history,
         horizontal_space(),
         session_info,
@@ -4897,7 +5672,18 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
         };
         let text_color = if is_active { c_primary } else { theme::TEXT_SECONDARY };
 
-        let status_dot = if tab.session_id.is_empty() {
+        // Alert badge wins over connection state — a red dot tells the
+        // operator "this box tripped a threshold" at a glance.
+        let alerting = !tab.session_id.is_empty()
+            && (state.alerts_active.contains_key(&tab.session_id)
+                || tab
+                    .split
+                    .as_ref()
+                    .map(|s| state.alerts_active.contains_key(&s.session_id))
+                    .unwrap_or(false));
+        let status_dot = if alerting {
+            text("● ").color(state.c_danger()).size(10.0 * scale)
+        } else if tab.session_id.is_empty() {
             text("● ").color(theme::WARNING).size(10.0 * scale)
         } else if tab.title.contains("[Reconnecting") {
             text("● ").color(theme::WARNING).size(10.0 * scale)
@@ -4905,13 +5691,26 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
             text("● ").color(c_success).size(10.0 * scale)
         };
 
-        let label = text(&tab.title).color(text_color).size(13.0 * scale);
+        // Split indicator: ⊞-ish marker rendered as "[2]" (glyph-safe).
+        let split_tag: Element<'_, Message> = if tab.split.is_some() {
+            text("[2]")
+                .font(Font::MONOSPACE)
+                .color(theme::TEXT_MUTED)
+                .size(9.0 * scale)
+                .into()
+        } else {
+            Space::new(0, 0).into()
+        };
+
+        let label = text(tab.display_title().to_string())
+            .color(text_color)
+            .size(13.0 * scale);
         let close_btn = button(text("x").color(theme::TEXT_MUTED).size(11.0 * scale))
             .on_press(Message::TabClosed(i))
             .padding(Padding::from([2, 6]))
             .style(transparent_button_style);
 
-        let tab_content = row![status_dot, label, close_btn]
+        let tab_content = row![status_dot, label, split_tag, close_btn]
             .spacing(8)
             .align_y(alignment::Vertical::Center);
 
@@ -5031,12 +5830,27 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
 
     for group_name in group_names {
         let conns = &groups[&group_name];
+        let collapsed = state.collapsed_groups.contains(&group_name);
 
-        let group_label = text(group_name.clone()).color(theme::TEXT_MUTED).size(11.0 * scale);
+        // Group header is a click target: collapse / expand. ASCII
+        // marker (no glyph-fallback risk in the embedded font subset).
+        let marker = if collapsed { "[+]" } else { "[-]" };
+        let group_label = text(format!("{} {} ({})", marker, group_name, conns.len()))
+            .font(Font::MONOSPACE)
+            .color(theme::TEXT_MUTED)
+            .size(11.0 * scale);
 
         list_col = list_col.push(
-            container(group_label).padding(Padding::new(12.0).top(6.0).bottom(2.0)),
+            button(group_label)
+                .on_press(Message::ToggleGroupCollapsed(group_name.clone()))
+                .padding(Padding::new(6.0).left(12.0).right(12.0))
+                .width(Fill)
+                .style(transparent_button_style),
         );
+
+        if collapsed {
+            continue;
+        }
 
         for conn in conns {
             let is_connected = state.tabs.iter().any(|t| t.connection_id == conn.id && !t.session_id.is_empty());
@@ -5597,25 +6411,102 @@ fn view_terminal_area(state: &NeoShell) -> Element<'_, Message> {
     #[allow(unused_variables)] let c_danger = state.c_danger();
     if let Some(idx) = state.active_tab {
         if let Some(tab) = state.tabs.get(idx) {
-            let term_view = TerminalView {
-                grid: tab.terminal.clone(),
-                selection_start: state.selection_start,
-                selection_end: state.selection_end,
-                font_size: state.theme_cfg.terminal_font_size,
-                session_id: tab.session_id.clone(),
-                ssh_manager: state.ssh_manager.clone(),
-                terminal_bg: state.theme_cfg.terminal_bg.to_color(),
-                terminal_fg: state.theme_cfg.terminal_fg.to_color(),
-                search_matches: state.term_search_matches.clone(),
-                search_current: if state.term_search_active && !state.term_search_matches.is_empty() {
-                    Some(state.term_search_current)
-                } else {
-                    None
-                },
+            // Selection + Cmd+F highlights only paint on the focused pane.
+            let make_view = |grid: &Arc<parking_lot::Mutex<TerminalGrid>>,
+                             session_id: &str,
+                             focused: bool|
+             -> TerminalView {
+                TerminalView {
+                    grid: grid.clone(),
+                    selection_start: if focused { state.selection_start } else { None },
+                    selection_end: if focused { state.selection_end } else { None },
+                    font_size: state.theme_cfg.terminal_font_size,
+                    session_id: session_id.to_string(),
+                    ssh_manager: state.ssh_manager.clone(),
+                    terminal_bg: state.theme_cfg.terminal_bg.to_color(),
+                    terminal_fg: state.theme_cfg.terminal_fg.to_color(),
+                    search_matches: if focused {
+                        state.term_search_matches.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    search_current: if focused
+                        && state.term_search_active
+                        && !state.term_search_matches.is_empty()
+                    {
+                        Some(state.term_search_current)
+                    } else {
+                        None
+                    },
+                }
             };
 
-            let canvas_el: Element<'_, Message> =
-                canvas(term_view).width(Fill).height(Fill).into();
+            let canvas_el: Element<'_, Message> = if let Some(sp) = &tab.split {
+                let main_focused = !tab.focus_split;
+                let main_view =
+                    make_view(&tab.terminal, &tab.session_id, main_focused);
+                let split_view =
+                    make_view(&sp.terminal, &sp.session_id, tab.focus_split);
+
+                // Focused pane gets an accent edge so you always know where
+                // keystrokes land. Click anywhere in a pane to focus it
+                // (handled via SplitFocusToggle on the unfocused half).
+                let pane = |v: TerminalView, focused: bool| -> Element<'_, Message> {
+                    let el: Element<'_, Message> =
+                        canvas(v).width(Fill).height(Fill).into();
+                    let bordered = container(el).width(Fill).height(Fill).style(
+                        move |_| container::Style {
+                            border: iced::Border {
+                                color: if focused { c_accent } else { theme::BORDER },
+                                width: 1.0,
+                                radius: 0.0.into(),
+                            },
+                            ..Default::default()
+                        },
+                    );
+                    if focused {
+                        bordered.into()
+                    } else {
+                        // Unfocused pane: clicking it moves focus there.
+                        iced::widget::mouse_area(bordered)
+                            .on_press(Message::SplitFocusToggle)
+                            .into()
+                    }
+                };
+
+                let divider: Element<'_, Message> = container(Space::new(
+                    if sp.vertical { Length::Fixed(4.0) } else { Fill },
+                    if sp.vertical { Fill } else { Length::Fixed(4.0) },
+                ))
+                .style(|_| container::Style {
+                    background: Some(theme::BORDER.into()),
+                    ..Default::default()
+                })
+                .into();
+
+                if sp.vertical {
+                    row![
+                        pane(main_view, main_focused),
+                        divider,
+                        pane(split_view, tab.focus_split),
+                    ]
+                    .width(Fill)
+                    .height(Fill)
+                    .into()
+                } else {
+                    column![
+                        pane(main_view, main_focused),
+                        divider,
+                        pane(split_view, tab.focus_split),
+                    ]
+                    .width(Fill)
+                    .height(Fill)
+                    .into()
+                }
+            } else {
+                let term_view = make_view(&tab.terminal, &tab.session_id, true);
+                canvas(term_view).width(Fill).height(Fill).into()
+            };
 
             if state.term_search_active {
                 return stack![canvas_el, view_terminal_search_bar(state)].into();
@@ -6932,15 +7823,78 @@ fn view_theme_editor(state: &NeoShell) -> Element<'_, Message> {
         .padding(Padding::from([4, 10]))
         .style(transparent_button_style);
 
+    // ---- v0.7.0: resource threshold alerts -------------------------------
+    let a = &state.alert_cfg;
+    let alerts_title = text(i18n::t("alerts.title"))
+        .color(c_primary)
+        .size(13.0 * scale);
+    let enabled = a.enabled;
+    let alerts_toggle = button(
+        text(if enabled { i18n::t("alerts.on") } else { i18n::t("alerts.off") })
+            .size(11.0 * scale)
+            .color(if enabled { Color::WHITE } else { theme::TEXT_SECONDARY }),
+    )
+    .on_press(Message::AlertEnabledToggled(!enabled))
+    .padding(Padding::from([3, 10]))
+    .style(move |_, _| button::Style {
+        background: Some(if enabled {
+            theme::DANGER.into()
+        } else {
+            theme::BG_TERTIARY.into()
+        }),
+        text_color: if enabled { Color::WHITE } else { theme::TEXT_SECONDARY },
+        border: iced::Border {
+            radius: 4.0.into(),
+            width: 1.0,
+            color: theme::BORDER,
+        },
+        ..Default::default()
+    });
+
+    let alert_row = |label: &'static str, val: f32, msg: fn(f32) -> Message| {
+        column![
+            row![
+                text(i18n::t(label)).color(theme::TEXT_SECONDARY).size(12.0 * scale).width(Fill),
+                text(format!("{:.0}%", val)).font(Font::MONOSPACE).color(c_primary).size(11.0 * scale).width(40),
+            ]
+            .align_y(alignment::Vertical::Center),
+            slider(50.0..=100.0f32, val, msg).step(5.0f32),
+        ]
+        .spacing(2)
+    };
+
+    let alerts_block = column![
+        row![alerts_title, horizontal_space(), alerts_toggle]
+            .align_y(alignment::Vertical::Center),
+        text(i18n::t("alerts.hint")).color(theme::TEXT_MUTED).size(10.0 * scale),
+        alert_row("alerts.cpu", a.cpu_pct, Message::AlertCpuChanged),
+        alert_row("alerts.mem", a.mem_pct, Message::AlertMemChanged),
+        alert_row("alerts.disk", a.disk_pct, Message::AlertDiskChanged),
+    ]
+    .spacing(8);
+
     column![
         section_title,
         swatches,
         term_size_row, term_slider,
         ui_size_row, ui_slider,
         row![horizontal_space(), reset_btn],
+        hr_space(),
+        alerts_block,
     ]
     .spacing(8)
     .into()
+}
+
+/// Thin horizontal rule used between Settings sections.
+fn hr_space() -> Element<'static, Message> {
+    container(Space::new(Fill, 1))
+        .width(Fill)
+        .style(|_| container::Style {
+            background: Some(theme::BORDER.into()),
+            ..Default::default()
+        })
+        .into()
 }
 
 // ---- About dialog ----------------------------------------------------------
@@ -7026,6 +7980,16 @@ fn view_shortcuts_help() -> Element<'static, Message> {
                 (format!("{}+1…9", m_key), "shortcuts.desc.switch_tab"),
                 ("Ctrl+Tab".into(), "shortcuts.desc.next_tab"),
                 ("Ctrl+Shift+Tab".into(), "shortcuts.desc.prev_tab"),
+                ("2×Click".into(), "shortcuts.desc.rename_tab"),
+            ],
+        ),
+        (
+            "shortcuts.group.split",
+            vec![
+                (format!("{}+D", m_key), "shortcuts.desc.split_v"),
+                (format!("{}+Shift+D", m_key), "shortcuts.desc.split_h"),
+                (format!("{}+]", m_key), "shortcuts.desc.split_focus"),
+                (format!("{}+Shift+W", m_key), "shortcuts.desc.split_close"),
             ],
         ),
         (
@@ -7052,6 +8016,7 @@ fn view_shortcuts_help() -> Element<'static, Message> {
         (
             "shortcuts.group.panels",
             vec![
+                (format!("{}+K", m_key), "shortcuts.desc.palette"),
                 (format!("{}+J", m_key), "shortcuts.desc.bottom_toggle"),
                 (format!("{}+H", m_key), "shortcuts.desc.history"),
                 (format!("{}+/", m_key), "shortcuts.desc.help"),
@@ -7280,6 +8245,385 @@ fn view_log_viewer(state: &NeoShell) -> Element<'_, Message> {
 
 // ---- Broadcast dialog ------------------------------------------------------
 
+// ---- v0.7.0: Cmd+K command palette ----------------------------------------
+
+fn view_palette(state: &NeoShell) -> Element<'_, Message> {
+    let scale = state.ui_scale();
+    let c_primary = state.c_primary();
+    let c_accent = state.c_accent();
+
+    let input = text_input(&i18n::t("palette.placeholder"), &state.palette_query)
+        .id(text_input::Id::new(PALETTE_INPUT_ID))
+        .on_input(Message::PaletteQueryChanged)
+        .on_submit(Message::PaletteExecute)
+        .padding(Padding::from([10, 14]))
+        .size(15.0 * scale);
+
+    let items = state.palette_items();
+    let mut list = column![].spacing(2);
+    if items.is_empty() {
+        list = list.push(
+            container(
+                text(i18n::t("palette.empty"))
+                    .color(theme::TEXT_MUTED)
+                    .size(12.0 * scale),
+            )
+            .padding(Padding::from([10, 14])),
+        );
+    }
+    for (i, item) in items.iter().enumerate() {
+        let selected = i == state.palette_selected;
+        let kind_chip = container(
+            text(i18n::t(item.kind))
+                .size(9.0 * scale)
+                .color(if selected { Color::WHITE } else { theme::TEXT_MUTED }),
+        )
+        .padding(Padding::from([2, 6]))
+        .style(move |_| container::Style {
+            background: Some(if selected {
+                Color::from_rgba(1.0, 1.0, 1.0, 0.18).into()
+            } else {
+                theme::BG_TERTIARY.into()
+            }),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let label = text(item.label.clone())
+            .size(13.0 * scale)
+            .color(if selected { Color::WHITE } else { c_primary });
+        let meta = text(item.meta.clone())
+            .size(11.0 * scale)
+            .color(if selected {
+                Color::from_rgba(1.0, 1.0, 1.0, 0.7)
+            } else {
+                theme::TEXT_MUTED
+            });
+
+        let row_el = row![kind_chip, label, horizontal_space(), meta]
+            .spacing(10)
+            .align_y(alignment::Vertical::Center);
+
+        list = list.push(
+            button(row_el)
+                .on_press(Message::PaletteExecuteIndex(i))
+                .padding(Padding::from([8, 12]))
+                .width(Fill)
+                .style(move |_, _| button::Style {
+                    background: Some(if selected {
+                        c_accent.into()
+                    } else {
+                        Color::TRANSPARENT.into()
+                    }),
+                    text_color: if selected { Color::WHITE } else { c_primary },
+                    border: iced::Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        );
+    }
+
+    let hint = text(i18n::t("palette.hint"))
+        .size(10.0 * scale)
+        .color(theme::TEXT_MUTED);
+
+    let card = container(
+        column![input, list, hint].spacing(10).width(560),
+    )
+    .padding(16)
+    .style(|_| container::Style {
+        background: Some(theme::BG_SECONDARY.into()),
+        border: iced::Border {
+            color: theme::BORDER,
+            width: 1.0,
+            radius: 12.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+            offset: iced::Vector::new(0.0, 8.0),
+            blur_radius: 28.0,
+        },
+        ..Default::default()
+    });
+
+    // Pin the card to the upper third — palettes feel wrong centered.
+    container(
+        column![Space::with_height(Length::Fixed(90.0)), card]
+            .align_x(alignment::Horizontal::Center)
+            .width(Fill),
+    )
+    .width(Fill)
+    .height(Fill)
+    .style(|_| container::Style {
+        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()),
+        ..Default::default()
+    })
+    .into()
+}
+
+// ---- v0.7.0: tab rename dialog ---------------------------------------------
+
+fn view_tab_rename(state: &NeoShell) -> Element<'_, Message> {
+    let scale = state.ui_scale();
+    let c_primary = state.c_primary();
+
+    let input = text_input(&i18n::t("tabrename.placeholder"), &state.tab_rename_input)
+        .id(text_input::Id::new(TAB_RENAME_INPUT_ID))
+        .on_input(Message::TabRenameInput)
+        .on_submit(Message::TabRenameCommit)
+        .padding(Padding::from([8, 10]))
+        .size(14.0 * scale);
+
+    let buttons = row![
+        button(text(i18n::t("form.cancel")).color(theme::TEXT_SECONDARY).size(12.0 * scale))
+            .on_press(Message::TabRenameCancel)
+            .padding(Padding::from([6, 16]))
+            .style(transparent_button_style),
+        horizontal_space(),
+        button(text(i18n::t("tabrename.save")).color(c_primary).size(12.0 * scale))
+            .on_press(Message::TabRenameCommit)
+            .padding(Padding::from([6, 16]))
+            .style(accent_button_style),
+    ]
+    .align_y(alignment::Vertical::Center);
+
+    let card = container(
+        column![
+            text(i18n::t("tabrename.title")).size(15.0 * scale).color(c_primary),
+            text(i18n::t("tabrename.hint")).size(11.0 * scale).color(theme::TEXT_MUTED),
+            input,
+            buttons,
+        ]
+        .spacing(12)
+        .width(380),
+    )
+    .padding(20)
+    .style(|_| container::Style {
+        background: Some(theme::BG_SECONDARY.into()),
+        border: iced::Border {
+            color: theme::BORDER,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 20.0,
+        },
+        ..Default::default()
+    });
+
+    container(card)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ---- v0.7.0: SSH key manager ------------------------------------------------
+
+fn view_key_manager(state: &NeoShell) -> Element<'_, Message> {
+    let scale = state.ui_scale();
+    let c_primary = state.c_primary();
+    let c_accent = state.c_accent();
+    let c_success = state.c_success();
+    let c_danger = state.c_danger();
+
+    let title_bar = row![
+        text(i18n::t("keys.title")).size(17.0 * scale).color(c_primary),
+        horizontal_space(),
+        button(text("×").size(16.0 * scale).color(theme::TEXT_SECONDARY))
+            .on_press(Message::HideKeyManager)
+            .padding(Padding::from([2, 10]))
+            .style(transparent_button_style),
+    ]
+    .align_y(alignment::Vertical::Center);
+
+    // ---- key list ----
+    let mut key_list = column![].spacing(8);
+    if state.local_keys.is_empty() {
+        key_list = key_list.push(
+            text(i18n::t("keys.empty"))
+                .color(theme::TEXT_MUTED)
+                .size(12.0 * scale),
+        );
+    }
+    for k in &state.local_keys {
+        let path_copy = k.path.clone();
+        let path_deploy = k.path.clone();
+        let pubkey_short: String = {
+            // type + first 16 … last 8 of base64 + comment
+            let mut parts = k.pubkey.split_whitespace();
+            let _ty = parts.next().unwrap_or("");
+            let b64 = parts.next().unwrap_or("");
+            if b64.len() > 28 {
+                format!("{}…{}", &b64[..16], &b64[b64.len() - 8..])
+            } else {
+                b64.to_string()
+            }
+        };
+
+        let mut card_col = column![
+            row![
+                text(k.name.clone()).size(13.0 * scale).color(c_primary),
+                container(
+                    text(k.key_type.clone()).size(9.0 * scale).color(c_accent)
+                )
+                .padding(Padding::from([1, 6]))
+                .style(|_| container::Style {
+                    background: Some(theme::BG_TERTIARY.into()),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+                horizontal_space(),
+                button(text(i18n::t("keys.copy")).size(10.0 * scale).color(c_accent))
+                    .on_press(Message::KeyCopyPubkey(path_copy))
+                    .padding(Padding::from([3, 8]))
+                    .style(transparent_button_style),
+                button(text(i18n::t("keys.deploy")).size(10.0 * scale).color(c_success))
+                    .on_press(Message::KeyDeployStart(path_deploy))
+                    .padding(Padding::from([3, 8]))
+                    .style(transparent_button_style),
+            ]
+            .spacing(8)
+            .align_y(alignment::Vertical::Center),
+            text(format!("{}  {}", pubkey_short, k.comment))
+                .size(10.0 * scale)
+                .font(Font::MONOSPACE)
+                .color(theme::TEXT_MUTED),
+        ]
+        .spacing(4);
+
+        // Inline connection picker when this key is in deploy mode.
+        if state.key_deploying.as_deref() == Some(k.path.as_str()) {
+            let mut pick = column![
+                text(i18n::t("keys.pick_target"))
+                    .size(11.0 * scale)
+                    .color(c_primary)
+            ]
+            .spacing(4);
+            for c in &state.connections {
+                let label = format!("{} — {}@{}:{}", c.name, c.username, c.host, c.port);
+                pick = pick.push(
+                    button(text(label).size(11.0 * scale).color(theme::TEXT_SECONDARY))
+                        .on_press(Message::KeyDeployTo(k.path.clone(), c.id.clone()))
+                        .padding(Padding::from([4, 10]))
+                        .width(Fill)
+                        .style(sidebar_item_style),
+                );
+            }
+            pick = pick.push(
+                button(text(i18n::t("form.cancel")).size(11.0 * scale).color(theme::TEXT_MUTED))
+                    .on_press(Message::KeyDeployCancel)
+                    .padding(Padding::from([4, 10]))
+                    .style(transparent_button_style),
+            );
+            card_col = card_col.push(
+                container(pick).padding(8).style(|_| container::Style {
+                    background: Some(theme::BG_PRIMARY.into()),
+                    border: iced::Border {
+                        color: theme::BORDER,
+                        width: 1.0,
+                        radius: 6.0.into(),
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        key_list = key_list.push(
+            container(card_col).padding(10).width(Fill).style(|_| container::Style {
+                background: Some(theme::BG_TERTIARY.into()),
+                border: iced::Border {
+                    color: theme::BORDER,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            }),
+        );
+    }
+
+    // ---- generate form ----
+    let gen_form = column![
+        text(i18n::t("keys.gen_title")).size(13.0 * scale).color(c_primary),
+        row![
+            text_input(&i18n::t("keys.gen_name"), &state.key_form_name)
+                .on_input(Message::KeyFormNameChanged)
+                .padding(8)
+                .size(12.0 * scale),
+            text_input(&i18n::t("keys.gen_comment"), &state.key_form_comment)
+                .on_input(Message::KeyFormCommentChanged)
+                .padding(8)
+                .size(12.0 * scale),
+            button(text(i18n::t("keys.gen_btn")).size(12.0 * scale).color(c_primary))
+                .on_press(Message::KeyGenerate)
+                .padding(Padding::from([8, 16]))
+                .style(accent_button_style),
+        ]
+        .spacing(8)
+        .align_y(alignment::Vertical::Center),
+        text(i18n::t("keys.gen_hint")).size(10.0 * scale).color(theme::TEXT_MUTED),
+    ]
+    .spacing(6);
+
+    // ---- status line ----
+    let status: Element<'_, Message> = if let Some(s) = &state.key_deploy_status {
+        let color = if s.starts_with('✗') { c_danger } else { c_success };
+        text(s.clone()).size(11.0 * scale).color(color).into()
+    } else {
+        Space::new(0, 0).into()
+    };
+
+    let card = container(
+        column![
+            title_bar,
+            scrollable(key_list).height(Length::Fixed(300.0)),
+            gen_form,
+            status,
+        ]
+        .spacing(14)
+        .width(620),
+    )
+    .padding(20)
+    .max_height(560)
+    .style(|_| container::Style {
+        background: Some(theme::BG_SECONDARY.into()),
+        border: iced::Border {
+            color: theme::BORDER,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 20.0,
+        },
+        ..Default::default()
+    });
+
+    container(card)
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
 fn view_broadcast_dialog(state: &NeoShell) -> Element<'_, Message> {
     let scale = state.ui_scale();
     let c_primary = state.c_primary();
@@ -7301,18 +8645,31 @@ fn view_broadcast_dialog(state: &NeoShell) -> Element<'_, Message> {
 
     let sessions_title = text(i18n::t("broadcast.sessions")).color(theme::TEXT_SECONDARY).size(12.0 * scale);
     let mut sessions_col = column![].spacing(4);
-    let active_tabs: Vec<_> = state.tabs.iter().filter(|t| !t.session_id.is_empty()).collect();
-    if active_tabs.is_empty() {
+    // Sessions = every main pane plus every split pane.
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for tab in &state.tabs {
+        if !tab.session_id.is_empty() {
+            entries.push((tab.session_id.clone(), tab.display_title().to_string()));
+        }
+        if let Some(sp) = &tab.split {
+            if !sp.session_id.is_empty() {
+                entries.push((
+                    sp.session_id.clone(),
+                    format!("{} (split)", tab.display_title()),
+                ));
+            }
+        }
+    }
+    if entries.is_empty() {
         sessions_col = sessions_col.push(
             text(i18n::t("broadcast.empty")).color(theme::TEXT_MUTED).size(11.0 * scale)
         );
     } else {
-        for tab in active_tabs {
-            let sid = tab.session_id.clone();
+        for (sid, title) in entries {
             let selected = state.broadcast_selected.contains(&sid);
             let marker = if selected { "●" } else { "○" };
             let marker_color = if selected { c_success } else { theme::TEXT_MUTED };
-            let label = text(format!(" {}", tab.title)).color(c_primary).size(12.0 * scale);
+            let label = text(format!(" {}", title)).color(c_primary).size(12.0 * scale);
             let row_btn = button(
                 row![text(marker).color(marker_color).size(12.0 * scale), label]
                     .align_y(alignment::Vertical::Center)
@@ -7334,8 +8691,42 @@ fn view_broadcast_dialog(state: &NeoShell) -> Element<'_, Message> {
     .padding(Padding::from([6, 16]))
     .style(accent_button_style);
 
-    let body = column![header, hint, cmd_input, sessions_title, scrollable(sessions_col).height(240),
-        row![horizontal_space(), send_btn]
+    // Live sync toggle: while ON, every keystroke in the focused terminal
+    // is mirrored to all ticked sessions in real time.
+    let sync_on = state.sync_input_on;
+    let sync_label = if sync_on {
+        i18n::t("broadcast.sync_on")
+    } else {
+        i18n::t("broadcast.sync_off")
+    };
+    let sync_btn = button(
+        text(sync_label)
+            .size(12.0 * scale)
+            .color(if sync_on { Color::WHITE } else { theme::TEXT_SECONDARY }),
+    )
+    .on_press(Message::ToggleSyncInput)
+    .padding(Padding::from([6, 16]))
+    .style(move |_, _| button::Style {
+        background: Some(if sync_on {
+            theme::DANGER.into()
+        } else {
+            theme::BG_TERTIARY.into()
+        }),
+        text_color: if sync_on { Color::WHITE } else { theme::TEXT_SECONDARY },
+        border: iced::Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: theme::BORDER,
+        },
+        ..Default::default()
+    });
+    let sync_hint = text(i18n::t("broadcast.sync_hint"))
+        .size(10.0 * scale)
+        .color(theme::TEXT_MUTED);
+
+    let body = column![header, hint, cmd_input, sessions_title, scrollable(sessions_col).height(220),
+        sync_hint,
+        row![sync_btn, horizontal_space(), send_btn].align_y(alignment::Vertical::Center)
     ].spacing(10).padding(20).width(520);
 
     let card = container(body).style(|_| container::Style {
@@ -7473,6 +8864,59 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
     let hist_count = text(format!("{}H", state.cmd_history.len()))
         .font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(9.0 * scale);
 
+    // SYNC badge — loud on purpose: typing while it's on reaches N boxes.
+    let sync_badge: Element<'_, Message> = if state.sync_input_on {
+        let n = state.broadcast_selected.len();
+        button(
+            text(format!("SYNC {}", n))
+                .font(Font::MONOSPACE)
+                .color(Color::WHITE)
+                .size(9.0 * scale),
+        )
+        .on_press(Message::ToggleSyncInput)
+        .padding(Padding::from([1, 6]))
+        .style(|_, _| button::Style {
+            background: Some(theme::DANGER.into()),
+            text_color: Color::WHITE,
+            border: iced::Border { radius: 3.0.into(), ..Default::default() },
+            ..Default::default()
+        })
+        .into()
+    } else {
+        Space::new(0, 0).into()
+    };
+
+    // First active threshold alert (clicking opens nothing yet — it's a
+    // status readout; the tab dot tells you which box).
+    let alert_badge: Element<'_, Message> = if let Some((sid, breaches)) =
+        state.alerts_active.iter().next()
+    {
+        let title = state
+            .tabs
+            .iter()
+            .find_map(|t| {
+                if t.session_id == *sid {
+                    Some(t.display_title().to_string())
+                } else if t.split.as_ref().map(|s| &s.session_id) == Some(sid) {
+                    Some(format!("{} (split)", t.display_title()))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| sid.chars().take(8).collect());
+        let more = if state.alerts_active.len() > 1 {
+            format!(" +{}", state.alerts_active.len() - 1)
+        } else {
+            String::new()
+        };
+        text(format!("⚠ {}: {}{}", title, breaches.join(" "), more))
+            .color(c_danger)
+            .size(9.0 * scale)
+            .into()
+    } else {
+        Space::new(0, 0).into()
+    };
+
     let lang_label = if state.locale == "zh-CN" { "EN" } else { "CN" };
     let lang_btn = button(text(lang_label).font(Font::MONOSPACE).color(c_accent).size(9.0 * scale))
         .on_press(Message::ToggleLanguage)
@@ -7530,7 +8974,7 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
             s
         });
 
-    let bar = row![version, shortcuts, horizontal_space(), tab_count, hist_count, log_btn, help_btn, lang_btn, quit_btn, session_text]
+    let bar = row![version, shortcuts, sync_badge, alert_badge, horizontal_space(), tab_count, hist_count, log_btn, help_btn, lang_btn, quit_btn, session_text]
         .spacing(10)
         .padding(Padding::from([3, 10]))
         .align_y(alignment::Vertical::Center);

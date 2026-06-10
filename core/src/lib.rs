@@ -6,6 +6,7 @@ mod app;
 mod crypto;
 mod ssh;
 mod sshconfig;
+mod sshkeys;
 mod storage;
 mod terminal;
 mod tunnel;

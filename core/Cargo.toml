@@ -1,6 +1,6 @@
 [package]
 name = "neoshell-core"
-version = "0.6.27"
+version = "0.7.0"
 edition = "2021"
 description = "NeoShell core library — all application logic"
 
@@ -47,6 +47,9 @@ arboard = "3"
 # Updater
 ureq = { version = "~2", features = ["json"] }
 md-5 = "0.10"
+
+# SSH key generation (ed25519, OpenSSH format) for the key manager
+ssh-key = { version = "0.6", features = ["ed25519"] }
 
 # Vendored OpenSSL on ALL platforms — ensures libssh2 gets full EC/curve25519 support
 [dependencies.openssl]

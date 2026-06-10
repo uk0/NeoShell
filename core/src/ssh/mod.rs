@@ -1831,6 +1831,92 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// One-shot helper for the SSH key manager: connect with `config`, append
+/// `pubkey` to the remote `~/.ssh/authorized_keys` (idempotent — grep
+/// skips the append when the exact line is already present), then drop
+/// the connection. Returns "user@host" on success. Goes through
+/// `establish_tcp`, so bastion/proxy-routed connections work too.
+pub fn deploy_pubkey(
+    config: &crate::storage::ConnectionConfig,
+    pubkey: &str,
+) -> Result<String, String> {
+    let params = ConnectParams {
+        host: config.host.clone(),
+        port: config.port,
+        username: config.username.clone(),
+        auth_type: config.auth_type.clone(),
+        password: config.password.clone(),
+        private_key: config.private_key.clone(),
+        passphrase: config.passphrase.clone(),
+        proxy_id: config.proxy_id.clone(),
+    };
+
+    let tcp = establish_tcp(&params).map_err(|e| translate_ssh_error(&e))?;
+    let mut session = Session::new().map_err(|e| format!("Session::new: {}", e))?;
+    session.set_tcp_stream(tcp);
+    session.set_timeout(15_000);
+    configure_session_algorithms(&session);
+    session
+        .handshake()
+        .map_err(|e| translate_ssh_error(&e.to_string()))?;
+
+    match params.auth_type.as_str() {
+        "password" => {
+            let pw = params
+                .password
+                .as_deref()
+                .ok_or_else(|| "password missing".to_string())?;
+            session
+                .userauth_password(&params.username, pw)
+                .map_err(|e| translate_ssh_error(&e.to_string()))?;
+        }
+        "key" => {
+            let key_path = params
+                .private_key
+                .as_deref()
+                .ok_or_else(|| "private key path missing".to_string())?;
+            session
+                .userauth_pubkey_file(
+                    &params.username,
+                    None,
+                    std::path::Path::new(key_path),
+                    params.passphrase.as_deref(),
+                )
+                .map_err(|e| translate_ssh_error(&e.to_string()))?;
+        }
+        other => return Err(format!("unknown auth type: {}", other)),
+    }
+    if !session.authenticated() {
+        return Err(translate_ssh_error("Authentication failed"));
+    }
+
+    let q = shell_escape(pubkey.trim());
+    let cmd = format!(
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && \
+         chmod 600 ~/.ssh/authorized_keys && \
+         grep -qxF {q} ~/.ssh/authorized_keys || echo {q} >> ~/.ssh/authorized_keys",
+        q = q
+    );
+
+    let mut channel = session
+        .channel_session()
+        .map_err(|e| format!("channel: {}", e))?;
+    channel.exec(&cmd).map_err(|e| format!("exec: {}", e))?;
+    let mut out = String::new();
+    use std::io::Read as _;
+    let _ = channel.read_to_string(&mut out);
+    let _ = channel.wait_close();
+    let status = channel.exit_status().unwrap_or(-1);
+    if status != 0 {
+        return Err(format!(
+            "remote command failed (exit {}): {}",
+            status,
+            out.trim()
+        ));
+    }
+    Ok(format!("{}@{}", config.username, config.host))
+}
+
 /// Verify that libssh2 (as compiled on this platform) exposes the algorithms
 /// modern OpenSSH servers require. Called at startup so missing algorithms
 /// are surfaced early, and as a unit test so CI catches regressions on any

@@ -101,9 +101,16 @@ static EN: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("shortcuts.title", "Keyboard Shortcuts");
     m.insert("shortcuts.close", "Close");
     m.insert("shortcuts.group.tabs",     "Tabs");
+    m.insert("shortcuts.group.split",    "Split panes");
     m.insert("shortcuts.group.terminal", "Terminal");
     m.insert("shortcuts.group.panels",   "Panels");
     m.insert("shortcuts.group.other",    "Other");
+    m.insert("shortcuts.desc.rename_tab",   "Double-click a tab to rename it");
+    m.insert("shortcuts.desc.palette",      "Command palette (connections / actions / snippets)");
+    m.insert("shortcuts.desc.split_v",      "Split tab side-by-side (same host, new shell)");
+    m.insert("shortcuts.desc.split_h",      "Split tab top/bottom");
+    m.insert("shortcuts.desc.split_focus",  "Switch focus between panes (or click a pane)");
+    m.insert("shortcuts.desc.split_close",  "Close the focused pane");
     m.insert("shortcuts.desc.connect",         "Open connection dialog");
     m.insert("shortcuts.desc.close_tab",       "Close active tab");
     m.insert("shortcuts.desc.switch_tab",      "Switch to tab N");
@@ -177,6 +184,60 @@ static EN: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("search.prev", "Prev");
     m.insert("search.next", "Next");
     m.insert("search.close", "Close");
+    // v0.7.0 — command palette
+    m.insert("palette.placeholder", "Type to search connections, actions, snippets…");
+    m.insert("palette.empty", "No matches");
+    m.insert("palette.hint", "↑↓ navigate · Enter run · Esc close");
+    m.insert("palette.kind.conn", "CONN");
+    m.insert("palette.kind.action", "ACT");
+    m.insert("palette.kind.snippet", "SNIP");
+    m.insert("palette.act.new_conn", "New connection");
+    m.insert("palette.act.connect", "Open connect dialog");
+    m.insert("palette.act.settings", "Open settings");
+    m.insert("palette.act.broadcast", "Broadcast command");
+    m.insert("palette.act.snippets", "Open snippets");
+    m.insert("palette.act.keys", "SSH key manager");
+    m.insert("palette.act.tunnels", "Tunnel manager");
+    m.insert("palette.act.proxies", "Proxy manager");
+    m.insert("palette.act.history", "Command history");
+    m.insert("palette.act.logs", "Log viewer");
+    m.insert("palette.act.sync", "Toggle live sync input");
+    m.insert("palette.act.split_v", "Split pane (vertical)");
+    m.insert("palette.act.split_h", "Split pane (horizontal)");
+    m.insert("palette.act.import_ssh", "Import all from ~/.ssh/config");
+    // v0.7.0 — tab rename
+    m.insert("tabrename.title", "Rename tab");
+    m.insert("tabrename.hint", "Empty name restores the automatic user@host title");
+    m.insert("tabrename.placeholder", "Tab name");
+    m.insert("tabrename.save", "Save");
+    // v0.7.0 — sync input
+    m.insert("broadcast.sync_on", "LIVE SYNC: ON");
+    m.insert("broadcast.sync_off", "Live sync: off");
+    m.insert("broadcast.sync_hint", "Live sync mirrors every keystroke in the focused terminal to all ticked sessions — including Enter and Ctrl+C. Use with care.");
+    // v0.7.0 — threshold alerts
+    m.insert("alerts.title", "Resource alerts");
+    m.insert("alerts.hint", "Red dot on the tab + status-bar warning when a session crosses a threshold (checked every 3 s)");
+    m.insert("alerts.on", "ON");
+    m.insert("alerts.off", "OFF");
+    m.insert("alerts.cpu", "CPU load threshold");
+    m.insert("alerts.mem", "Memory threshold");
+    m.insert("alerts.disk", "Disk threshold");
+    // v0.7.0 — SSH key manager
+    m.insert("btn.keys", "Keys");
+    m.insert("keys.title", "SSH key manager");
+    m.insert("keys.empty", "No keys found in ~/.ssh");
+    m.insert("keys.copy", "Copy pubkey");
+    m.insert("keys.deploy", "Deploy to…");
+    m.insert("keys.pick_target", "Deploy to which connection?");
+    m.insert("keys.gen_title", "Generate new key (ed25519)");
+    m.insert("keys.gen_name", "File name (e.g. id_ed25519_work)");
+    m.insert("keys.gen_comment", "Comment (e.g. ops@laptop)");
+    m.insert("keys.gen_btn", "Generate");
+    m.insert("keys.gen_hint", "Written to ~/.ssh/<name> + .pub (0600). Never overwrites existing files.");
+    m.insert("keys.generated", "Key generated");
+    m.insert("keys.copied", "Public key copied to clipboard");
+    m.insert("keys.deploying", "Deploying…");
+    m.insert("keys.deploy_ok", "Deployed to");
     // SSH error hints
     m.insert("ssh.err.auth", "wrong username/password or key — check credentials or server sshd permissions");
     m.insert("ssh.err.refused", "target port closed — confirm SSH service is running on the right port (usually 22)");
@@ -379,9 +440,16 @@ static ZH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("shortcuts.title", "键盘快捷键");
     m.insert("shortcuts.close", "关闭");
     m.insert("shortcuts.group.tabs",     "标签页");
+    m.insert("shortcuts.group.split",    "分屏");
     m.insert("shortcuts.group.terminal", "终端");
     m.insert("shortcuts.group.panels",   "面板");
     m.insert("shortcuts.group.other",    "其他");
+    m.insert("shortcuts.desc.rename_tab",   "双击标签页可重命名");
+    m.insert("shortcuts.desc.palette",      "命令面板（连接 / 动作 / 片段）");
+    m.insert("shortcuts.desc.split_v",      "左右分屏（同主机新 shell）");
+    m.insert("shortcuts.desc.split_h",      "上下分屏");
+    m.insert("shortcuts.desc.split_focus",  "切换 pane 焦点（或直接点击 pane）");
+    m.insert("shortcuts.desc.split_close",  "关闭当前焦点 pane");
     m.insert("shortcuts.desc.connect",         "打开连接对话框");
     m.insert("shortcuts.desc.close_tab",       "关闭当前标签页");
     m.insert("shortcuts.desc.switch_tab",      "切换到第 N 个标签页");
@@ -455,6 +523,60 @@ static ZH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("search.prev", "上一个");
     m.insert("search.next", "下一个");
     m.insert("search.close", "关闭");
+    // v0.7.0 — 命令面板
+    m.insert("palette.placeholder", "输入以搜索连接、动作、片段…");
+    m.insert("palette.empty", "无匹配结果");
+    m.insert("palette.hint", "↑↓ 选择 · Enter 执行 · Esc 关闭");
+    m.insert("palette.kind.conn", "连接");
+    m.insert("palette.kind.action", "动作");
+    m.insert("palette.kind.snippet", "片段");
+    m.insert("palette.act.new_conn", "新建连接");
+    m.insert("palette.act.connect", "打开连接对话框");
+    m.insert("palette.act.settings", "打开设置");
+    m.insert("palette.act.broadcast", "广播命令");
+    m.insert("palette.act.snippets", "打开命令片段");
+    m.insert("palette.act.keys", "SSH 密钥管理");
+    m.insert("palette.act.tunnels", "隧道管理");
+    m.insert("palette.act.proxies", "代理管理");
+    m.insert("palette.act.history", "命令历史");
+    m.insert("palette.act.logs", "日志查看器");
+    m.insert("palette.act.sync", "切换实时同步输入");
+    m.insert("palette.act.split_v", "分屏（左右）");
+    m.insert("palette.act.split_h", "分屏（上下）");
+    m.insert("palette.act.import_ssh", "一键导入 ~/.ssh/config");
+    // v0.7.0 — 标签重命名
+    m.insert("tabrename.title", "重命名标签页");
+    m.insert("tabrename.hint", "留空则恢复自动 user@host 标题");
+    m.insert("tabrename.placeholder", "标签名称");
+    m.insert("tabrename.save", "保存");
+    // v0.7.0 — 同步输入
+    m.insert("broadcast.sync_on", "实时同步：开");
+    m.insert("broadcast.sync_off", "实时同步：关");
+    m.insert("broadcast.sync_hint", "实时同步会把当前终端的每一次按键（包括 Enter 和 Ctrl+C）镜像到所有勾选的 session，谨慎使用。");
+    // v0.7.0 — 阈值告警
+    m.insert("alerts.title", "资源告警");
+    m.insert("alerts.hint", "session 超过阈值时标签页显示红点 + 状态栏警告（每 3 秒检查）");
+    m.insert("alerts.on", "开");
+    m.insert("alerts.off", "关");
+    m.insert("alerts.cpu", "CPU 负载阈值");
+    m.insert("alerts.mem", "内存阈值");
+    m.insert("alerts.disk", "磁盘阈值");
+    // v0.7.0 — SSH 密钥管理
+    m.insert("btn.keys", "密钥");
+    m.insert("keys.title", "SSH 密钥管理");
+    m.insert("keys.empty", "~/.ssh 下没有找到密钥");
+    m.insert("keys.copy", "复制公钥");
+    m.insert("keys.deploy", "部署到…");
+    m.insert("keys.pick_target", "部署到哪个连接？");
+    m.insert("keys.gen_title", "生成新密钥（ed25519）");
+    m.insert("keys.gen_name", "文件名（如 id_ed25519_work）");
+    m.insert("keys.gen_comment", "注释（如 ops@laptop）");
+    m.insert("keys.gen_btn", "生成");
+    m.insert("keys.gen_hint", "写入 ~/.ssh/<名称> + .pub（0600），不会覆盖已有文件。");
+    m.insert("keys.generated", "密钥已生成");
+    m.insert("keys.copied", "公钥已复制到剪贴板");
+    m.insert("keys.deploying", "部署中…");
+    m.insert("keys.deploy_ok", "已部署到");
     // SSH 错误提示
     m.insert("ssh.err.auth", "用户名或密码/密钥不正确 — 请检查账号凭据，或确认服务器 sshd 是否允许此用户登录");
     m.insert("ssh.err.refused", "目标端口未开放 — 确认 SSH 服务已启动且端口号正确 (通常是 22)");

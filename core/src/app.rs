@@ -241,6 +241,7 @@ pub struct NeoShell {
     drag_start_height: f32,
     cursor_y: f32,
     window_height: f32,
+    window_width: f32,
     path_input: String,
     quick_cmd_input: String,
     last_term_size: (usize, usize),
@@ -787,6 +788,8 @@ pub enum Message {
 
     // Bottom panel collapse / expand
     ToggleBottomPanel,
+    /// Window size in logical pixels — tracked for split-pane hit math.
+    WindowResized(f32, f32),
 
     // ---- v0.7.0 ----
     // Command palette (Cmd+K)
@@ -1088,6 +1091,7 @@ impl Default for NeoShell {
             drag_start_height: 220.0,
             cursor_y: 0.0,
             window_height: 800.0,
+            window_width: 1200.0,
             path_input: String::new(),
             quick_cmd_input: String::new(),
             last_term_size: (0, 0),
@@ -3478,8 +3482,33 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             if state.selecting {
                 let sidebar_w = if state.sidebar_collapsed { 0.0 } else { 220.0 };
-                let top_off = 30.0 + 34.0; // toolbar + tabbar
-                if let Some(pos) = pixel_to_grid_with(x, y, sidebar_w, top_off, state.font_size) {
+                let mut x_off = sidebar_w;
+                let mut y_off = 30.0 + 34.0; // toolbar + tabbar
+                // When the focused pane is the split half, shift the origin
+                // by the main pane's extent (panes are a fixed 50/50).
+                if let Some(tab) = state.active_tab.and_then(|i| state.tabs.get(i)) {
+                    if let (Some(sp), true) = (&tab.split, tab.focus_split) {
+                        if sp.vertical {
+                            let area_w = (state.window_width - sidebar_w - 4.0).max(0.0);
+                            x_off += area_w / 2.0 + 4.0;
+                        } else {
+                            let bottom = if state.bottom_panel_collapsed {
+                                0.0
+                            } else {
+                                state.bottom_panel_height
+                            };
+                            let area_h = (state.window_height
+                                - y_off
+                                - 24.0   // status bar
+                                - 14.0   // splitter bar
+                                - bottom
+                                - 4.0)   // pane divider
+                                .max(0.0);
+                            y_off += area_h / 2.0 + 4.0;
+                        }
+                    }
+                }
+                if let Some(pos) = pixel_to_grid_with(x, y, x_off, y_off, state.font_size) {
                     if state.selection_start.is_none() {
                         state.selection_start = Some(pos);
                     }
@@ -3722,9 +3751,14 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.last_term_size = (0, 0);
             Task::none()
         }
+        Message::WindowResized(w, h) => {
+            state.window_width = w;
+            state.window_height = h;
+            Task::none()
+        }
         Message::ResizeBottomPanel(delta) => {
             if delta < -1000.0 {
-                // Magic: window height update
+                // Legacy magic encoding: window height update
                 state.window_height = -(delta + 10000.0);
             } else {
                 state.bottom_panel_height = (state.bottom_panel_height + delta).clamp(80.0, 600.0);
@@ -4290,7 +4324,7 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
         subs.push(event::listen_with(|evt, status, _window| {
             match evt {
                 iced::Event::Window(iced::window::Event::Resized(size)) => {
-                    Some(Message::ResizeBottomPanel(-(size.height + 10000.0)))
+                    Some(Message::WindowResized(size.width, size.height))
                 }
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key, modifiers, text, ..

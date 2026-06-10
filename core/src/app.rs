@@ -4393,14 +4393,14 @@ fn view_setup(state: &NeoShell) -> Element<'_, Message> {
         .size(14.0 * scale)
         .color(theme::TEXT_SECONDARY);
 
-    let pw_input = text_input(&i18n::t("setup.password_placeholder"), &state.password_input)
+    let pw_input = input(&i18n::t("setup.password_placeholder"), &state.password_input)
         .on_input(Message::PasswordChanged)
         .secure(true)
         .padding(10)
         .size(16.0 * scale)
         .id(iced::widget::text_input::Id::new("setup_pw"));
 
-    let confirm_input = text_input(&i18n::t("setup.confirm_placeholder"), &state.confirm_input)
+    let confirm_input = input(&i18n::t("setup.confirm_placeholder"), &state.confirm_input)
         .on_input(Message::ConfirmChanged)
         .on_submit(Message::CreateVault)
         .secure(true)
@@ -4451,7 +4451,7 @@ fn view_unlock(state: &NeoShell) -> Element<'_, Message> {
         .size(14.0 * scale)
         .color(theme::TEXT_SECONDARY);
 
-    let pw_input = text_input(&i18n::t("unlock.password_placeholder"), &state.password_input)
+    let pw_input = input(&i18n::t("unlock.password_placeholder"), &state.password_input)
         .on_input(Message::PasswordChanged)
         .on_submit(Message::UnlockVault)
         .secure(true)
@@ -5003,7 +5003,7 @@ fn view_process_detail(state: &NeoShell) -> Element<'_, Message> {
 
     let content = column![
         header,
-        scrollable(body_col).height(Fill),
+        slim_scroll(body_col).height(Fill),
     ]
     .spacing(6)
     .padding(16)
@@ -5463,8 +5463,8 @@ fn view_monitor_panel(state: &NeoShell) -> Element<'_, Message> {
     // ── Layout: 2 main columns (left=sys+net, right=processes) ─────
     let left_combined = column![].push(sys_col).push(net_col).spacing(4);
 
-    let left_panel = scrollable(left_combined).height(Fill);
-    let right_panel = scrollable(proc_col).height(Fill);
+    let left_panel = slim_scroll(left_combined).height(Fill);
+    let right_panel = slim_scroll(proc_col).height(Fill);
 
     // Separator
     let sep: Element<'_, Message> = container(Space::new(1, Fill))
@@ -5492,7 +5492,7 @@ fn view_quick_commands(state: &NeoShell) -> Element<'_, Message> {
     #[allow(unused_variables)] let c_success = state.c_success();
     #[allow(unused_variables)] let c_danger = state.c_danger();
     // Input bar at top
-    let cmd_input = text_input("Enter command...", &state.quick_cmd_input)
+    let cmd_input = input("Enter command...", &state.quick_cmd_input)
         .on_input(Message::QuickCmdInputChanged)
         .on_submit(Message::SendQuickCmd)
         .padding(6)
@@ -5557,7 +5557,7 @@ fn view_quick_commands(state: &NeoShell) -> Element<'_, Message> {
 
     column![
         input_bar,
-        scrollable(col).height(Fill),
+        slim_scroll(col).height(Fill),
     ].into()
 }
 
@@ -5823,7 +5823,7 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
     .align_y(alignment::Vertical::Center)
     .padding(Padding::from([8, 12]));
 
-    let search = text_input(&i18n::t("sidebar.search"), &state.search_query)
+    let search = input(&i18n::t("sidebar.search"), &state.search_query)
         .on_input(Message::SearchChanged)
         .padding(8)
         .size(13.0 * scale);
@@ -5857,7 +5857,7 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
         groups.entry(group_name).or_default().push(conn);
     }
 
-    let mut list_col = column![].spacing(2);
+    let mut list_col = column![].spacing(4);
 
     let mut group_names: Vec<String> = groups.keys().cloned().collect();
     group_names.sort();
@@ -5870,7 +5870,6 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
         // marker (no glyph-fallback risk in the embedded font subset).
         let marker = if collapsed { "[+]" } else { "[-]" };
         let group_label = text(format!("{} {} ({})", marker, group_name, conns.len()))
-            .font(Font::MONOSPACE)
             .color(theme::TEXT_MUTED)
             .size(11.0 * scale);
 
@@ -5891,9 +5890,17 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
             let dot_color = if is_connected { c_success } else { theme::TEXT_MUTED };
             let status_dot = text("\u{25CF} ").color(dot_color).size(10.0 * scale);
             let name_label = text(&conn.name).color(c_primary).size(13.0 * scale);
-            let host_label = text(format!("{}@{}:{}", conn.username, conn.host, conn.port))
+            // Truncate long user@host:port so the row never wraps to a
+            // second line inside the narrow sidebar column.
+            let host_full = format!("{}@{}:{}", conn.username, conn.host, conn.port);
+            let host_disp = if host_full.chars().count() > 22 {
+                format!("{}…", host_full.chars().take(21).collect::<String>())
+            } else {
+                host_full
+            };
+            let host_label = text(host_disp)
                 .color(theme::TEXT_MUTED)
-                .size(11.0 * scale);
+                .size(10.5 * scale);
 
             let proxy_tag: Element<'_, Message> = if conn.proxy_id.is_some() {
                 text("P").font(Font::MONOSPACE).color(theme::WARNING).size(9.0 * scale).into()
@@ -5915,41 +5922,49 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
                 }
             } else { Space::new(0, 0).into() };
 
-            let edit_btn = button(text(i18n::t("btn.edit")).color(theme::TEXT_MUTED).size(9.0 * scale))
+            let edit_btn = button(text(i18n::t("btn.edit")).color(theme::TEXT_MUTED).size(10.0 * scale))
                 .on_press(Message::ShowForm(Some(conn_id_edit)))
-                .padding(Padding::from([2, 4]))
+                .padding(Padding::from([3, 6]))
                 .style(transparent_button_style);
 
-            let test_btn = button(text(i18n::t("conn.test")).color(c_accent).size(9.0 * scale))
+            let test_btn = button(text(i18n::t("conn.test")).color(c_accent).size(10.0 * scale))
                 .on_press(Message::TestConnectionInList(conn_id_test))
-                .padding(Padding::from([2, 4]))
+                .padding(Padding::from([3, 6]))
                 .style(transparent_button_style);
 
-            let clone_btn = button(text(i18n::t("conn.clone")).color(theme::TEXT_MUTED).size(9.0 * scale))
+            let clone_btn = button(text(i18n::t("conn.clone")).color(theme::TEXT_MUTED).size(10.0 * scale))
                 .on_press(Message::CloneConnection(conn_id_clone))
-                .padding(Padding::from([2, 4]))
+                .padding(Padding::from([3, 6]))
                 .style(transparent_button_style);
 
-            let del_btn = button(text(i18n::t("dialog.delete")).color(c_danger).size(9.0 * scale))
+            let del_btn = button(text(i18n::t("dialog.delete")).color(c_danger).size(10.0 * scale))
                 .on_press(Message::DeleteConnection(conn_id_del))
-                .padding(Padding::from([2, 4]))
+                .padding(Padding::from([3, 6]))
                 .style(transparent_button_style);
 
+            // Host line is indented to sit under the name (after the
+            // status dot), not flush against the sidebar edge.
             let info_col = column![
                 row![status_dot, name_label, proxy_tag, horizontal_space(), test_badge]
                     .spacing(4).align_y(alignment::Vertical::Center),
-                host_label,
-            ].spacing(2);
+                row![Space::with_width(Length::Fixed(16.0 * scale)), host_label],
+            ].spacing(3);
+
+            let actions = column![
+                row![test_btn, clone_btn].spacing(3),
+                row![edit_btn, del_btn].spacing(3),
+            ]
+            .spacing(2);
 
             let conn_row = row![
                 button(info_col)
                     .on_press(Message::ConnectTo(conn_id))
-                    .padding(Padding::from([6, 8]))
+                    .padding(Padding::from([7, 10]))
                     .width(Fill)
                     .style(sidebar_item_style),
-                column![row![test_btn, clone_btn].spacing(0), row![edit_btn, del_btn].spacing(0)].spacing(0),
+                container(actions).padding(Padding::new(0.0).right(8.0)),
             ]
-            .spacing(0)
+            .spacing(4)
             .align_y(alignment::Vertical::Center);
 
             list_col = list_col.push(conn_row);
@@ -5967,7 +5982,7 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
         );
     }
 
-    let sidebar_content = column![header, search_container, scrollable(list_col).height(Fill)]
+    let sidebar_content = column![header, search_container, slim_scroll(list_col).height(Fill)]
         .height(Fill);
 
     container(sidebar_content)
@@ -6213,7 +6228,7 @@ fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
     }
 
     // Wrap everything in a scrollable
-    let sidebar_content = scrollable(col).height(Fill);
+    let sidebar_content = slim_scroll(col).height(Fill);
 
     container(sidebar_content)
         .width(280)
@@ -6262,7 +6277,7 @@ fn view_terminal_search_bar(state: &NeoShell) -> Element<'_, Message> {
         )
     };
 
-    let input = text_input(
+    let input = input(
         &i18n::t("search.placeholder"),
         &state.term_search_query,
     )
@@ -6387,14 +6402,14 @@ fn sys_row_sized(label_str: &str, value_str: &str, size: f32) -> Element<'static
     let v = value_str.to_string();
     container(
         row![
-            container(text(l).color(theme::TEXT_MUTED).size(size)).width(55),
+            container(text(l).color(theme::TEXT_MUTED).size(size)).width(72),
             container(text(v).color(theme::TEXT_SECONDARY).size(size))
                 .width(Fill).align_x(alignment::Horizontal::Right),
         ]
-        .spacing(4)
+        .spacing(6)
         .align_y(alignment::Vertical::Center)
     )
-    .padding(Padding::from([3, 10]))
+    .padding(Padding::from([4, 10]))
     .width(Fill)
     .into()
 }
@@ -6406,7 +6421,6 @@ fn progress_bar_widget(percent: f64) -> Element<'static, Message> {
 
 fn progress_bar_widget_with_color(percent: f64, user_color: Option<Color>) -> Element<'static, Message> {
     let clamped = percent.max(0.0).min(100.0);
-    let width = (clamped / 100.0 * 196.0) as f32;
     // When the user set a custom progress color in the theme editor, use it.
     // Otherwise keep the heat-gauge (green/orange/red) behavior.
     let bar_color = user_color.unwrap_or_else(|| {
@@ -6415,24 +6429,30 @@ fn progress_bar_widget_with_color(percent: f64, user_color: Option<Color>) -> El
         else { theme::SUCCESS }
     });
 
-    container(
-        container(Space::new(width, 3))
+    // Proportional fill: the bar tracks its container's width (sidebar or
+    // bottom panel) instead of a hardcoded 196 px that overflowed narrow
+    // layouts and underfilled wide ones.
+    let filled = (clamped.round() as u16).max(1);
+    let empty = (100u16 - filled.min(100)).max(1);
+    let track = row![
+        container(Space::new(Fill, 4))
+            .width(Length::FillPortion(filled))
             .style(move |_| container::Style {
                 background: Some(bar_color.into()),
-                border: iced::Border {
-                    radius: 2.0.into(),
-                    ..Default::default()
-                },
+                border: iced::Border { radius: 2.0.into(), ..Default::default() },
                 ..Default::default()
             }),
-    )
-    .padding(Padding::new(1.0).left(10.0).right(10.0).bottom(4.0))
-    .width(Fill)
-    .style(|_| container::Style {
-        background: Some(theme::BG_TERTIARY.into()),
-        ..Default::default()
-    })
-    .into()
+        Space::new(Length::FillPortion(empty), 4),
+    ];
+
+    container(track)
+        .padding(Padding::new(2.0).left(10.0).right(10.0).bottom(5.0))
+        .width(Fill)
+        .style(|_| container::Style {
+            background: Some(theme::BG_TERTIARY.into()),
+            ..Default::default()
+        })
+        .into()
 }
 
 // ---- Terminal area -------------------------------------------------------
@@ -6657,7 +6677,7 @@ fn view_local_files(state: &NeoShell) -> Element<'_, Message> {
     #[allow(unused_variables)] let c_accent = state.c_accent();
     #[allow(unused_variables)] let c_success = state.c_success();
     #[allow(unused_variables)] let c_danger = state.c_danger();
-    let path_input = text_input("Local path...", &state.local_path)
+    let path_input = input("Local path...", &state.local_path)
         .on_input(Message::LocalPathChanged)
         .on_submit(Message::LocalPathSubmit)
         .padding(4)
@@ -6749,7 +6769,7 @@ fn view_local_files(state: &NeoShell) -> Element<'_, Message> {
         );
     }
 
-    column![header, scrollable(file_col).height(Fill)]
+    column![header, slim_scroll(file_col).height(Fill)]
         .width(Fill)
         .height(Fill)
         .into()
@@ -6786,7 +6806,7 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
         state.path_input.clone()
     };
 
-    let path_input = text_input("/path/to/dir", &path_value)
+    let path_input = input("/path/to/dir", &path_value)
         .on_input(Message::PathInputChanged)
         .on_submit(Message::PathInputSubmit)
         .padding(4)
@@ -6933,7 +6953,7 @@ fn view_file_browser(state: &NeoShell) -> Element<'_, Message> {
         );
     }
 
-    column![header, scrollable(file_col).height(Fill)]
+    column![header, slim_scroll(file_col).height(Fill)]
         .height(Length::Fixed(200.0))
         .into()
 }
@@ -7082,7 +7102,7 @@ fn view_connect_dialog(state: &NeoShell) -> Element<'_, Message> {
         .color(theme::TEXT_MUTED)
         .size(10.0 * scale);
 
-    let content = column![title, scrollable(list_col).height(300), hint]
+    let content = column![title, slim_scroll(list_col).height(300), hint]
         .spacing(12)
         .padding(24)
         .width(480);
@@ -7331,15 +7351,15 @@ fn view_proxy_manager(state: &NeoShell) -> Element<'_, Message> {
         } else {
             i18n::t("proxy.add")
         };
-        let name_input = text_input(i18n::t("proxy.name"), &state.proxy_form.name)
+        let name_input = input(i18n::t("proxy.name"), &state.proxy_form.name)
             .on_input(Message::ProxyFormNameChanged).padding(6).size(12.0 * scale);
-        let host_input = text_input(i18n::t("proxy.host"), &state.proxy_form.host)
+        let host_input = input(i18n::t("proxy.host"), &state.proxy_form.host)
             .on_input(Message::ProxyFormHostChanged).padding(6).size(12.0 * scale);
-        let port_input = text_input(i18n::t("proxy.port"), &state.proxy_form.port)
+        let port_input = input(i18n::t("proxy.port"), &state.proxy_form.port)
             .on_input(Message::ProxyFormPortChanged).padding(6).size(12.0 * scale).width(80);
-        let user_input = text_input(i18n::t("proxy.username"), &state.proxy_form.username)
+        let user_input = input(i18n::t("proxy.username"), &state.proxy_form.username)
             .on_input(Message::ProxyFormUsernameChanged).padding(6).size(12.0 * scale);
-        let pass_input = text_input(i18n::t("proxy.password"), &state.proxy_form.password)
+        let pass_input = input(i18n::t("proxy.password"), &state.proxy_form.password)
             .on_input(Message::ProxyFormPasswordChanged).padding(6).size(12.0 * scale).secure(true);
 
         let type_socks = button(
@@ -7386,12 +7406,12 @@ fn view_proxy_manager(state: &NeoShell) -> Element<'_, Message> {
             form_content = form_content.push(row![auth_pwd_btn, auth_key_btn].spacing(4));
 
             if state.proxy_form.auth_type == "key" {
-                let key_input = text_input(i18n::t("proxy.bastion.key_path"), &state.proxy_form.private_key)
+                let key_input = input(i18n::t("proxy.bastion.key_path"), &state.proxy_form.private_key)
                     .on_input(Message::ProxyFormPrivateKeyChanged).padding(6).size(12.0 * scale);
                 let browse_btn = button(text(i18n::t("proxy.bastion.browse")).color(c_accent).size(11.0 * scale))
                     .on_press(Message::ProxyFormBrowsePrivateKey).padding(Padding::from([4, 8]))
                     .style(transparent_button_style);
-                let passphrase_input = text_input(i18n::t("proxy.bastion.passphrase"), &state.proxy_form.passphrase)
+                let passphrase_input = input(i18n::t("proxy.bastion.passphrase"), &state.proxy_form.passphrase)
                     .on_input(Message::ProxyFormPassphraseChanged).padding(6).size(12.0 * scale).secure(true);
                 form_content = form_content
                     .push(row![key_input, browse_btn].spacing(4))
@@ -7469,7 +7489,7 @@ fn view_proxy_manager(state: &NeoShell) -> Element<'_, Message> {
         );
     }
 
-    let content = column![header, scrollable(list_col).height(Fill)]
+    let content = column![header, slim_scroll(list_col).height(Fill)]
         .spacing(10).padding(16).width(420);
 
     let card = container(content).height(Fill).style(|_| container::Style {
@@ -7506,7 +7526,7 @@ fn view_history_panel(state: &NeoShell) -> Element<'_, Message> {
     let header = row![title, horizontal_space(), clear_btn, close_btn]
         .align_y(alignment::Vertical::Center);
 
-    let filter_input = text_input(i18n::t("history.filter"), &state.history_filter)
+    let filter_input = input(i18n::t("history.filter"), &state.history_filter)
         .on_input(Message::HistoryFilterChanged)
         .padding(8)
         .size(13.0 * scale);
@@ -7582,7 +7602,7 @@ fn view_history_panel(state: &NeoShell) -> Element<'_, Message> {
     let content = column![
         header,
         filter_input,
-        scrollable(list_col).height(Fill),
+        slim_scroll(list_col).height(Fill),
     ]
     .spacing(8)
     .padding(16)
@@ -7732,7 +7752,7 @@ fn view_settings_menu(state: &NeoShell) -> Element<'_, Message> {
     .padding(20)
     .width(360);
 
-    let card = container(scrollable(menu_content).height(Fill))
+    let card = container(slim_scroll(menu_content).height(Fill))
         .max_height(620)
         .style(|_| container::Style {
             background: Some(theme::BG_SECONDARY.into()),
@@ -7814,7 +7834,7 @@ fn view_theme_editor(state: &NeoShell) -> Element<'_, Message> {
             let r_lbl = text(format!("R {:>3}", current.r)).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(10.0 * scale).width(50);
             let g_lbl = text(format!("G {:>3}", current.g)).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(10.0 * scale).width(50);
             let b_lbl = text(format!("B {:>3}", current.b)).font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(10.0 * scale).width(50);
-            let hex_input = text_input("#RRGGBB", &current.to_hex())
+            let hex_input = input("#RRGGBB", &current.to_hex())
                 .on_input(Message::ThemeHexChanged)
                 .padding(4).size(11.0 * scale).width(90);
             let preview = container(Space::new(Fill, 24))
@@ -8176,7 +8196,7 @@ fn view_error_dialog(state: &NeoShell) -> Element<'_, Message> {
     let content = column![
         title,
         vertical_space().height(8),
-        scrollable(container(msg).padding(8)).height(180),
+        slim_scroll(container(msg).padding(8)).height(180),
         vertical_space().height(8),
         row![log_btn, horizontal_space(), dismiss_btn]
             .align_y(alignment::Vertical::Center),
@@ -8249,7 +8269,7 @@ fn view_log_viewer(state: &NeoShell) -> Element<'_, Message> {
         header,
         path_hint,
         vertical_space().height(8),
-        scrollable(container(body).padding(10).width(Fill)).height(Fill),
+        slim_scroll(container(body).padding(10).width(Fill)).height(Fill),
     ]
     .spacing(4)
     .padding(20)
@@ -8286,7 +8306,7 @@ fn view_palette(state: &NeoShell) -> Element<'_, Message> {
     let c_primary = state.c_primary();
     let c_accent = state.c_accent();
 
-    let input = text_input(&i18n::t("palette.placeholder"), &state.palette_query)
+    let input = input(&i18n::t("palette.placeholder"), &state.palette_query)
         .id(text_input::Id::new(PALETTE_INPUT_ID))
         .on_input(Message::PaletteQueryChanged)
         .on_submit(Message::PaletteExecute)
@@ -8406,7 +8426,7 @@ fn view_tab_rename(state: &NeoShell) -> Element<'_, Message> {
     let scale = state.ui_scale();
     let c_primary = state.c_primary();
 
-    let input = text_input(&i18n::t("tabrename.placeholder"), &state.tab_rename_input)
+    let input = input(&i18n::t("tabrename.placeholder"), &state.tab_rename_input)
         .id(text_input::Id::new(TAB_RENAME_INPUT_ID))
         .on_input(Message::TabRenameInput)
         .on_submit(Message::TabRenameCommit)
@@ -8592,11 +8612,11 @@ fn view_key_manager(state: &NeoShell) -> Element<'_, Message> {
     let gen_form = column![
         text(i18n::t("keys.gen_title")).size(13.0 * scale).color(c_primary),
         row![
-            text_input(&i18n::t("keys.gen_name"), &state.key_form_name)
+            input(&i18n::t("keys.gen_name"), &state.key_form_name)
                 .on_input(Message::KeyFormNameChanged)
                 .padding(8)
                 .size(12.0 * scale),
-            text_input(&i18n::t("keys.gen_comment"), &state.key_form_comment)
+            input(&i18n::t("keys.gen_comment"), &state.key_form_comment)
                 .on_input(Message::KeyFormCommentChanged)
                 .padding(8)
                 .size(12.0 * scale),
@@ -8622,7 +8642,7 @@ fn view_key_manager(state: &NeoShell) -> Element<'_, Message> {
     let card = container(
         column![
             title_bar,
-            scrollable(key_list).height(Length::Fixed(300.0)),
+            slim_scroll(key_list).height(Length::Fixed(300.0)),
             gen_form,
             status,
         ]
@@ -8672,7 +8692,7 @@ fn view_broadcast_dialog(state: &NeoShell) -> Element<'_, Message> {
     let header = row![title, horizontal_space(), close_btn].align_y(alignment::Vertical::Center);
     let hint = text(i18n::t("broadcast.hint")).color(theme::TEXT_MUTED).size(11.0 * scale);
 
-    let cmd_input = text_input("echo hello", &state.broadcast_text)
+    let cmd_input = input("echo hello", &state.broadcast_text)
         .on_input(Message::BroadcastTextChanged)
         .on_submit(Message::BroadcastSendNow)
         .padding(8).size(13.0 * scale).font(Font::MONOSPACE);
@@ -8758,7 +8778,7 @@ fn view_broadcast_dialog(state: &NeoShell) -> Element<'_, Message> {
         .size(10.0 * scale)
         .color(theme::TEXT_MUTED);
 
-    let body = column![header, hint, cmd_input, sessions_title, scrollable(sessions_col).height(220),
+    let body = column![header, hint, cmd_input, sessions_title, slim_scroll(sessions_col).height(220),
         sync_hint,
         row![sync_btn, horizontal_space(), send_btn].align_y(alignment::Vertical::Center)
     ].spacing(10).padding(20).width(520);
@@ -8829,10 +8849,10 @@ fn view_snippets_panel(state: &NeoShell) -> Element<'_, Message> {
 
     let form_title_key = if state.snippet_edit_id.is_some() { "btn.edit" } else { "snippet.new" };
     let form_title = text(i18n::t(form_title_key)).color(theme::TEXT_SECONDARY).size(12.0 * scale);
-    let name_input = text_input(i18n::t("snippet.name_placeholder"), &state.snippet_form_name)
+    let name_input = input(i18n::t("snippet.name_placeholder"), &state.snippet_form_name)
         .on_input(Message::SnippetFormNameChanged)
         .padding(6).size(12.0 * scale);
-    let body_input = text_input(i18n::t("snippet.body_placeholder"), &state.snippet_form_body)
+    let body_input = input(i18n::t("snippet.body_placeholder"), &state.snippet_form_body)
         .on_input(Message::SnippetFormBodyChanged)
         .padding(6).size(12.0 * scale).font(Font::MONOSPACE);
     let save_btn = button(text(i18n::t("snippet.save")).color(theme::TEXT_PRIMARY).size(11.0 * scale))
@@ -8847,7 +8867,7 @@ fn view_snippets_panel(state: &NeoShell) -> Element<'_, Message> {
 
     let body = column![
         header,
-        scrollable(list_col).height(280),
+        slim_scroll(list_col).height(280),
         container(Space::new(Fill, 1)).style(|_| container::Style {
             background: Some(theme::BORDER.into()), ..Default::default()
         }),
@@ -8925,7 +8945,7 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
     let alert_badge: Element<'_, Message> = if let Some((sid, breaches)) =
         state.alerts_active.iter().next()
     {
-        let title = state
+        let mut title = state
             .tabs
             .iter()
             .find_map(|t| {
@@ -8938,6 +8958,10 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
                 }
             })
             .unwrap_or_else(|| sid.chars().take(8).collect());
+        // Keep the status bar from being elbowed out by a long user@host.
+        if title.chars().count() > 18 {
+            title = format!("{}…", title.chars().take(17).collect::<String>());
+        }
         let more = if state.alerts_active.len() > 1 {
             format!(" +{}", state.alerts_active.len() - 1)
         } else {
@@ -9053,13 +9077,13 @@ fn view_tunnel_manager(state: &NeoShell) -> Element<'_, Message> {
     // Inline form
     if state.show_tunnel_form {
         let form_title = if state.tunnel_edit_id.is_some() { i18n::t("tunnel.edit") } else { i18n::t("tunnel.add") };
-        let name_in = text_input(i18n::t("tunnel.name"), &state.tunnel_form.name)
+        let name_in = input(i18n::t("tunnel.name"), &state.tunnel_form.name)
             .on_input(Message::TunnelFormNameChanged).padding(6).size(12.0 * scale);
-        let host_in = text_input(i18n::t("tunnel.ssh_host"), &state.tunnel_form.ssh_host)
+        let host_in = input(i18n::t("tunnel.ssh_host"), &state.tunnel_form.ssh_host)
             .on_input(Message::TunnelFormHostChanged).padding(6).size(12.0 * scale);
-        let port_in = text_input(i18n::t("tunnel.ssh_port"), &state.tunnel_form.ssh_port)
+        let port_in = input(i18n::t("tunnel.ssh_port"), &state.tunnel_form.ssh_port)
             .on_input(Message::TunnelFormPortChanged).padding(6).size(12.0 * scale).width(80);
-        let user_in = text_input(i18n::t("tunnel.user"), &state.tunnel_form.username)
+        let user_in = input(i18n::t("tunnel.user"), &state.tunnel_form.username)
             .on_input(Message::TunnelFormUserChanged).padding(6).size(12.0 * scale);
 
         let auth_pwd_btn = button(text(i18n::t("proxy.bastion.auth_password"))
@@ -9074,22 +9098,22 @@ fn view_tunnel_manager(state: &NeoShell) -> Element<'_, Message> {
             .style(if state.tunnel_form.auth_type == "key" { accent_button_style } else { transparent_button_style });
 
         let secret: Element<'_, Message> = if state.tunnel_form.auth_type == "key" {
-            let key_in = text_input(i18n::t("proxy.bastion.key_path"), &state.tunnel_form.private_key)
+            let key_in = input(i18n::t("proxy.bastion.key_path"), &state.tunnel_form.private_key)
                 .on_input(Message::TunnelFormKeyChanged).padding(6).size(12.0 * scale);
             let browse = button(text(i18n::t("proxy.bastion.browse")).color(c_accent).size(11.0 * scale))
                 .on_press(Message::TunnelFormBrowseKey)
                 .padding(Padding::from([4, 8])).style(transparent_button_style);
-            let pass = text_input(i18n::t("proxy.bastion.passphrase"), &state.tunnel_form.passphrase)
+            let pass = input(i18n::t("proxy.bastion.passphrase"), &state.tunnel_form.passphrase)
                 .on_input(Message::TunnelFormPassphraseChanged).padding(6).size(12.0 * scale).secure(true);
             column![row![key_in, browse].spacing(4), pass].spacing(6).into()
         } else {
-            text_input(i18n::t("proxy.password"), &state.tunnel_form.password)
+            input(i18n::t("proxy.password"), &state.tunnel_form.password)
                 .on_input(Message::TunnelFormPasswordChanged).padding(6).size(12.0 * scale).secure(true).into()
         };
 
         let fwd_label = text(i18n::t("tunnel.forwards_label")).color(theme::TEXT_SECONDARY).size(11.0 * scale);
         let fwd_hint = text(i18n::t("tunnel.forwards_hint")).color(theme::TEXT_MUTED).size(10.0 * scale);
-        let fwd_in = text_input("", &state.tunnel_form.forwards_text)
+        let fwd_in = input("", &state.tunnel_form.forwards_text)
             .on_input(Message::TunnelFormForwardsChanged).padding(6).size(12.0 * scale);
 
         let save = button(text(i18n::t("proxy.save")).color(c_primary).size(11.0 * scale))
@@ -9183,7 +9207,7 @@ fn view_tunnel_manager(state: &NeoShell) -> Element<'_, Message> {
         );
     }
 
-    let content = column![header, scrollable(list_col).height(Fill)]
+    let content = column![header, slim_scroll(list_col).height(Fill)]
         .spacing(10).padding(16).width(480);
 
     let card = container(content).height(Fill).style(|_| container::Style {
@@ -9265,7 +9289,7 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
 
     let auth_fields: Element<'_, Message> = if state.form.auth_type == "key" {
         let key_label = text(i18n::t("form.key_path")).color(theme::TEXT_SECONDARY).size(12.0 * scale);
-        let key_input = text_input(secret_placeholder, &state.form.private_key)
+        let key_input = input(secret_placeholder, &state.form.private_key)
             .on_input(Message::FormPrivateKeyChanged)
             .padding(8)
             .size(14.0 * scale);
@@ -9283,7 +9307,7 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
         .into();
 
         let pass_label = text(i18n::t("form.passphrase")).color(theme::TEXT_SECONDARY).size(12.0 * scale);
-        let pass_input = text_input(secret_placeholder, &state.form.passphrase)
+        let pass_input = input(secret_placeholder, &state.form.passphrase)
             .on_input(Message::FormPassphraseChanged)
             .padding(8)
             .size(14.0 * scale);
@@ -9293,7 +9317,7 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
             .into()
     } else {
         let pw_label = text(i18n::t("form.password")).color(theme::TEXT_SECONDARY).size(12.0 * scale);
-        let pw_input = text_input(secret_placeholder, &state.form.password)
+        let pw_input = input(secret_placeholder, &state.form.password)
             .on_input(Message::FormPasswordChanged)
             .secure(true)
             .padding(8)
@@ -9303,7 +9327,7 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
 
     let group_input: Element<'_, Message> = {
         let label_text = text(i18n::t("form.group")).color(theme::TEXT_SECONDARY).size(12.0 * scale);
-        let input = text_input("", &state.form.group)
+        let input = input("", &state.form.group)
             .on_input(Message::FormGroupChanged)
             .on_submit(Message::SaveForm)
             .padding(8)
@@ -9407,7 +9431,7 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
 
     // Scrollable form + fixed bottom (test result + error + buttons)
     let form = column![
-        scrollable(form_content).height(Fill),
+        slim_scroll(form_content).height(Fill),
         test_row,
         error_row,
         buttons,
@@ -9416,12 +9440,12 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
     .width(440)
     .padding(24);
 
-    let card = container(form).max_height(650).style(|_theme| container::Style {
+    let card = container(form).max_height(780).style(|_theme| container::Style {
         background: Some(theme::BG_SECONDARY.into()),
         border: iced::Border {
             color: theme::BORDER,
             width: 1.0,
-            radius: 8.0.into(),
+            radius: 14.0.into(),
         },
         shadow: iced::Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
@@ -9451,7 +9475,7 @@ fn labeled_input<'a>(
     on_change: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
     let label_text = text(label).color(theme::TEXT_SECONDARY).size(12);
-    let input = text_input("", value).on_input(on_change).padding(8).size(14);
+    let input = input("", value).on_input(on_change).padding(8).size(14);
     column![label_text, input].spacing(4).into()
 }
 
@@ -10187,6 +10211,82 @@ fn bg_primary_container(_theme: &Theme) -> container::Style {
     }
 }
 
+
+/// macOS-style slim scrollbar: no track, 4 px rounded thumb that
+/// brightens on hover / drag.
+fn slim_scrollbar_style(
+    _theme: &Theme,
+    status: iced::widget::scrollable::Status,
+) -> iced::widget::scrollable::Style {
+    use iced::widget::scrollable::{Rail, Scroller, Style};
+    let engaged = matches!(
+        status,
+        iced::widget::scrollable::Status::Hovered { .. }
+            | iced::widget::scrollable::Status::Dragged { .. }
+    );
+    let thumb = if engaged {
+        Color::from_rgba(1.0, 1.0, 1.0, 0.35)
+    } else {
+        Color::from_rgba(1.0, 1.0, 1.0, 0.16)
+    };
+    let rail = Rail {
+        background: None,
+        border: iced::Border::default(),
+        scroller: Scroller {
+            color: thumb,
+            border: iced::Border {
+                radius: 99.0.into(),
+                ..Default::default()
+            },
+        },
+    };
+    Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
+    }
+}
+
+/// Vertical scrollable with the slim scrollbar (4 px thumb, 2 px margin).
+fn slim_scroll<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Scrollable<'a, Message> {
+    iced::widget::scrollable(content)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::new()
+                .width(4)
+                .scroller_width(4)
+                .margin(2),
+        ))
+        .style(slim_scrollbar_style)
+}
+
+/// Input field with rounded corners + accent focus ring (macOS-like).
+fn input_style(
+    _theme: &Theme,
+    status: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
+    let focused = matches!(status, iced::widget::text_input::Status::Focused);
+    iced::widget::text_input::Style {
+        background: theme::BG_PRIMARY.into(),
+        border: iced::Border {
+            radius: 8.0.into(),
+            width: 1.0,
+            color: if focused { theme::ACCENT } else { theme::BORDER },
+        },
+        icon: theme::TEXT_MUTED,
+        placeholder: theme::TEXT_MUTED,
+        value: theme::TEXT_PRIMARY,
+        selection: Color { a: 0.35, ..theme::ACCENT },
+    }
+}
+
+/// text_input constructor with the shared style pre-applied.
+fn input<'a>(placeholder: &str, value: &str) -> iced::widget::TextInput<'a, Message> {
+    iced::widget::text_input(placeholder, value).style(input_style)
+}
+
 fn accent_button_style(_theme: &Theme, status: button::Status) -> button::Style {
     let bg = match status {
         button::Status::Hovered => Color::from_rgb(
@@ -10200,7 +10300,7 @@ fn accent_button_style(_theme: &Theme, status: button::Status) -> button::Style 
         background: Some(bg.into()),
         text_color: theme::TEXT_PRIMARY,
         border: iced::Border {
-            radius: 4.0.into(),
+            radius: 8.0.into(),
             ..Default::default()
         },
         ..Default::default()

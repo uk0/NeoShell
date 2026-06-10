@@ -1219,7 +1219,7 @@ impl SshManager {
 
         // Parse df -hP (all real filesystems)
         if let Some(df_output) = sections.get(2) {
-            for line in df_output.lines().skip(1) {
+            for line in df_output.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 6 {
                     let mount = parts[5];
@@ -1227,9 +1227,17 @@ impl SshManager {
                     if mount.starts_with("/snap") || mount.starts_with("/boot/efi") {
                         continue;
                     }
+                    // Header guard: the section text starts with a newline, so
+                    // a bare .skip(1) used to eat the blank line and let df's
+                    // header row ("Filesystem Size Used Avail Use% Mounted on")
+                    // through as a fake disk. Requiring the Use% column to
+                    // parse as a number is locale-proof.
+                    let pct: f64 = match parts[4].trim_end_matches('%').parse() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
                     let total_gb = parse_size_to_gb(parts[1]);
                     let used_gb = parse_size_to_gb(parts[2]);
-                    let pct: f64 = parts[4].trim_end_matches('%').parse().unwrap_or(0.0);
 
                     stats.disks.push(DiskInfo {
                         filesystem: parts[0].to_string(),

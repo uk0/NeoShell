@@ -4386,45 +4386,45 @@ fn view_setup(state: &NeoShell) -> Element<'_, Message> {
     #[allow(unused_variables)] let c_success = state.c_success();
     #[allow(unused_variables)] let c_danger = state.c_danger();
     let title = text(i18n::t("setup.title"))
-        .size(28.0 * scale)
+        .size(22.0 * scale)
         .color(c_primary);
 
     let subtitle = text(i18n::t("setup.subtitle"))
-        .size(14.0 * scale)
+        .size(12.5 * scale)
         .color(theme::TEXT_SECONDARY);
 
     let pw_input = input(&i18n::t("setup.password_placeholder"), &state.password_input)
         .on_input(Message::PasswordChanged)
         .secure(true)
-        .padding(10)
-        .size(16.0 * scale)
+        .padding(Padding::from([9, 12]))
+        .size(14.0 * scale)
         .id(iced::widget::text_input::Id::new("setup_pw"));
 
     let confirm_input = input(&i18n::t("setup.confirm_placeholder"), &state.confirm_input)
         .on_input(Message::ConfirmChanged)
         .on_submit(Message::CreateVault)
         .secure(true)
-        .padding(10)
-        .size(16.0 * scale)
+        .padding(Padding::from([9, 12]))
+        .size(14.0 * scale)
         .id(iced::widget::text_input::Id::new("setup_confirm"));
 
     let create_btn = button(
-        text(i18n::t("setup.create_vault")).color(c_primary).size(16.0 * scale),
+        text(i18n::t("setup.create_vault")).color(c_primary).size(13.0 * scale),
     )
     .on_press(Message::CreateVault)
-    .padding(Padding::from([10, 24]))
+    .padding(Padding::from([8, 22]))
     .style(accent_button_style);
 
     let error_text = if state.error_message.is_empty() {
         text("").size(1.0 * scale)
     } else {
-        text(&state.error_message).color(c_danger).size(14.0 * scale)
+        text(&state.error_message).color(c_danger).size(12.0 * scale)
     };
 
     let form = column![title, subtitle, pw_input, confirm_input, error_text, create_btn]
-        .spacing(16)
+        .spacing(14)
         .align_x(alignment::Horizontal::Center)
-        .width(360);
+        .width(320);
 
     container(form)
         .center_x(Fill)
@@ -4444,37 +4444,37 @@ fn view_unlock(state: &NeoShell) -> Element<'_, Message> {
     #[allow(unused_variables)] let c_success = state.c_success();
     #[allow(unused_variables)] let c_danger = state.c_danger();
     let title = text(i18n::t("unlock.title"))
-        .size(28.0 * scale)
+        .size(22.0 * scale)
         .color(c_primary);
 
     let subtitle = text(i18n::t("unlock.subtitle"))
-        .size(14.0 * scale)
+        .size(12.5 * scale)
         .color(theme::TEXT_SECONDARY);
 
     let pw_input = input(&i18n::t("unlock.password_placeholder"), &state.password_input)
         .on_input(Message::PasswordChanged)
         .on_submit(Message::UnlockVault)
         .secure(true)
-        .padding(10)
-        .size(16.0 * scale);
+        .padding(Padding::from([9, 12]))
+        .size(14.0 * scale);
 
     let unlock_btn = button(
-        text(i18n::t("unlock.btn")).color(c_primary).size(16.0 * scale),
+        text(i18n::t("unlock.btn")).color(c_primary).size(13.0 * scale),
     )
     .on_press(Message::UnlockVault)
-    .padding(Padding::from([10, 24]))
+    .padding(Padding::from([8, 22]))
     .style(accent_button_style);
 
     let error_text = if state.error_message.is_empty() {
         text("").size(1.0 * scale)
     } else {
-        text(&state.error_message).color(c_danger).size(14.0 * scale)
+        text(&state.error_message).color(c_danger).size(12.0 * scale)
     };
 
     let form = column![title, subtitle, pw_input, error_text, unlock_btn]
-        .spacing(16)
+        .spacing(14)
         .align_x(alignment::Horizontal::Center)
-        .width(360);
+        .width(320);
 
     container(form)
         .center_x(Fill)
@@ -6431,19 +6431,25 @@ fn progress_bar_widget_with_color(percent: f64, user_color: Option<Color>) -> El
 
     // Proportional fill: the bar tracks its container's width (sidebar or
     // bottom panel) instead of a hardcoded 196 px that overflowed narrow
-    // layouts and underfilled wide ones.
-    let filled = (clamped.round() as u16).max(1);
-    let empty = (100u16 - filled.min(100)).max(1);
-    let track = row![
-        container(Space::new(Fill, 4))
-            .width(Length::FillPortion(filled))
-            .style(move |_| container::Style {
-                background: Some(bar_color.into()),
-                border: iced::Border { radius: 2.0.into(), ..Default::default() },
-                ..Default::default()
-            }),
-        Space::new(Length::FillPortion(empty), 4),
-    ];
+    // layouts and underfilled wide ones. 0% renders an empty track — no
+    // leftover dot.
+    let filled = clamped.round() as u16;
+    let track: Element<'static, Message> = if filled == 0 {
+        Space::new(Fill, 4).into()
+    } else {
+        let empty = (100u16 - filled.min(100)).max(1);
+        row![
+            container(Space::new(Fill, 4))
+                .width(Length::FillPortion(filled))
+                .style(move |_| container::Style {
+                    background: Some(bar_color.into()),
+                    border: iced::Border { radius: 2.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            Space::new(Length::FillPortion(empty), 4),
+        ]
+        .into()
+    };
 
     container(track)
         .padding(Padding::new(2.0).left(10.0).right(10.0).bottom(5.0))

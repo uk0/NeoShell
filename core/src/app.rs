@@ -5115,7 +5115,7 @@ fn view_toolbar(state: &NeoShell) -> Element<'_, Message> {
         s.background = None;
         if let button::Status::Hovered = status {
             s.background = Some(theme::BG_HOVER.into());
-            s.border = iced::Border { radius: 4.0.into(), ..Default::default() };
+            s.border = iced::Border { radius: 6.0.into(), ..Default::default() };
         }
         s
     };
@@ -5129,7 +5129,7 @@ fn view_toolbar(state: &NeoShell) -> Element<'_, Message> {
             s.background = None;
             if let button::Status::Hovered = status {
                 s.background = Some(theme::BG_HOVER.into());
-                s.border = iced::Border { radius: 4.0.into(), ..Default::default() };
+                s.border = iced::Border { radius: 6.0.into(), ..Default::default() };
             }
             s
         });
@@ -5214,16 +5214,18 @@ fn view_bottom_panel(state: &NeoShell) -> Element<'_, Message> {
     let cmd_active = state.bottom_panel_tab == BottomTab::QuickCmd;
 
     let tab_monitor = button(
-        text(i18n::t("monitor.system")).color(if mon_active { theme::ACCENT } else { theme::TEXT_MUTED }).size(12.0 * scale)
+        text(i18n::t("monitor.system")).color(if mon_active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED }).size(12.0 * scale)
     )
     .on_press(Message::SwitchBottomTab(BottomTab::Monitor))
-    .padding(Padding::from([5, 14]))
+    .padding(Padding::from([4, 14]))
     .style(move |_theme: &Theme, status| {
         let mut s = button::Style::default();
-        s.background = None;
-        if mon_active {
-            s.border = iced::Border { color: theme::ACCENT, width: 2.0, radius: 0.0.into() };
-        }
+        s.border = iced::Border { radius: 6.0.into(), ..Default::default() };
+        s.background = if mon_active {
+            Some(theme::BG_HOVER.into())
+        } else {
+            None
+        };
         if let button::Status::Hovered = status {
             s.background = Some(theme::BG_HOVER.into());
         }
@@ -5231,16 +5233,18 @@ fn view_bottom_panel(state: &NeoShell) -> Element<'_, Message> {
     });
 
     let tab_files = button(
-        text(i18n::t("bottom.files")).color(if files_active { theme::ACCENT } else { theme::TEXT_MUTED }).size(12.0 * scale)
+        text(i18n::t("bottom.files")).color(if files_active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED }).size(12.0 * scale)
     )
     .on_press(Message::SwitchBottomTab(BottomTab::Files))
-    .padding(Padding::from([5, 14]))
+    .padding(Padding::from([4, 14]))
     .style(move |_theme: &Theme, status| {
         let mut s = button::Style::default();
-        s.background = None;
-        if files_active {
-            s.border = iced::Border { color: theme::ACCENT, width: 2.0, radius: 0.0.into() };
-        }
+        s.border = iced::Border { radius: 6.0.into(), ..Default::default() };
+        s.background = if files_active {
+            Some(theme::BG_HOVER.into())
+        } else {
+            None
+        };
         if let button::Status::Hovered = status {
             s.background = Some(theme::BG_HOVER.into());
         }
@@ -5248,16 +5252,18 @@ fn view_bottom_panel(state: &NeoShell) -> Element<'_, Message> {
     });
 
     let tab_cmd = button(
-        text(i18n::t("bottom.cmd")).color(if cmd_active { theme::ACCENT } else { theme::TEXT_MUTED }).size(12.0 * scale)
+        text(i18n::t("bottom.cmd")).color(if cmd_active { theme::TEXT_PRIMARY } else { theme::TEXT_MUTED }).size(12.0 * scale)
     )
     .on_press(Message::SwitchBottomTab(BottomTab::QuickCmd))
-    .padding(Padding::from([5, 14]))
+    .padding(Padding::from([4, 14]))
     .style(move |_theme: &Theme, status| {
         let mut s = button::Style::default();
-        s.background = None;
-        if cmd_active {
-            s.border = iced::Border { color: theme::ACCENT, width: 2.0, radius: 0.0.into() };
-        }
+        s.border = iced::Border { radius: 6.0.into(), ..Default::default() };
+        s.background = if cmd_active {
+            Some(theme::BG_HOVER.into())
+        } else {
+            None
+        };
         if let button::Status::Hovered = status {
             s.background = Some(theme::BG_HOVER.into());
         }
@@ -5265,12 +5271,11 @@ fn view_bottom_panel(state: &NeoShell) -> Element<'_, Message> {
     });
 
     let tab_strip = container(
-        row![tab_monitor, tab_files, tab_cmd].spacing(2).padding(Padding::from([2, 6]))
+        row![tab_monitor, tab_files, tab_cmd].spacing(4).padding(Padding::from([3, 8]))
     )
     .width(Fill)
     .style(|_| container::Style {
         background: Some(theme::BG_TERTIARY.into()),
-        border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     });
 
@@ -5700,11 +5705,11 @@ fn view_tab_bar(state: &NeoShell) -> Element<'_, Message> {
     for (i, tab) in state.tabs.iter().enumerate() {
         let is_active = state.active_tab == Some(i);
         let bg_color = if is_active {
-            theme::BG_TERTIARY
+            theme::BG_PRIMARY
         } else {
-            theme::BG_SECONDARY
+            Color::TRANSPARENT
         };
-        let text_color = if is_active { c_primary } else { theme::TEXT_SECONDARY };
+        let text_color = if is_active { c_primary } else { theme::TEXT_MUTED };
 
         // Alert badge wins over connection state — a red dot tells the
         // operator "this box tripped a threshold" at a glance.
@@ -8918,10 +8923,7 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
         text(i18n::t("status.no_session")).color(theme::TEXT_MUTED).size(10.0 * scale)
     };
 
-    let tab_count = text(format!("{}T", state.tabs.len()))
-        .font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(9.0 * scale);
-
-    let hist_count = text(format!("{}H", state.cmd_history.len()))
+    let counters = text(format!("{}T · {}H", state.tabs.len(), state.cmd_history.len()))
         .font(Font::MONOSPACE).color(theme::TEXT_MUTED).size(9.0 * scale);
 
     // SYNC badge — loud on purpose: typing while it's on reaches N boxes.
@@ -9038,7 +9040,7 @@ fn view_status_bar(state: &NeoShell) -> Element<'_, Message> {
             s
         });
 
-    let bar = row![version, shortcuts, sync_badge, alert_badge, horizontal_space(), tab_count, hist_count, log_btn, help_btn, lang_btn, quit_btn, session_text]
+    let bar = row![version, shortcuts, sync_badge, alert_badge, horizontal_space(), counters, log_btn, help_btn, lang_btn, quit_btn, session_text]
         .spacing(10)
         .padding(Padding::from([3, 10]))
         .align_y(alignment::Vertical::Center);
@@ -9240,7 +9242,7 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
         i18n::t("form.new_title")
     };
 
-    let title = text(title_text).size(20.0 * scale).color(c_primary);
+    let title = text(title_text).size(16.5 * scale).color(c_primary);
 
     let name_input = labeled_input(&i18n::t("form.name"), &state.form.name, Message::FormNameChanged);
     let host_input = labeled_input(&i18n::t("form.host"), &state.form.host, Message::FormHostChanged);

@@ -976,6 +976,7 @@ dependencies = [
  "fiat-crypto",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1207,6 +1208,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
  "signature",
 ]
 
@@ -1218,8 +1220,10 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "serde",
  "sha2",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2786,7 +2790,9 @@ dependencies = [
 name = "neoshell"
 version = "0.7.0"
 dependencies = [
+ "base64",
  "dirs 5.0.1",
+ "ed25519-dalek",
  "libloading 0.8.9",
  "winresource",
 ]
@@ -2800,6 +2806,7 @@ dependencies = [
  "argon2",
  "base64",
  "dirs 5.0.1",
+ "ed25519-dalek",
  "env_logger",
  "iced",
  "image 0.24.9",
@@ -2812,6 +2819,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "sha2",
  "ssh-key",
  "ssh2",
  "tokio",
@@ -2819,6 +2827,7 @@ dependencies = [
  "uuid",
  "vte",
  "winresource",
+ "zeroize",
 ]
 
 [[package]]

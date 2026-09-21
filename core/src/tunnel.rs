@@ -78,7 +78,11 @@ impl ForwardRule {
 }
 
 // ---------------------------------------------------------------------------
-// Config store (plain JSON — same convention as proxy store)
+// Config store (plain JSON, owner-only on disk — same convention as the proxy
+// store, including the fact that `password` and `passphrase` are still written
+// in the clear. Moving them into the vault is tracked separately; until then
+// 0600 and an owner-only directory are the whole protection, so every write
+// goes through `storage::write_private` rather than `std::fs::write`.)
 // ---------------------------------------------------------------------------
 
 pub struct TunnelStore {
@@ -90,8 +94,14 @@ impl TunnelStore {
         let dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("neoshell");
-        let _ = std::fs::create_dir_all(&dir);
-        Self { path: dir.join("tunnels.json") }
+        if let Err(e) = crate::storage::create_dir_private(&dir) {
+            log::error!("failed to create data dir {}: {}", dir.display(), e);
+        }
+        let store = Self { path: dir.join("tunnels.json") };
+        // A file written by a pre-0.7.0 build is 0644 on disk; narrow it now
+        // rather than waiting for the next save to rewrite it.
+        crate::storage::tighten_permissions(&store.path);
+        store
     }
 
     pub fn load(&self) -> Vec<TunnelConfig> {
@@ -101,9 +111,25 @@ impl TunnelStore {
             .unwrap_or_default()
     }
 
-    pub fn save(&self, list: &[TunnelConfig]) {
-        if let Ok(json) = serde_json::to_string_pretty(list) {
-            let _ = std::fs::write(&self.path, json);
+    /// Replace the stored list, atomically and owner-only.
+    ///
+    /// Returns the failure instead of discarding it: a tunnel that did not
+    /// reach disk is gone on the next launch, and silently pretending
+    /// otherwise is how a user loses a forward without noticing.
+    pub fn save(&self, list: &[TunnelConfig]) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(list)
+            .map_err(|e| format!("cannot serialise tunnels: {}", e))?;
+        crate::storage::write_private(&self.path, json.as_bytes())
+            .map_err(|e| format!("cannot write {}: {}", self.path.display(), e))
+    }
+
+    /// `save`, reporting a failure to the log.
+    ///
+    /// The mutators below keep returning `()` so the UI call sites are
+    /// untouched; surfacing this in the UI is the follow-up.
+    fn save_logged(&self, list: &[TunnelConfig], what: &str) {
+        if let Err(e) = self.save(list) {
+            log::error!("tunnel store: {} was NOT saved: {}", what, e);
         }
     }
 
@@ -114,13 +140,13 @@ impl TunnelStore {
         } else {
             list.push(cfg);
         }
-        self.save(&list);
+        self.save_logged(&list, "upsert");
     }
 
     pub fn delete(&self, id: &str) {
         let mut list = self.load();
         list.retain(|t| t.id != id);
-        self.save(&list);
+        self.save_logged(&list, "delete");
     }
 
     pub fn get(&self, id: &str) -> Option<TunnelConfig> {
@@ -329,7 +355,15 @@ fn open_ssh_session(cfg: &TunnelConfig) -> Result<ssh2::Session, String> {
     let mut session = ssh2::Session::new().map_err(|e| format!("Session::new: {}", e))?;
     session.set_tcp_stream(tcp);
     session.set_timeout(15_000);
+    // Offer the algorithm this host is already trusted under first, or a host
+    // pinned as ssh-rsa answers with ed25519 and the check below reports a
+    // mismatch on a perfectly legitimate server.
+    crate::ssh::prepare_host_key_prefs_for(&session, &cfg.ssh_host, cfg.ssh_port);
     session.handshake().map_err(|e| format!("SSH handshake: {}", e))?;
+    // Before any credential is offered. This never prompts, so it is safe on
+    // the auto-start path, which runs with no UI attached.
+    crate::ssh::verify_host_key(&session, &cfg.ssh_host, cfg.ssh_port)
+        .map_err(|e| crate::ssh::translate_ssh_error(&e))?;
 
     match cfg.auth_type.as_str() {
         "key" => {

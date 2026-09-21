@@ -1,26 +1,35 @@
 {
-  "version": "0.3.1",
-  "date": "2026-04-14",
-  "changelog": "Tab focus cycling, rounded icon, website redesign",
+  "version": "0.7.0",
+  "date": "2026-09-21",
+  "changelog": "Signed updates (ed25519), working rollback, ops workstation upgrade",
+  "notes": "TEMPLATE — NOT A PUBLISHABLE MANIFEST. The live manifest is generated at release time by scripts/publish-update.sh and uploaded straight to the update server; this tracked copy only documents the schema. Every 'size' is 0 and every 'sha256'/'sig' is empty on purpose: a client refuses a manifest whose size is 0 and refuses a library whose ed25519 signature does not verify, so serving this file by accident fails closed instead of installing anything. Regenerate before a release: sign each built library with scripts/sign-update.sh (which prints the sha256/size/sig triple for each platform) and paste the values in, or let scripts/publish-update.sh emit the whole file.",
   "downloads": {
     "macos-aarch64": {
-      "url": "https://neoshell.wwwneo.com/updates/libs/libneoshell_core-0.3.1-macos-aarch64.dylib",
-      "md5": "placeholder",
+      "url": "https://neoshell.wwwneo.com/updates/libs/libneoshell_core-0.7.0-macos-aarch64.dylib",
+      "sha256": "",
+      "sig": "",
+      "md5": "",
       "size": 0
     },
     "macos-x86_64": {
-      "url": "https://neoshell.wwwneo.com/updates/libs/libneoshell_core-0.3.1-macos-x86_64.dylib",
-      "md5": "placeholder",
+      "url": "https://neoshell.wwwneo.com/updates/libs/libneoshell_core-0.7.0-macos-x86_64.dylib",
+      "sha256": "",
+      "sig": "",
+      "md5": "",
       "size": 0
     },
     "windows-x64": {
-      "url": "https://neoshell.wwwneo.com/updates/libs/neoshell_core-0.3.1-windows-x64.dll",
-      "md5": "placeholder",
+      "url": "https://neoshell.wwwneo.com/updates/libs/neoshell_core-0.7.0-windows-x64.dll",
+      "sha256": "",
+      "sig": "",
+      "md5": "",
       "size": 0
     },
     "linux-x86_64": {
-      "url": "https://neoshell.wwwneo.com/updates/libs/libneoshell_core-0.3.1-linux-x86_64.so",
-      "md5": "placeholder",
+      "url": "https://neoshell.wwwneo.com/updates/libs/libneoshell_core-0.7.0-linux-x86_64.so",
+      "sha256": "",
+      "sig": "",
+      "md5": "",
       "size": 0
     }
   }

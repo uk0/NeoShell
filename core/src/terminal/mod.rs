@@ -235,6 +235,15 @@ fn color_256(idx: u16) -> Color {
     }
 }
 
+/// Maximum number of scrollback lines retained per terminal.
+const MAX_SCROLLBACK: usize = 10_000;
+
+/// Upper bound on either grid dimension. Roughly four orders of magnitude
+/// above any real terminal, but small enough that a bogus request (a corrupt
+/// SIGWINCH, or a cell width of 0 saturating a float->usize cast to
+/// `usize::MAX`) clamps instead of trying to allocate.
+const MAX_DIMENSION: usize = 1000;
+
 /// The raw terminal grid state. Implements vte::Perform so the parser can
 /// drive cursor movement, character placement, and escape-sequence handling.
 pub struct TerminalGrid {
@@ -264,7 +273,7 @@ impl TerminalGrid {
             cols,
             rows,
             cells,
-            scrollback: VecDeque::with_capacity(10000),
+            scrollback: VecDeque::with_capacity(MAX_SCROLLBACK),
             scroll_offset: 0,
             cursor_x: 0,
             cursor_y: 0,
@@ -313,6 +322,11 @@ impl TerminalGrid {
         if new_cols == 0 || new_rows == 0 {
             return;
         }
+        // Defence in depth: callers derive these from pixel bounds divided by
+        // a cell size, and a zero cell size saturates the float->usize cast to
+        // usize::MAX. Clamp rather than attempt the allocation.
+        let new_cols = new_cols.min(MAX_DIMENSION);
+        let new_rows = new_rows.min(MAX_DIMENSION);
 
         let old_rows = self.cells.len();
         let cursor_y = self.cursor_y;
@@ -328,7 +342,7 @@ impl TerminalGrid {
             for row in self.cells.drain(0..drop_top) {
                 self.scrollback.push_back(row);
             }
-            while self.scrollback.len() > 10_000 {
+            while self.scrollback.len() > MAX_SCROLLBACK {
                 self.scrollback.pop_front();
             }
             self.cells.truncate(new_rows);
@@ -374,6 +388,27 @@ impl TerminalGrid {
         if self.cursor_y >= new_rows {
             self.cursor_y = new_rows - 1;
         }
+
+        // Keep the saved (primary) screen in step with the live grid. Without
+        // this, enter-alt -> resize -> exit-alt restores a buffer whose
+        // dimensions no longer match rows/cols, and the next erase or scroll
+        // indexes past the end of `cells`.
+        if let Some(alt) = self.alt_screen.take() {
+            let mut fixed: Vec<Vec<Cell>> = alt
+                .into_iter()
+                .map(|row| Self::_clip_or_pad_helper(row, new_cols))
+                .collect();
+            // Drop from the TOP when shrinking, matching what resize() does to
+            // the live grid, so the most recent lines survive.
+            if fixed.len() > new_rows {
+                fixed.drain(0..fixed.len() - new_rows);
+            }
+            while fixed.len() < new_rows {
+                fixed.push(vec![Cell::default(); new_cols]);
+            }
+            self.alt_screen = Some(fixed);
+        }
+
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -381,7 +416,7 @@ impl TerminalGrid {
     fn scroll_up(&mut self) {
         if self.scroll_top == 0 {
             self.scrollback.push_back(self.cells[0].clone());
-            if self.scrollback.len() > 10000 {
+            if self.scrollback.len() > MAX_SCROLLBACK {
                 self.scrollback.pop_front();
             }
         }
@@ -958,37 +993,14 @@ impl Perform for TerminalGrid {
     fn put(&mut self, _byte: u8) {}
 }
 
-// ---------------------------------------------------------------------------
-// Terminal: wrapper that owns both the parser and the grid, avoiding the
-// borrow-conflict of storing Parser inside TerminalGrid (which implements
-// Perform).
-// ---------------------------------------------------------------------------
-
-pub struct Terminal {
-    pub grid: TerminalGrid,
-    parser: Parser,
-}
-
-impl Terminal {
-    pub fn new(cols: usize, rows: usize) -> Self {
-        Self {
-            grid: TerminalGrid::new(cols, rows),
-            parser: Parser::new(),
-        }
-    }
-
-    /// Feed raw bytes from SSH into the terminal emulator.
-    pub fn feed(&mut self, data: &[u8]) {
-        for &byte in data {
-            self.parser.advance(&mut self.grid, byte);
-        }
-    }
-
-    /// Resize the terminal grid.
-    pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
-        self.grid.resize(new_cols, new_rows);
-    }
-}
+// NOTE: a `Terminal` wrapper used to live here, owning a `Parser` next to the
+// grid "to avoid the borrow-conflict of storing Parser inside TerminalGrid".
+// That rationale is obsolete: TerminalGrid::write() now holds the parser in
+// `persistent_parser` and takes/returns it around each advance, which is also
+// what keeps multi-byte UTF-8 split across SSH packets decodable. The wrapper
+// was constructed only by these tests, and its `feed()` skipped the generation
+// bump that `write()` performs — so the tests were exercising a path the app
+// never takes. Removed; drive `TerminalGrid` directly.
 
 #[cfg(test)]
 mod tests {
@@ -1015,166 +1027,245 @@ mod tests {
 
     #[test]
     fn test_basic_print() {
-        let mut term = Terminal::new(80, 24);
-        term.feed(b"Hello");
-        assert_eq!(term.grid.cells[0][0].c, 'H');
-        assert_eq!(term.grid.cells[0][1].c, 'e');
-        assert_eq!(term.grid.cells[0][2].c, 'l');
-        assert_eq!(term.grid.cells[0][3].c, 'l');
-        assert_eq!(term.grid.cells[0][4].c, 'o');
-        assert_eq!(term.grid.cursor_x, 5);
-        assert_eq!(term.grid.cursor_y, 0);
+        let mut term = TerminalGrid::new(80, 24);
+        term.write(b"Hello");
+        assert_eq!(term.cells[0][0].c, 'H');
+        assert_eq!(term.cells[0][1].c, 'e');
+        assert_eq!(term.cells[0][2].c, 'l');
+        assert_eq!(term.cells[0][3].c, 'l');
+        assert_eq!(term.cells[0][4].c, 'o');
+        assert_eq!(term.cursor_x, 5);
+        assert_eq!(term.cursor_y, 0);
     }
 
     #[test]
     fn test_zero_width_char_no_cursor_advance() {
         // Combining acute (U+0301) must not push the cursor —
         // otherwise TUI output with diacritics drifts 1 cell per mark.
-        let mut term = Terminal::new(80, 24);
+        let mut term = TerminalGrid::new(80, 24);
         let bytes = "a\u{0301}b".as_bytes();
-        term.feed(bytes);
-        assert_eq!(term.grid.cells[0][0].c, 'a');
-        assert_eq!(term.grid.cells[0][1].c, 'b'); // 'b' at col 1, not col 2
-        assert_eq!(term.grid.cursor_x, 2);
+        term.write(bytes);
+        assert_eq!(term.cells[0][0].c, 'a');
+        assert_eq!(term.cells[0][1].c, 'b'); // 'b' at col 1, not col 2
+        assert_eq!(term.cursor_x, 2);
     }
 
     #[test]
     fn test_variation_selector_no_advance() {
         // VS16 (U+FE0F) after an emoji base shouldn't add a cell.
-        let mut term = Terminal::new(80, 24);
-        term.feed("A\u{FE0F}Z".as_bytes());
-        assert_eq!(term.grid.cells[0][0].c, 'A');
-        assert_eq!(term.grid.cells[0][1].c, 'Z');
-        assert_eq!(term.grid.cursor_x, 2);
+        let mut term = TerminalGrid::new(80, 24);
+        term.write("A\u{FE0F}Z".as_bytes());
+        assert_eq!(term.cells[0][0].c, 'A');
+        assert_eq!(term.cells[0][1].c, 'Z');
+        assert_eq!(term.cursor_x, 2);
     }
 
     #[test]
     fn test_newline() {
-        let mut term = Terminal::new(80, 24);
+        let mut term = TerminalGrid::new(80, 24);
         // LF only moves cursor down; CR+LF moves to start of next line
-        term.feed(b"A\r\nB");
-        assert_eq!(term.grid.cells[0][0].c, 'A');
-        assert_eq!(term.grid.cells[1][0].c, 'B');
-        assert_eq!(term.grid.cursor_y, 1);
+        term.write(b"A\r\nB");
+        assert_eq!(term.cells[0][0].c, 'A');
+        assert_eq!(term.cells[1][0].c, 'B');
+        assert_eq!(term.cursor_y, 1);
     }
 
     #[test]
     fn test_carriage_return() {
-        let mut term = Terminal::new(80, 24);
-        term.feed(b"ABC\rX");
-        assert_eq!(term.grid.cells[0][0].c, 'X');
-        assert_eq!(term.grid.cells[0][1].c, 'B');
+        let mut term = TerminalGrid::new(80, 24);
+        term.write(b"ABC\rX");
+        assert_eq!(term.cells[0][0].c, 'X');
+        assert_eq!(term.cells[0][1].c, 'B');
     }
 
     #[test]
     fn test_cursor_movement() {
-        let mut term = Terminal::new(80, 24);
+        let mut term = TerminalGrid::new(80, 24);
         // ESC [ 5 ; 10 H = move cursor to row 5, col 10
-        term.feed(b"\x1b[5;10H");
-        assert_eq!(term.grid.cursor_y, 4); // 0-indexed
-        assert_eq!(term.grid.cursor_x, 9);
+        term.write(b"\x1b[5;10H");
+        assert_eq!(term.cursor_y, 4); // 0-indexed
+        assert_eq!(term.cursor_x, 9);
     }
 
     #[test]
     fn test_erase_display() {
-        let mut term = Terminal::new(80, 24);
-        term.feed(b"ABCDEF");
+        let mut term = TerminalGrid::new(80, 24);
+        term.write(b"ABCDEF");
         // ESC [ 2 J = clear entire screen
-        term.feed(b"\x1b[2J");
+        term.write(b"\x1b[2J");
         for x in 0..6 {
-            assert_eq!(term.grid.cells[0][x].c, ' ');
+            assert_eq!(term.cells[0][x].c, ' ');
         }
     }
 
     #[test]
     fn test_sgr_bold() {
-        let mut term = Terminal::new(80, 24);
+        let mut term = TerminalGrid::new(80, 24);
         // ESC [ 1 m = bold
-        term.feed(b"\x1b[1mX");
-        assert!(term.grid.cells[0][0].style.bold);
+        term.write(b"\x1b[1mX");
+        assert!(term.cells[0][0].style.bold);
     }
 
     #[test]
     fn test_sgr_color() {
-        let mut term = Terminal::new(80, 24);
+        let mut term = TerminalGrid::new(80, 24);
         // ESC [ 31 m = red foreground
-        term.feed(b"\x1b[31mR");
+        term.write(b"\x1b[31mR");
         assert_eq!(
-            term.grid.cells[0][0].style.fg,
+            term.cells[0][0].style.fg,
             ANSI_COLORS[1] // red
         );
     }
 
     #[test]
     fn test_scroll() {
-        let mut term = Terminal::new(80, 3);
-        term.feed(b"Line1\nLine2\nLine3\nLine4");
+        let mut term = TerminalGrid::new(80, 3);
+        term.write(b"Line1\nLine2\nLine3\nLine4");
         // After writing 4 lines in a 3-row terminal, first line should be in scrollback
-        assert_eq!(term.grid.scrollback.len(), 1);
-        assert_eq!(term.grid.scrollback[0][0].c, 'L');
+        assert_eq!(term.scrollback.len(), 1);
+        assert_eq!(term.scrollback[0][0].c, 'L');
     }
 
     #[test]
     fn test_cursor_visibility() {
-        let mut term = Terminal::new(80, 24);
-        assert!(term.grid.cursor_visible);
+        let mut term = TerminalGrid::new(80, 24);
+        assert!(term.cursor_visible);
         // ESC [ ? 25 l = hide cursor
-        term.feed(b"\x1b[?25l");
-        assert!(!term.grid.cursor_visible);
+        term.write(b"\x1b[?25l");
+        assert!(!term.cursor_visible);
         // ESC [ ? 25 h = show cursor
-        term.feed(b"\x1b[?25h");
-        assert!(term.grid.cursor_visible);
+        term.write(b"\x1b[?25h");
+        assert!(term.cursor_visible);
     }
 
     #[test]
     fn test_alt_screen() {
-        let mut term = Terminal::new(80, 24);
-        term.feed(b"Main screen");
+        let mut term = TerminalGrid::new(80, 24);
+        term.write(b"Main screen");
         // ESC [ ? 1049 h = switch to alt screen
-        term.feed(b"\x1b[?1049h");
-        assert_eq!(term.grid.cells[0][0].c, ' '); // alt screen is blank
-        assert!(term.grid.alt_screen.is_some());
+        term.write(b"\x1b[?1049h");
+        assert_eq!(term.cells[0][0].c, ' '); // alt screen is blank
+        assert!(term.alt_screen.is_some());
         // ESC [ ? 1049 l = switch back
-        term.feed(b"\x1b[?1049l");
-        assert_eq!(term.grid.cells[0][0].c, 'M'); // restored
-        assert!(term.grid.alt_screen.is_none());
+        term.write(b"\x1b[?1049l");
+        assert_eq!(term.cells[0][0].c, 'M'); // restored
+        assert!(term.alt_screen.is_none());
     }
 
     #[test]
     fn test_resize() {
-        let mut term = Terminal::new(80, 24);
-        term.feed(b"Hello");
+        let mut term = TerminalGrid::new(80, 24);
+        term.write(b"Hello");
         term.resize(40, 12);
-        assert_eq!(term.grid.cols, 40);
-        assert_eq!(term.grid.rows, 12);
-        assert_eq!(term.grid.cells[0][0].c, 'H');
+        assert_eq!(term.cols, 40);
+        assert_eq!(term.rows, 12);
+        assert_eq!(term.cells[0][0].c, 'H');
     }
 
     #[test]
     fn test_resize_shrink_preserves_cursor_row() {
         // Simulate: motd + prompt + ls output → cursor near bottom.
-        let mut term = Terminal::new(80, 40);
+        let mut term = TerminalGrid::new(80, 40);
         // Fill rows 0..20 with distinct markers; put cursor at row 25.
         for i in 0..20u32 {
-            term.feed(&[b'A' + (i as u8)]);
-            term.feed(b"\r\n");
+            term.write(&[b'A' + (i as u8)]);
+            term.write(b"\r\n");
         }
         // Move cursor to row 25 by feeding newlines + a marker
         for _ in 0..5 {
-            term.feed(b"\r\n");
+            term.write(b"\r\n");
         }
-        term.feed(b"Z"); // cursor_y now around 25
-        let old_cursor_y = term.grid.cursor_y;
+        term.write(b"Z"); // cursor_y now around 25
+        let old_cursor_y = term.cursor_y;
         assert!(old_cursor_y >= 20, "setup: cursor should be near bottom");
 
         // Shrink to 10 rows — cursor MUST stay inside the new window,
         // the "Z" row MUST be preserved, and top rows pushed to scrollback.
         term.resize(80, 10);
-        assert_eq!(term.grid.rows, 10);
-        assert!(term.grid.cursor_y < 10, "cursor must be inside new view, got {}", term.grid.cursor_y);
-        assert!(!term.grid.scrollback.is_empty(), "dropped rows should be in scrollback");
+        assert_eq!(term.rows, 10);
+        assert!(term.cursor_y < 10, "cursor must be inside new view, got {}", term.cursor_y);
+        assert!(!term.scrollback.is_empty(), "dropped rows should be in scrollback");
         // 'Z' row is preserved (it's where cursor was)
-        let z_found = term.grid.cells.iter().any(|row| row.iter().any(|c| c.c == 'Z'));
+        let z_found = term.cells.iter().any(|row| row.iter().any(|c| c.c == 'Z'));
         assert!(z_found, "'Z' row must survive shrink");
+    }
+
+    #[test]
+    fn test_alt_screen_buffer_follows_resize() {
+        // vim/top enter the alt screen, the user resizes the window, then :q
+        // exits. The restored buffer must match the CURRENT rows/cols — before
+        // this was fixed, the next ESC[J indexed past the end of `cells`.
+        let mut term = TerminalGrid::new(80, 30);
+        term.write(b"primary");
+        term.write(b"\x1b[?1049h"); // enter alt screen
+        assert!(term.alt_screen.is_some());
+        assert_eq!(term.cells[0][0].c, ' ', "alt screen starts blank");
+
+        term.resize(40, 10); // shrink while inside the alt screen
+        let alt = term.alt_screen.as_ref().expect("alt buffer still saved");
+        assert_eq!(alt.len(), 10);
+        assert!(alt.iter().all(|r| r.len() == 40));
+
+        term.resize(120, 50); // ...then grow
+        let alt = term.alt_screen.as_ref().expect("alt buffer still saved");
+        assert_eq!(alt.len(), 50);
+        assert!(alt.iter().all(|r| r.len() == 120));
+
+        term.write(b"\x1b[?1049l"); // exit alt screen
+        assert!(term.alt_screen.is_none());
+        assert_eq!(term.cells.len(), term.rows, "restored rows must match");
+        assert!(
+            term.cells.iter().all(|r| r.len() == term.cols),
+            "restored cols must match"
+        );
+
+        // The two consumers that index by rows/cols rather than cells.len().
+        term.cursor_y = 0;
+        term.write(b"\x1b[J"); // erase-to-end walks cursor_y+1..rows
+        for _ in 0..(term.rows + 2) {
+            term.write(b"\r\n"); // scroll_up indexes cells[scroll_bottom]
+        }
+        assert_eq!(term.cells.len(), term.rows);
+    }
+
+    #[test]
+    fn test_alt_screen_shrink_keeps_most_recent_rows() {
+        // Shrinking drops from the TOP, same as the live grid, so the shell
+        // prompt the user left behind survives.
+        let mut term = TerminalGrid::new(20, 4);
+        term.write(b"one\r\ntwo\r\nthree\r\nfour");
+        term.write(b"\x1b[?1049h");
+        term.resize(20, 2);
+        term.write(b"\x1b[?1049l");
+        let text: Vec<String> = term
+            .cells
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|c| c.c)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(text, vec!["three".to_string(), "four".to_string()]);
+    }
+
+    #[test]
+    fn test_resize_rejects_zero_and_clamps_absurd_dimensions() {
+        let mut term = TerminalGrid::new(80, 24);
+
+        // A zero request stays a no-op rather than collapsing to a 1x1 grid.
+        term.resize(0, 24);
+        term.resize(80, 0);
+        assert_eq!((term.cols, term.rows), (80, 24));
+
+        // usize::MAX is what `(bounds.width / 0.0) as usize` saturates to when
+        // a bad font size makes the cell width zero.
+        term.resize(usize::MAX, usize::MAX);
+        assert_eq!(term.cols, MAX_DIMENSION);
+        assert_eq!(term.rows, MAX_DIMENSION);
+        assert_eq!(term.cells.len(), MAX_DIMENSION);
+        assert!(term.cells.iter().all(|r| r.len() == MAX_DIMENSION));
     }
 }

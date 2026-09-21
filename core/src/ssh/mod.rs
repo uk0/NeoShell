@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
+use base64::engine::general_purpose::{STANDARD as B64, STANDARD_NO_PAD as B64_NOPAD};
+use base64::Engine;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use ssh2::{MethodType, Session};
@@ -67,6 +69,450 @@ fn configure_session_algorithms(session: &Session) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Host key verification
+//
+// Mirrors OpenSSH's StrictHostKeyChecking=accept-new against the *system*
+// ~/.ssh/known_hosts, so NeoShell and ssh(1) agree on what a host's key is
+// instead of NeoShell keeping a private store nobody else can audit.
+// ---------------------------------------------------------------------------
+
+/// Prefix on every host-key failure. Contains "host key" + "verification", so
+/// `translate_ssh_error` attaches the `ssh.err.host_key` hint, and callers can
+/// recognise the class without matching on the whole sentence.
+pub(crate) const HOST_KEY_FAIL: &str = "Host key verification failed";
+
+/// Host key captured on a session's first handshake. Every further connection
+/// opened for that same session — the exec channel, an auto-reconnect — is
+/// pinned to it: those are not first contact, so trust-on-first-use must not
+/// apply a second time.
+#[derive(Clone)]
+pub struct PinnedHostKey {
+    /// Raw host key blob, exactly as `Session::host_key` returns it.
+    pub key: Vec<u8>,
+    /// known_hosts algorithm token, e.g. "ssh-ed25519".
+    pub alg: String,
+    /// "SHA256:…" fingerprint, for logs and the UI.
+    pub fingerprint: String,
+}
+
+fn known_hosts_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".ssh").join("known_hosts"))
+}
+
+/// known_hosts host pattern for an endpoint: the bare host on port 22,
+/// `[host]:port` otherwise — the convention OpenSSH uses.
+fn known_hosts_pattern(host: &str, port: u16) -> String {
+    if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{}]:{}", host, port)
+    }
+}
+
+/// known_hosts algorithm token for a negotiated host key type.
+fn host_key_alg_name(kind: ssh2::HostKeyType) -> &'static str {
+    match kind {
+        ssh2::HostKeyType::Rsa => "ssh-rsa",
+        ssh2::HostKeyType::Dss => "ssh-dss",
+        ssh2::HostKeyType::Ecdsa256 => "ecdsa-sha2-nistp256",
+        ssh2::HostKeyType::Ecdsa384 => "ecdsa-sha2-nistp384",
+        ssh2::HostKeyType::Ecdsa521 => "ecdsa-sha2-nistp521",
+        ssh2::HostKeyType::Ed25519 => "ssh-ed25519",
+        ssh2::HostKeyType::Unknown => "unknown",
+    }
+}
+
+/// Expand a known_hosts algorithm token into the transport host-key algorithms
+/// libssh2 can negotiate, strongest first. RSA keys are stored in known_hosts
+/// as `ssh-rsa` but negotiate as rsa-sha2-*, so the expansion is not 1:1.
+fn hostkey_algs_for(token: &str) -> &'static [&'static str] {
+    match token {
+        "ssh-rsa" => &["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"],
+        "ssh-ed25519" => &["ssh-ed25519"],
+        "ecdsa-sha2-nistp256" => &["ecdsa-sha2-nistp256"],
+        "ecdsa-sha2-nistp384" => &["ecdsa-sha2-nistp384"],
+        "ecdsa-sha2-nistp521" => &["ecdsa-sha2-nistp521"],
+        "ssh-dss" => &["ssh-dss"],
+        _ => &[],
+    }
+}
+
+/// "SHA256:<base64>" fingerprint of the key the peer just presented.
+fn fingerprint_sha256(session: &Session) -> String {
+    match session.host_key_hash(ssh2::HashType::Sha256) {
+        Some(h) => format!("SHA256:{}", B64_NOPAD.encode(h)),
+        None => "SHA256:<unavailable>".to_string(),
+    }
+}
+
+/// Same fingerprint format, for a key that is only available as the base64
+/// blob stored in a known_hosts line.
+fn fingerprint_of_stored_key(b64: &str) -> String {
+    match B64.decode(b64) {
+        Ok(raw) => format!("SHA256:{}", B64_NOPAD.encode(openssl::sha::sha256(&raw))),
+        Err(_) => "SHA256:<unreadable>".to_string(),
+    }
+}
+
+/// Split a known_hosts line into (algorithm token, base64 key), skipping an
+/// optional leading `@cert-authority` / `@revoked` marker.
+fn split_known_hosts_line(line: &str) -> Option<(&str, &str)> {
+    let mut fields = line.split_whitespace();
+    let mut first = fields.next()?;
+    if first.starts_with('@') {
+        first = fields.next()?;
+    }
+    let _ = first; // host pattern — matched by libssh2, not by us
+    let alg = fields.next()?;
+    let key = fields.next()?;
+    Some((alg, key))
+}
+
+/// Every known_hosts line that applies to `host:port`, as (algorithm, base64 key).
+///
+/// Each line is handed to libssh2 on its own and checked against a key that
+/// cannot match: `Mismatch` means the line's host pattern matched (so the line
+/// is about this host), `NotFound` means it did not. That lets libssh2 resolve
+/// hashed `|1|…` patterns with its own HMAC instead of us reimplementing it.
+fn stored_host_entries(session: &Session, host: &str, port: u16) -> Vec<(String, String)> {
+    let path = match known_hosts_path() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    stored_host_entries_in(session, &text, host, port)
+}
+
+/// `stored_host_entries` against known_hosts contents already in memory.
+fn stored_host_entries_in(
+    session: &Session,
+    text: &str,
+    host: &str,
+    port: u16,
+) -> Vec<(String, String)> {
+    const NO_SUCH_KEY: &[u8] = b"neoshell-probe-key";
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (alg, key) = match split_known_hosts_line(line) {
+            Some(v) => v,
+            None => continue,
+        };
+        if hostkey_algs_for(alg).is_empty() {
+            continue;
+        }
+        let mut probe = match session.known_hosts() {
+            Ok(k) => k,
+            Err(_) => return out,
+        };
+        if probe
+            .read_str(line, ssh2::KnownHostFileKind::OpenSSH)
+            .is_err()
+        {
+            continue;
+        }
+        if matches!(
+            probe.check_port(host, port, NO_SUCH_KEY),
+            ssh2::CheckResult::Mismatch
+        ) {
+            out.push((alg.to_string(), key.to_string()));
+        }
+    }
+    out
+}
+
+/// Offer the host-key algorithm this host is already trusted under first — the
+/// same thing OpenSSH's `order_hostkeyalgs` does.
+///
+/// Without it libssh2 offers ed25519 first, a host pinned in known_hosts as
+/// `ssh-rsa` answers with a key that is not stored there, and libssh2's
+/// type-agnostic comparison reports Mismatch — turning a perfectly legitimate
+/// server into a MitM alarm. Must run BEFORE `session.handshake()`.
+fn prepare_host_key_prefs(session: &Session, params: &ConnectParams) {
+    let tokens: Vec<String> = match params.pinned_host_key {
+        // Later connection for an already-pinned session: negotiate exactly
+        // what was pinned, so the blobs are directly comparable.
+        Some(ref pin) => vec![pin.alg.clone()],
+        None => stored_host_entries(session, &params.host, params.port)
+            .into_iter()
+            .map(|(alg, _)| alg)
+            .collect(),
+    };
+    order_host_key_prefs(session, &tokens);
+}
+
+/// `prepare_host_key_prefs` for a host that has no `ConnectParams` of its own —
+/// the bastion in `proxy.rs` and the tunnel endpoint in `tunnel.rs`. Same
+/// contract: must run BEFORE `session.handshake()`.
+pub(crate) fn prepare_host_key_prefs_for(session: &Session, host: &str, port: u16) {
+    let tokens: Vec<String> = stored_host_entries(session, host, port)
+        .into_iter()
+        .map(|(alg, _)| alg)
+        .collect();
+    order_host_key_prefs(session, &tokens);
+}
+
+/// Put the algorithms behind `tokens` at the head of the HostKey preference
+/// list, keeping everything else as a tail.
+fn order_host_key_prefs(session: &Session, tokens: &[String]) {
+    if tokens.is_empty() {
+        return;
+    }
+
+    let supported = match session.supported_algs(MethodType::HostKey) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    let mut ordered: Vec<&str> = Vec::with_capacity(supported.len());
+    for token in tokens {
+        for alg in hostkey_algs_for(token) {
+            if supported.contains(alg) && !ordered.contains(alg) {
+                ordered.push(alg);
+            }
+        }
+    }
+    if ordered.is_empty() {
+        return;
+    }
+    // Keep the rest as a tail so a host that legitimately rotated to a new key
+    // type is still reachable; the post-handshake check is what decides trust.
+    for alg in &supported {
+        if !ordered.contains(alg) {
+            ordered.push(alg);
+        }
+    }
+    let list = ordered.join(",");
+    if let Err(e) = session.method_pref(MethodType::HostKey, &list) {
+        log::warn!("method_pref(HostKey) ordering failed with list={}: {}", list, e);
+    }
+}
+
+/// Append the entry just added to `known` to the on-disk known_hosts file.
+///
+/// Appending one line (rather than `KnownHosts::write_file`) keeps comments,
+/// markers and any line libssh2 could not parse intact — this is the user's
+/// file, shared with ssh(1), not ours to rewrite.
+fn append_known_host_line(
+    known: &ssh2::KnownHosts,
+    path: &std::path::Path,
+    pattern: &str,
+) -> Result<(), String> {
+    let hosts = known
+        .hosts()
+        .map_err(|e| format!("{}: cannot enumerate known_hosts: {}", HOST_KEY_FAIL, e))?;
+    let entry = hosts
+        .iter()
+        .rev()
+        .find(|h| h.name() == Some(pattern))
+        .ok_or_else(|| format!("{}: cannot serialise the new entry for {}", HOST_KEY_FAIL, pattern))?;
+    let mut line = known
+        .write_string(entry, ssh2::KnownHostFileKind::OpenSSH)
+        .map_err(|e| format!("{}: cannot serialise the new entry: {}", HOST_KEY_FAIL, e))?;
+    if !line.ends_with('\n') {
+        line.push('\n');
+    }
+
+    if let Some(dir) = path.parent() {
+        crate::storage::create_dir_private(dir)
+            .map_err(|e| format!("{}: cannot create {}: {}", HOST_KEY_FAIL, dir.display(), e))?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("{}: cannot open {}: {}", HOST_KEY_FAIL, path.display(), e))?;
+    f.write_all(line.as_bytes())
+        .map_err(|e| format!("{}: cannot write {}: {}", HOST_KEY_FAIL, path.display(), e))
+}
+
+/// Verify the server's host key against `~/.ssh/known_hosts`, recording it on
+/// first contact (trust-on-first-use, same as `StrictHostKeyChecking=accept-new`).
+///
+/// A host whose stored key changed is refused outright — there is no override,
+/// because the only two explanations are a reinstalled server and an active
+/// man-in-the-middle, and only the user can tell them apart (out of band).
+/// Any failure to read or parse known_hosts is also a refusal: this must never
+/// fail open.
+///
+/// MUST be called immediately after `handshake()` and BEFORE any `userauth_*`,
+/// so credentials are never offered to an unverified peer. Never prompts — it
+/// runs on worker threads with no access to the UI.
+pub(crate) fn verify_host_key(session: &Session, host: &str, port: u16) -> Result<(), String> {
+    let (key, kind) = session
+        .host_key()
+        .ok_or_else(|| format!("{} for {}: the server presented no host key", HOST_KEY_FAIL, host))?;
+    let alg = host_key_alg_name(kind);
+    let fp = fingerprint_sha256(session);
+    let pattern = known_hosts_pattern(host, port);
+
+    let path = known_hosts_path().ok_or_else(|| {
+        format!("{}: cannot locate the home directory for ~/.ssh/known_hosts", HOST_KEY_FAIL)
+    })?;
+
+    let mut known = session
+        .known_hosts()
+        .map_err(|e| format!("{}: cannot open the known_hosts store: {}", HOST_KEY_FAIL, e))?;
+
+    // A missing file is first contact, not a read failure. Anything else is
+    // fatal — an unreadable or corrupt known_hosts must not silently allow.
+    if path.exists() {
+        known
+            .read_file(&path, ssh2::KnownHostFileKind::OpenSSH)
+            .map_err(|e| {
+                format!("{}: cannot read {}: {}", HOST_KEY_FAIL, path.display(), e)
+            })?;
+    }
+
+    match known.check_port(host, port, key) {
+        ssh2::CheckResult::Match => {
+            log::debug!("host key verified for {} ({} {})", pattern, alg, fp);
+            Ok(())
+        }
+        ssh2::CheckResult::NotFound => {
+            if matches!(kind, ssh2::HostKeyType::Unknown) {
+                return Err(format!(
+                    "{} for {}: the server presented a host key of an unrecognised type, \
+                     which cannot be recorded in known_hosts",
+                    HOST_KEY_FAIL, pattern
+                ));
+            }
+            // Trust on first use — record it the way ssh(1) would, so both
+            // clients agree from here on.
+            known
+                .add(&pattern, key, "neoshell", kind.into())
+                .map_err(|e| format!("{}: cannot pin {}: {}", HOST_KEY_FAIL, pattern, e))?;
+            // Same call ssh(1) makes here, and the same reaction to a
+            // known_hosts it cannot write: warn loudly, carry on. Accept-new
+            // has already been decided for THIS connection; failing to record
+            // it costs the next one its protection, which belongs in the log,
+            // not in a refusal that would make a read-only HOME unusable.
+            match append_known_host_line(&known, &path, &pattern) {
+                Ok(()) => log::info!(
+                    "new host key pinned for {} in {}: {} {}",
+                    pattern,
+                    path.display(),
+                    alg,
+                    fp
+                ),
+                Err(e) => log::error!(
+                    "accepted {} on first use ({} {}) but could NOT record it — \
+                     the next connection will not be protected: {}",
+                    pattern,
+                    alg,
+                    fp,
+                    e
+                ),
+            }
+            Ok(())
+        }
+        ssh2::CheckResult::Mismatch => {
+            let stored: Vec<String> = stored_host_entries(session, host, port)
+                .into_iter()
+                .map(|(a, k)| format!("{} {}", a, fingerprint_of_stored_key(&k)))
+                .collect();
+            let stored = if stored.is_empty() {
+                "<none readable>".to_string()
+            } else {
+                stored.join(", ")
+            };
+            Err(format!(
+                "{} for {}: host key mismatch. The server now presents {} {}, \
+                 but {} stores {}. Someone may be impersonating this host. \
+                 If the server really was reinstalled, remove the old entry with \
+                 `ssh-keygen -R '{}'` and connect again.",
+                HOST_KEY_FAIL,
+                pattern,
+                alg,
+                fp,
+                path.display(),
+                stored,
+                pattern
+            ))
+        }
+        ssh2::CheckResult::Failure => Err(format!(
+            "{} for {}: known_hosts could not be checked",
+            HOST_KEY_FAIL, pattern
+        )),
+    }
+}
+
+/// Retry public-key auth with the key read straight into memory.
+///
+/// Replaces an older "fallback" that copied the key to `std::env::temp_dir()`
+/// and called `userauth_pubkey_file` again on a byte-identical copy: that could
+/// never succeed where the first call had failed, and it left private key
+/// material in a world-traversable directory. `userauth_pubkey_memory` is a
+/// genuinely different code path (libssh2 parses the PEM itself) and touches
+/// no disk. Available on every target here because the build enables
+/// `vendored-openssl` + `openssl-on-win32`.
+fn userauth_pubkey_in_memory(
+    session: &Session,
+    username: &str,
+    key_path: &std::path::Path,
+    passphrase: Option<&str>,
+) -> Result<(), String> {
+    let key_data = std::fs::read_to_string(key_path)
+        .map_err(|e| format!("Failed to read private key {}: {}", key_path.display(), e))?;
+    session
+        .userauth_pubkey_memory(username, None, &key_data, passphrase)
+        .map_err(|e| e.to_string())
+}
+
+/// Snapshot the key the peer presented, so later connections for the same
+/// session can be pinned to it.
+fn capture_host_key(session: &Session) -> Option<PinnedHostKey> {
+    let (key, kind) = session.host_key()?;
+    Some(PinnedHostKey {
+        key: key.to_vec(),
+        alg: host_key_alg_name(kind).to_string(),
+        fingerprint: fingerprint_sha256(session),
+    })
+}
+
+/// Host key check for a connection that is NOT first contact: the exec channel
+/// opened alongside a shell, or a reconnect after a link drop.
+///
+/// Compares byte-for-byte against the key pinned when the session first came
+/// up. No TOFU write, no prompt — a change here is exactly the man-in-the-middle
+/// signature, and on the reconnect path it must abort the retry loop rather
+/// than be retried. Falls back to the known_hosts path when nothing is pinned.
+fn verify_pinned_host_key(
+    session: &Session,
+    params: &ConnectParams,
+    what: &str,
+) -> Result<(), String> {
+    let pin = match params.pinned_host_key {
+        Some(ref p) => p,
+        None => return verify_host_key(session, &params.host, params.port),
+    };
+    let (key, kind) = session.host_key().ok_or_else(|| {
+        format!("{} ({}): the server presented no host key", HOST_KEY_FAIL, what)
+    })?;
+    if key == pin.key.as_slice() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} ({}) for {}:{}: host key mismatch mid-session. The server now presents {} {}, \
+         but this session pinned {} {}. Aborting.",
+        HOST_KEY_FAIL,
+        what,
+        params.host,
+        params.port,
+        host_key_alg_name(kind),
+        fingerprint_sha256(session),
+        pin.alg,
+        pin.fingerprint
+    ))
+}
+
 /// Translate ssh2 / libssh2 / TCP error strings into user-friendly explanations.
 /// Returns the original message plus an i18n'd hint line when a known pattern is matched.
 pub fn translate_ssh_error(raw: &str) -> String {
@@ -121,7 +567,7 @@ pub fn translate_ssh_error(raw: &str) -> String {
 pub struct ConnectionTestResult {
     pub ok: bool,
     pub latency_ms: u64,
-    pub stage: String,          // "tcp" | "handshake" | "auth" | "done"
+    pub stage: String,          // "tcp" | "handshake" | "hostkey" | "auth" | "done"
     pub error: Option<String>,  // friendly error when ok=false
 }
 
@@ -152,6 +598,10 @@ pub struct ConnectParams {
     pub private_key: Option<String>,
     pub passphrase: Option<String>,
     pub proxy_id: Option<String>,
+    /// Host key captured on this session's first handshake. `None` on first
+    /// contact (known_hosts decides); `Some` for every connection opened
+    /// afterwards for the same session, which is then pinned to it.
+    pub pinned_host_key: Option<PinnedHostKey>,
 }
 
 /// Attempt an SSH handshake. When `configure_algos` is true, applies our
@@ -175,9 +625,14 @@ fn try_handshake(
     if configure_algos {
         configure_session_algorithms(&session);
     }
+    prepare_host_key_prefs(&session, params);
     session
         .handshake()
         .map_err(|e| e.to_string())?;
+    // Single choke point for both phases of the retry in `connect`, and it sits
+    // behind `establish_tcp`, so a SOCKS5/HTTP/bastion-tunnelled connection has
+    // the real target host verified rather than the hop.
+    verify_pinned_host_key(&session, params, "shell")?;
     Ok(session)
 }
 
@@ -187,16 +642,23 @@ fn establish_tcp(params: &ConnectParams) -> Result<TcpStream, String> {
 
     if let Some(ref proxy_id) = params.proxy_id {
         let store = ProxyStore::new();
-        if let Some(proxy_cfg) = store.get(proxy_id) {
-            return proxy::connect_via_proxy(
-                &proxy_cfg,
-                &params.host,
-                params.port,
-                Duration::from_secs(15),
-            );
-        }
-        // proxy_id set but proxy not found — fall through to direct
-        log::warn!("Proxy '{}' not found, connecting directly", proxy_id);
+        let proxy_cfg = store.get(proxy_id).ok_or_else(|| {
+            // Fail closed: the user asked for this traffic to cross a specific
+            // network boundary. Dialling the target directly instead would leak
+            // the connection onto a path they deliberately excluded.
+            format!(
+                "Proxy '{}' is configured for this connection but no longer exists. \
+                 Refusing to connect directly — re-create the proxy or clear it from \
+                 the connection.",
+                proxy_id
+            )
+        })?;
+        return proxy::connect_via_proxy(
+            &proxy_cfg,
+            &params.host,
+            params.port,
+            Duration::from_secs(15),
+        );
     }
     proxy::connect_direct(&params.host, params.port, Duration::from_secs(10))
 }
@@ -331,6 +793,12 @@ pub struct SshSession {
     /// True when the server banner doesn't identify as OpenSSH — disables
     /// setenv, keepalive, exec-based shell start, and monitoring exec calls.
     pub minimal_mode: bool,
+    /// Set by `disconnect` to tell the reader thread to stop. Without it the
+    /// reader keeps re-dialling and re-authenticating for ~3 minutes after the
+    /// user closed the tab.
+    pub stop: Arc<AtomicBool>,
+    /// "SHA256:…" fingerprint of the verified host key, for display.
+    pub host_key_fp: String,
 }
 
 /// Manages multiple concurrent SSH sessions.
@@ -377,6 +845,7 @@ impl SshManager {
             private_key: private_key.map(|s| s.to_string()),
             passphrase: passphrase.map(|s| s.to_string()),
             proxy_id: proxy_id.map(|s| s.to_string()),
+            pinned_host_key: None,
         };
 
         // --- TCP ---
@@ -407,12 +876,26 @@ impl SshManager {
         session.set_tcp_stream(tcp);
         session.set_timeout(10_000);
         configure_session_algorithms(&session);
+        prepare_host_key_prefs(&session, &params);
         if let Err(e) = session.handshake() {
             return ConnectionTestResult {
                 ok: false,
                 latency_ms: start.elapsed().as_millis() as u64,
                 stage: "handshake".into(),
                 error: Some(translate_ssh_error(&e.to_string())),
+            };
+        }
+
+        // --- Host key --- must come before auth: the test dialog otherwise
+        // hands the password to an unverified peer. This is also the first
+        // place a user should see a new host's fingerprint, so a successful
+        // trust-on-first-use is logged rather than hidden.
+        if let Err(e) = verify_host_key(&session, host, port) {
+            return ConnectionTestResult {
+                ok: false,
+                latency_ms: start.elapsed().as_millis() as u64,
+                stage: "hostkey".into(),
+                error: Some(translate_ssh_error(&e)),
             };
         }
 
@@ -536,34 +1019,34 @@ impl SshManager {
             private_key: private_key.map(|s| s.to_string()),
             passphrase: passphrase.map(|s| s.to_string()),
             proxy_id: proxy_id.map(|s| s.to_string()),
+            pinned_host_key: None,
         };
 
         // --- Establish SSH handshake ---------------------------------------
-        // --- Pre-handshake banner peek — read up to 128 bytes from a disposable TCP
-        // connection so we know what SSH implementation is on the other end, even
-        // if KEX fails later. Does not interfere with the real handshake socket.
-        if let Ok(mut peek_tcp) = establish_tcp(&tmp_params) {
-            peek_tcp.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            let mut buf = [0u8; 128];
-            if let Ok(n) = std::io::Read::read(&mut peek_tcp, &mut buf) {
-                let line = String::from_utf8_lossy(&buf[..n]);
-                let banner_line = line.lines().next().unwrap_or("").trim();
-                log::info!("SSH peek {}:{} — server announces: {}", host, port, banner_line);
-            }
-            drop(peek_tcp);
-        }
-
+        // (No pre-handshake banner peek: it opened a second throwaway TCP
+        // connection — a second trip through the proxy/bastion — purely to log
+        // a line that `session.banner()` already gives us for free below.)
+        //
         // Attempt handshake — two-phase retry to handle both old and modern servers.
         // Phase 1: filtered algorithm list (our preferred path)
         // Phase 2: fall back to libssh2 defaults (uncustomized) to handle kex-strict servers
         let session = match try_handshake(&tmp_params, 15000, true) {
             Ok(s) => s,
+            // A rejected host key is a verdict, not a negotiation failure —
+            // retrying with different algorithms would only re-ask the same
+            // question, so surface it straight away.
+            Err(e1) if e1.contains(HOST_KEY_FAIL) => {
+                return Err(translate_ssh_error(&e1));
+            }
             Err(e1) => {
                 log::warn!("First handshake attempt failed ({}), retrying with libssh2 defaults", e1);
                 match try_handshake(&tmp_params, 15000, false) {
                     Ok(s) => {
                         log::info!("Fallback handshake (default algorithms) succeeded");
                         s
+                    }
+                    Err(e2) if e2.contains(HOST_KEY_FAIL) => {
+                        return Err(translate_ssh_error(&e2));
                     }
                     Err(e2) => {
                         // Both attempts failed — log full client-side diagnostics
@@ -587,6 +1070,22 @@ impl SshManager {
         log::info!("SSH handshake OK to {}:{} (banner: {}), authenticating as {} ({})",
             host, port, server_banner, username, auth_type);
 
+        // --- Pin the verified host key -------------------------------------
+        // `try_handshake` already checked it against known_hosts. Everything
+        // opened from here on for this session (the exec connection, every
+        // reconnect) is compared against this exact blob instead of repeating
+        // trust-on-first-use.
+        let host_key_pin = capture_host_key(&session).ok_or_else(|| {
+            translate_ssh_error(&format!(
+                "{} for {}: the server presented no host key",
+                HOST_KEY_FAIL, host
+            ))
+        })?;
+        let host_key_fp = host_key_pin.fingerprint.clone();
+        let mut tmp_params = tmp_params;
+        tmp_params.pinned_host_key = Some(host_key_pin);
+        log::info!("host key pinned for {}:{} — {}", host, port, host_key_fp);
+
         // --- Authenticate --------------------------------------------------
         match auth_type {
             "password" => {
@@ -605,21 +1104,15 @@ impl SshManager {
                     return Err(format!("Private key file not found: {}", key_path_str));
                 }
 
-                // Try pubkey_file first, then try loading key from memory
+                // Try pubkey_file first, then the same key straight from memory.
                 match session.userauth_pubkey_file(username, None, key_path, passphrase) {
                     Ok(()) => {
                         log::info!("SSH key auth succeeded via pubkey_file");
                     }
                     Err(e) => {
                         log::warn!("pubkey_file failed ({}), trying in-memory key auth", e);
-                        // Read key content and try userauth_pubkey_frommemory
-                        // Fallback: write key to temp file and retry
-                        let tmp_key = std::env::temp_dir().join(format!("neoshell_key_{}", uuid::Uuid::new_v4()));
-                        std::fs::copy(key_path, &tmp_key)
-                            .map_err(|e2| format!("Failed to copy key: {}", e2))?;
-                        let result = session.userauth_pubkey_file(username, None, &tmp_key, passphrase);
-                        let _ = std::fs::remove_file(&tmp_key);
-                        result.map_err(|e2| format!("Key auth failed: {}, retry: {}", e, e2))?;
+                        userauth_pubkey_in_memory(&session, username, key_path, passphrase)
+                            .map_err(|e2| format!("Key auth failed: {}, retry: {}", e, e2))?;
                         log::info!("SSH key auth succeeded via in-memory pubkey");
                     }
                 }
@@ -678,9 +1171,17 @@ impl SshManager {
             let mut sess2 = Session::new()
                 .map_err(|e| format!("Failed to create exec session: {}", e))?;
             sess2.set_tcp_stream(tcp2);
+            // Bound the handshake so an unresponsive peer cannot wedge connect()
+            // forever; cleared again below so SFTP transfers stay unbounded.
+            sess2.set_timeout(15_000);
             configure_session_algorithms(&sess2);
+            prepare_host_key_prefs(&sess2, &params);
             sess2.handshake()
                 .map_err(|e| format!("Exec SSH handshake failed: {}", e))?;
+            // Second connection to a host whose key was pinned moments ago in
+            // this same call — compare against that pin rather than running a
+            // fresh trust-on-first-use, which would be an attacker-usable race.
+            verify_pinned_host_key(&sess2, &params, "exec").map_err(|e| translate_ssh_error(&e))?;
 
             match auth_type {
                 "password" => {
@@ -691,19 +1192,18 @@ impl SshManager {
                 "key" => {
                     let key_str = private_key.ok_or("Private key required")?;
                     let key_path = std::path::Path::new(key_str);
-                    if sess2.userauth_pubkey_file(username, None, key_path, passphrase).is_err() {
-                        let key_data = std::fs::read_to_string(key_path)
-                            .map_err(|e| format!("Failed to read key: {}", e))?;
-                        let tmp_key = std::env::temp_dir().join(format!("neoshell_ekey_{}", uuid::Uuid::new_v4()));
-                        std::fs::write(&tmp_key, &key_data).map_err(|e| format!("Write tmp key: {}", e))?;
-                        let result = sess2.userauth_pubkey_file(username, None, &tmp_key, passphrase);
-                        let _ = std::fs::remove_file(&tmp_key);
-                        result.map_err(|e| format!("Exec key auth failed: {}", e))?;
+                    if let Err(e) = sess2.userauth_pubkey_file(username, None, key_path, passphrase) {
+                        userauth_pubkey_in_memory(&sess2, username, key_path, passphrase)
+                            .map_err(|e2| format!("Exec key auth failed: {}, retry: {}", e, e2))?;
                     }
                 }
                 _ => return Err(format!("Unknown auth type: {}", auth_type)),
             }
 
+            // This session is also the SFTP transport — a per-operation timeout
+            // here would abort a legitimately slow transfer. exec_command_inner
+            // sets and restores its own bound around the exec read instead.
+            sess2.set_timeout(0);
             sess2.set_keepalive(true, 15);
 
             Some(Arc::new(Mutex::new(sess2)))
@@ -798,12 +1298,22 @@ impl SshManager {
         let reader_minimal = minimal_mode;
         let reader_exec = exec_session.clone();
 
+        // Cancellation for the reader thread. `disconnect` sets it; without it
+        // a closed tab keeps re-dialling and re-authenticating for ~3 minutes.
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_stop = Arc::clone(&stop);
+
         // --- Reader thread: reads from SSH channel, emits SshEvent ---------
         // On EOF or error (not WouldBlock), attempts auto-reconnect with
         // exponential backoff before giving up and sending Closed.
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             'outer: loop {
+                if reader_stop.load(Ordering::Relaxed) {
+                    // disconnect() already tore the session down and told the
+                    // UI; emitting Closed here would double-handle it.
+                    break 'outer;
+                }
                 // In minimal mode the exec path shares this session; acquire the
                 // session mutex so libssh2 access from reader and exec is
                 // serialized. For non-minimal, exec has its own session so this
@@ -830,12 +1340,20 @@ impl SshManager {
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // Non-blocking read: nothing available yet.
                         std::thread::sleep(Duration::from_millis(10));
+                        if reader_stop.load(Ordering::Relaxed) {
+                            break 'outer;
+                        }
                         continue 'outer;
                     }
                     Ok(_zero) => {
                         // EOF — remote closed the channel
                     }
                     Err(ref e) => {
+                        if reader_stop.load(Ordering::Relaxed) {
+                            // The read failed because disconnect() closed the
+                            // channel under us — not something to report.
+                            break 'outer;
+                        }
                         let _ = event_tx.send(SshEvent::Error {
                             session_id: sid_reader.clone(),
                             error: format!("Read error: {}", e),
@@ -849,6 +1367,9 @@ impl SshManager {
                 let mut backoff_ms: u64 = 1000;
 
                 loop {
+                    if reader_stop.load(Ordering::Relaxed) {
+                        break 'outer;
+                    }
                     retry += 1;
                     if retry > max_retries {
                         let _ = event_tx.send(SshEvent::Closed {
@@ -862,10 +1383,39 @@ impl SshManager {
                         attempt: retry,
                     });
 
-                    std::thread::sleep(Duration::from_millis(backoff_ms));
+                    // Sleep in slices so a disconnect during a 30s backoff is
+                    // noticed promptly instead of after the full wait.
+                    let mut slept = 0u64;
+                    while slept < backoff_ms {
+                        if reader_stop.load(Ordering::Relaxed) {
+                            break 'outer;
+                        }
+                        let slice = (backoff_ms - slept).min(100);
+                        std::thread::sleep(Duration::from_millis(slice));
+                        slept += slice;
+                    }
                     backoff_ms = (backoff_ms * 2).min(30_000);
 
+                    if reader_stop.load(Ordering::Relaxed) {
+                        break 'outer;
+                    }
+
                     match reconnect_ssh(&reader_params, &reader_mode, reader_minimal) {
+                        // A host key that changed while the link was down is the
+                        // exact man-in-the-middle signature. Abort the whole retry
+                        // loop instead of handing the stored password to the next
+                        // attempt.
+                        Err(ref e) if e.contains(HOST_KEY_FAIL) => {
+                            log::error!("reconnect aborted: {}", e);
+                            let _ = event_tx.send(SshEvent::Error {
+                                session_id: sid_reader.clone(),
+                                error: translate_ssh_error(e),
+                            });
+                            let _ = event_tx.send(SshEvent::Closed {
+                                session_id: sid_reader.clone(),
+                            });
+                            break 'outer;
+                        }
                         Ok((new_session, new_channel, new_exec)) => {
                             // Replace channel first (writer shares this Arc)
                             {
@@ -881,6 +1431,10 @@ impl SshManager {
                             if let (Some(slot), Some(fresh)) = (reader_exec.as_ref(), new_exec) {
                                 let mut es = slot.lock();
                                 *es = fresh;
+                            }
+
+                            if reader_stop.load(Ordering::Relaxed) {
+                                break 'outer;
                             }
 
                             let _ = event_tx.send(SshEvent::Reconnected {
@@ -903,10 +1457,23 @@ impl SshManager {
         let channel_writer = Arc::clone(&channel);
         let event_tx_w = self.event_tx.clone();
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            // No `.expect` here: the crate is built with panic = "abort", so a
+            // runtime that fails to build (OS out of fds / threads) would kill
+            // the whole process — every other SSH session and the unsaved vault
+            // with it. Report it and let this one thread go.
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("Failed to build tokio runtime for SSH writer");
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = event_tx_w.send(SshEvent::Error {
+                        session_id: sid_writer.clone(),
+                        error: format!("Failed to build SSH writer runtime: {}", e),
+                    });
+                    return;
+                }
+            };
 
             rt.block_on(async move {
                 while let Some(cmd) = cmd_rx.recv().await {
@@ -965,6 +1532,8 @@ impl SshManager {
             params,
             mode,
             minimal_mode,
+            stop,
+            host_key_fp,
         };
 
         self.sessions.write().insert(session_id.clone(), ssh_session);
@@ -1026,17 +1595,31 @@ impl SshManager {
 
     /// Disconnect a session.
     pub fn disconnect(&self, session_id: &str) -> Result<(), String> {
-        let writer = {
+        let (writer, stop) = {
             let sessions = self.sessions.read();
-            sessions
+            let s = sessions
                 .get(session_id)
-                .ok_or_else(|| format!("Session '{}' not found", session_id))?
-                .writer.clone()
+                .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+            (s.writer.clone(), Arc::clone(&s.stop))
         };
+        // Raise the stop flag FIRST: closing the channel below makes the reader
+        // see EOF, and without the flag already set it would enter its
+        // reconnect loop and keep re-authenticating against a session the user
+        // just closed.
+        stop.store(true, Ordering::SeqCst);
         // sessions read lock dropped before sending command and taking write lock
         let _ = writer.try_send(SshCommand::Disconnect);
         self.sessions.write().remove(session_id);
         Ok(())
+    }
+
+    /// SHA-256 fingerprint of the verified host key for a live session,
+    /// formatted the way `ssh-keygen -l` prints it ("SHA256:…").
+    pub fn host_key_fingerprint(&self, session_id: &str) -> Option<String> {
+        self.sessions
+            .read()
+            .get(session_id)
+            .map(|s| s.host_key_fp.clone())
     }
 
     /// Get a list of active session ids.
@@ -1076,6 +1659,13 @@ impl SshManager {
         // non-blocking mode afterwards so the shell reader keeps receiving
         // WouldBlock on empty reads. For a separate session, this still works.
         sess.set_blocking(true);
+        // Bound every blocking libssh2 call for the duration of this exec.
+        // Without it `read_to_string` below can block forever while holding
+        // both this mutex and — in minimal mode, where exec shares the main
+        // session — the terminal reader's lock. The previous value is restored
+        // afterwards so SFTP transfers through the same session stay unbounded.
+        let prev_timeout = sess.timeout();
+        sess.set_timeout(30_000);
 
         // Use a closure so blocking mode is restored even on error paths.
         let result = (|| -> Result<String, String> {
@@ -1103,6 +1693,7 @@ impl SshManager {
         })();
 
         // Critical for minimal mode: shell reader expects non-blocking reads.
+        sess.set_timeout(prev_timeout);
         sess.set_blocking(false);
 
         result
@@ -1643,9 +2234,14 @@ fn create_exec_connection(params: &ConnectParams) -> Result<Session, String> {
     let mut session = Session::new()
         .map_err(|e| format!("Exec session create failed: {}", e))?;
     session.set_tcp_stream(tcp);
+    // Bound handshake + auth; cleared below so SFTP transfers over this same
+    // session are not cut off mid-file.
+    session.set_timeout(15_000);
     configure_session_algorithms(&session);
+    prepare_host_key_prefs(&session, params);
     session.handshake()
         .map_err(|e| format!("Exec handshake failed: {}", e))?;
+    verify_pinned_host_key(&session, params, "exec")?;
     session.set_keepalive(true, 15);
 
     match params.auth_type.as_str() {
@@ -1660,11 +2256,10 @@ fn create_exec_connection(params: &ConnectParams) -> Result<Session, String> {
             if let Err(e) = session.userauth_pubkey_file(
                 &params.username, None, key_path, params.passphrase.as_deref(),
             ) {
-                let tmp = std::env::temp_dir().join(format!("neo_k_{}", uuid::Uuid::new_v4()));
-                std::fs::copy(key_path, &tmp).map_err(|e2| format!("Copy key: {}", e2))?;
-                let r = session.userauth_pubkey_file(&params.username, None, &tmp, params.passphrase.as_deref());
-                let _ = std::fs::remove_file(&tmp);
-                r.map_err(|e2| format!("Key auth failed: {}, retry: {}", e, e2))?;
+                userauth_pubkey_in_memory(
+                    &session, &params.username, key_path, params.passphrase.as_deref(),
+                )
+                .map_err(|e2| format!("Key auth failed: {}, retry: {}", e, e2))?;
             }
         }
         _ => return Err("Unknown auth type".into()),
@@ -1674,6 +2269,7 @@ fn create_exec_connection(params: &ConnectParams) -> Result<Session, String> {
         return Err("Exec auth failed".into());
     }
 
+    session.set_timeout(0);
     Ok(session)
 }
 
@@ -1714,9 +2310,14 @@ fn reconnect_ssh(
         Session::new().map_err(|e| format!("Session create failed: {}", e))?;
     session.set_tcp_stream(tcp);
     configure_session_algorithms(&session);
+    prepare_host_key_prefs(&session, params);
     session
         .handshake()
         .map_err(|e| format!("Handshake failed: {}", e))?;
+    // A reconnect is not first contact: compare against the key pinned when
+    // this session first came up, with no trust-on-first-use write. The caller
+    // aborts the retry loop on this error rather than trying again.
+    verify_pinned_host_key(&session, params, "reconnect")?;
     if !minimal_mode {
         session.set_keepalive(true, 15);
     }
@@ -1735,11 +2336,10 @@ fn reconnect_ssh(
             if let Err(e) = session.userauth_pubkey_file(
                 &params.username, None, path, params.passphrase.as_deref(),
             ) {
-                let tmp = std::env::temp_dir().join(format!("neo_rk_{}", uuid::Uuid::new_v4()));
-                std::fs::copy(path, &tmp).map_err(|e2| format!("Copy key: {}", e2))?;
-                let r = session.userauth_pubkey_file(&params.username, None, &tmp, params.passphrase.as_deref());
-                let _ = std::fs::remove_file(&tmp);
-                r.map_err(|e2| format!("Key auth failed: {}, retry: {}", e, e2))?;
+                userauth_pubkey_in_memory(
+                    &session, &params.username, path, params.passphrase.as_deref(),
+                )
+                .map_err(|e2| format!("Key auth failed: {}, retry: {}", e, e2))?;
             }
         }
         _ => return Err("Unknown auth type".into()),
@@ -1834,9 +2434,38 @@ fn parse_size_to_gb(s: &str) -> f64 {
     }
 }
 
-/// Escape a string for safe use in a shell command.
+/// Escape a string for safe use as a single shell *argument*.
+///
+/// Single-quoting is the right primitive for that, and it is not the weak link
+/// here: a value that ends up as *file content* on the remote side (see
+/// `validate_authorized_key_line`) needs its own validation, because quoting
+/// preserves an embedded newline faithfully — which is exactly the problem when
+/// the consumer is a line-oriented file.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Validate that `pubkey` is a single authorized_keys line, returning it trimmed.
+///
+/// Rejects rather than strips: silently dropping part of a key the user asked
+/// to deploy would install something they never reviewed. NUL is rejected too —
+/// it cannot survive the shell round-trip intact.
+fn validate_authorized_key_line(pubkey: &str) -> Result<&str, String> {
+    let line = pubkey.trim();
+    if line.is_empty() {
+        return Err("public key is empty".into());
+    }
+    if line.contains('\n') || line.contains('\r') {
+        return Err(
+            "public key must be a single line — a key containing a line break would append \
+             more than one entry to the remote authorized_keys"
+                .into(),
+        );
+    }
+    if line.contains('\0') {
+        return Err("public key contains a NUL byte".into());
+    }
+    Ok(line)
 }
 
 /// One-shot helper for the SSH key manager: connect with `config`, append
@@ -1857,16 +2486,29 @@ pub fn deploy_pubkey(
         private_key: config.private_key.clone(),
         passphrase: config.passphrase.clone(),
         proxy_id: config.proxy_id.clone(),
+        pinned_host_key: None,
     };
+
+    // Reject anything that would not be a single authorized_keys line BEFORE
+    // opening a connection. `echo 'a\nb' >> authorized_keys` writes two
+    // entries, so an embedded newline silently injects a second key — or a
+    // `command=` / `from=` option line — into a security-critical remote file,
+    // and it defeats the `grep -qxF` idempotency guard as well.
+    let key_line = validate_authorized_key_line(pubkey)?;
 
     let tcp = establish_tcp(&params).map_err(|e| translate_ssh_error(&e))?;
     let mut session = Session::new().map_err(|e| format!("Session::new: {}", e))?;
     session.set_tcp_stream(tcp);
     session.set_timeout(15_000);
     configure_session_algorithms(&session);
+    prepare_host_key_prefs(&session, &params);
     session
         .handshake()
         .map_err(|e| translate_ssh_error(&e.to_string()))?;
+    // This path writes the user's public key into the remote authorized_keys.
+    // An unverified peer would both harvest the credentials below and receive
+    // a key the user now believes is trusted.
+    verify_host_key(&session, &params.host, params.port).map_err(|e| translate_ssh_error(&e))?;
 
     match params.auth_type.as_str() {
         "password" => {
@@ -1898,7 +2540,7 @@ pub fn deploy_pubkey(
         return Err(translate_ssh_error("Authentication failed"));
     }
 
-    let q = shell_escape(pubkey.trim());
+    let q = shell_escape(key_line);
     let cmd = format!(
         "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && \
          chmod 600 ~/.ssh/authorized_keys && \
@@ -2038,6 +2680,14 @@ mod error_tests {
     }
 
     #[test]
+    fn host_key_failures_get_the_host_key_hint() {
+        // Every message verify_host_key produces starts with HOST_KEY_FAIL, so
+        // one check covers mismatch, unreadable known_hosts and "no host key".
+        let s = translate_ssh_error(&format!("{} for example.com: host key mismatch", super::HOST_KEY_FAIL));
+        assert!(s.contains(" — "), "got: {}", s);
+    }
+
+    #[test]
     fn bogus_test_connection_returns_error() {
         // Use an unroutable address to guarantee fast failure
         let r = super::SshManager::test_connection(
@@ -2051,5 +2701,112 @@ mod error_tests {
         assert!(!r.ok);
         assert_eq!(r.stage, "tcp");
         assert!(r.error.is_some());
+    }
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    use super::*;
+
+    // A real ed25519 host key blob is not needed: the probe path only cares
+    // about the host pattern and the algorithm token, and the mismatch path is
+    // exercised by handing libssh2 a key that cannot match anything.
+    const ED25519_LINE: &str =
+        "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEr0bPvzvxFqJv6FoUfYh0uKQ0Xk1pTTZAt1nTqzGw4a";
+    const RSA_LINE_PORT: &str =
+        "[example.com]:2222 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDLmH0JmvUT2ZS8Jb7LJv2vLp3qzWlq9VWTqpZ4V5mYQ==";
+    const OTHER_HOST: &str =
+        "other.example.net ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB2eF6hQ9v1YkYqk3nVJ0oT0mM7yQ6r8sN4uV1wX2yZ3";
+
+    #[test]
+    fn pattern_matches_openssh_convention() {
+        assert_eq!(known_hosts_pattern("example.com", 22), "example.com");
+        assert_eq!(known_hosts_pattern("example.com", 2222), "[example.com]:2222");
+    }
+
+    #[test]
+    fn rsa_expands_to_the_sha2_variants() {
+        // known_hosts stores RSA keys as "ssh-rsa" but the transport negotiates
+        // rsa-sha2-*, so the expansion must not be 1:1 or the ordering fix
+        // would never pick a pinned RSA host.
+        assert_eq!(
+            hostkey_algs_for("ssh-rsa"),
+            &["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"]
+        );
+        assert_eq!(hostkey_algs_for("ssh-ed25519"), &["ssh-ed25519"]);
+        assert!(hostkey_algs_for("sk-ssh-ed25519@openssh.com").is_empty());
+    }
+
+    #[test]
+    fn line_split_skips_markers() {
+        assert_eq!(
+            split_known_hosts_line("example.com ssh-ed25519 AAAAC3Nz"),
+            Some(("ssh-ed25519", "AAAAC3Nz"))
+        );
+        assert_eq!(
+            split_known_hosts_line("@cert-authority *.example.com ssh-rsa AAAAB3Nz"),
+            Some(("ssh-rsa", "AAAAB3Nz"))
+        );
+        assert_eq!(split_known_hosts_line("example.com"), None);
+    }
+
+    #[test]
+    fn stored_entries_pick_only_the_matching_host() {
+        let sess = Session::new().expect("Session::new");
+        let text = format!("# a comment\n\n{}\n{}\n{}\n", OTHER_HOST, ED25519_LINE, RSA_LINE_PORT);
+
+        // A "[host]:port" entry is scoped to that port, so it must not surface
+        // for the default port.
+        let got = stored_host_entries_in(&sess, &text, "example.com", 22);
+        assert_eq!(got.len(), 1, "got {:?}", got);
+        assert_eq!(got[0].0, "ssh-ed25519");
+
+        // ...while a bare entry covers every port, same as OpenSSH — so both
+        // lines apply here, and both belong in the ordering and in the
+        // mismatch report.
+        let got: Vec<String> = stored_host_entries_in(&sess, &text, "example.com", 2222)
+            .into_iter()
+            .map(|(alg, _)| alg)
+            .collect();
+        assert_eq!(got, ["ssh-ed25519", "ssh-rsa"]);
+
+        assert!(stored_host_entries_in(&sess, &text, "unknown.example", 22).is_empty());
+    }
+
+    #[test]
+    fn stored_entries_survive_a_malformed_line() {
+        // An unparseable line must not take the whole file down — the
+        // authoritative read_file check in verify_host_key is what fails closed.
+        let sess = Session::new().expect("Session::new");
+        let text = format!("garbage ssh-ed25519 !!!not-base64!!!\n{}\n", ED25519_LINE);
+        let got = stored_host_entries_in(&sess, &text, "example.com", 22);
+        assert_eq!(got.len(), 1, "got {:?}", got);
+    }
+
+    #[test]
+    fn stored_key_fingerprint_is_openssh_shaped() {
+        let fp = fingerprint_of_stored_key("AAAAC3NzaC1lZDI1NTE5AAAAIEr0bPvzvxFqJv6FoUfYh0uKQ0Xk1pTTZAt1nTqzGw4a");
+        assert!(fp.starts_with("SHA256:"), "got {}", fp);
+        assert!(!fp.ends_with('='), "OpenSSH strips base64 padding, got {}", fp);
+        assert_eq!(fingerprint_of_stored_key("!!!"), "SHA256:<unreadable>");
+    }
+
+    #[test]
+    fn multiline_pubkey_is_rejected_not_stripped() {
+        // `echo 'a\nb' >> authorized_keys` writes TWO entries. Stripping would
+        // deploy something the user never reviewed, so this must be an error.
+        let ok = validate_authorized_key_line("  ssh-ed25519 AAAA user@host \n");
+        assert_eq!(ok.unwrap(), "ssh-ed25519 AAAA user@host");
+
+        for bad in [
+            "ssh-ed25519 AAAA\nssh-rsa BBBB",
+            "ssh-ed25519 AAAA\r\ncommand=\"sh\" ssh-rsa BBBB",
+            "ssh-ed25519 AAAA\rssh-rsa BBBB",
+        ] {
+            let e = validate_authorized_key_line(bad).unwrap_err();
+            assert!(e.contains("single line"), "got: {}", e);
+        }
+        assert!(validate_authorized_key_line("ssh-ed25519 A\0B").is_err());
+        assert!(validate_authorized_key_line("   ").is_err());
     }
 }

@@ -70,10 +70,37 @@ fn theme_path() -> PathBuf {
 
 impl ThemeConfig {
     pub fn load() -> Self {
-        std::fs::read_to_string(theme_path())
+        let mut cfg: Self = std::fs::read_to_string(theme_path())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        cfg.sanitize();
+        cfg
+    }
+
+    /// Clamp the font sizes to the range the settings sliders already enforce.
+    ///
+    /// `theme.json` is a plain, user-editable file and nothing validated it on
+    /// the way in. `terminal_font_size` reaches the terminal canvas directly:
+    /// 0.0 makes the cell width 0.0, `bounds.width / 0.0` is `inf`, Rust's
+    /// saturating float->int cast turns that into `usize::MAX`, and `resize()`
+    /// then tries to allocate it. `ui_font_size` of 0.0 collapses every scaled
+    /// text size to zero.
+    ///
+    /// The `is_finite` guard is not optional: `f32::clamp` returns NaN for a
+    /// NaN input, so clamping alone would leave the hole open.
+    fn sanitize(&mut self) {
+        let d = Self::default();
+        self.terminal_font_size = if self.terminal_font_size.is_finite() {
+            self.terminal_font_size.clamp(8.0, 28.0)
+        } else {
+            d.terminal_font_size
+        };
+        self.ui_font_size = if self.ui_font_size.is_finite() {
+            self.ui_font_size.clamp(10.0, 18.0)
+        } else {
+            d.ui_font_size
+        };
     }
 
     pub fn save(&self) {

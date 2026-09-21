@@ -1,25 +1,49 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
 # NeoShell Update Publisher
 #
 # Downloads latest release from GitHub, extracts dynamic libraries,
-# generates update.json with MD5 checksums, and uploads everything
-# to the update server.
+# signs them, generates update.json with SHA-256 digests and detached
+# ed25519 signatures, and uploads everything to the update server.
 #
 # Usage:
 #   ./scripts/publish-update.sh              # Use latest GitHub release
 #   ./scripts/publish-update.sh v0.4.0       # Use specific version
 #   DRY_RUN=1 ./scripts/publish-update.sh    # Preview without uploading
+#
+# Required env (for a real upload; DRY_RUN=1 needs none of it):
+#   NEOSHELL_DEPLOY_HOST   SSH target, e.g. deploy@updates.example.com
+# Optional env:
+#   NEOSHELL_DEPLOY_ROOT   default /var/www/neoshell
+#   NEOSHELL_UPDATE_URL    default https://neoshell.wwwneo.com/updates
+#   NEOSHELL_REPO          default uk0/NeoShell
+#   NEOSHELL_UPDATE_KEY    ed25519 signing key (default ~/.neoshell/update-signing-key.pem)
+#   ALLOW_UNSIGNED=1       publish without signatures (clients will refuse them)
+#
+# NOTE: update.json is generated here and scp'd straight to the server. It is
+#       deliberately NOT tracked in git — a stale copy with placeholder digests
+#       would make every client reject the download.
 # ═══════════════════════════════════════════════════════════════
 
 set -e
 
-REPO="uk0/NeoShell"
-SERVER="root@bwg1"
-SERVER_PATH="/var/www/neoshell/updates"
-UPDATE_URL="https://neoshell.wwwneo.com/updates"
-WORK_DIR="/tmp/neoshell-update-publish"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+REPO="${NEOSHELL_REPO:-uk0/NeoShell}"
+# Deploy target. Intentionally NOT defaulted — this is a public repo, so a
+# baked-in host is both a leak and unusable for anyone else. Checked at the
+# upload boundary, not here, so DRY_RUN=1 keeps working without it.
+SERVER="${NEOSHELL_DEPLOY_HOST:-}"
+SERVER_ROOT="${NEOSHELL_DEPLOY_ROOT:-/var/www/neoshell}"
+SERVER_PATH="${SERVER_ROOT}/updates"
+DOWNLOAD_PATH="${SERVER_ROOT}/downloads"
+UPDATE_URL="${NEOSHELL_UPDATE_URL:-https://neoshell.wwwneo.com/updates}"
+# Fresh private directory — a fixed /tmp path is pre-creatable by anyone on a
+# shared machine, and this one holds what gets published.
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/neoshell-update-publish.XXXXXX")"
+SIGN_KEY="${NEOSHELL_UPDATE_KEY:-$HOME/.neoshell/update-signing-key.pem}"
 DRY_RUN="${DRY_RUN:-0}"
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 # Colors
 GREEN='\033[0;32m'
@@ -46,7 +70,6 @@ VER_NUM="${VERSION#v}"
 info "Publishing update for NeoShell ${CYAN}${VER_NUM}${NC}"
 
 # ── Prepare workspace ──────────────────────────────────────────
-rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"/{downloads,libs}
 cd "$WORK_DIR"
 
@@ -72,21 +95,55 @@ echo ""
 log "Collected libraries:"
 ls -lh libs/ 2>/dev/null || warn "No libraries found"
 
-# ── Generate MD5 checksums ─────────────────────────────────────
-info "Calculating MD5 checksums..."
+# ── Sign libraries ─────────────────────────────────────────────
+# An unsigned library is unusable: every 0.7.0+ client verifies a detached
+# ed25519 signature before installing and refuses anything else. Publishing
+# without one is a silent no-op update, so it has to be deliberate.
+if [ -f "$SIGN_KEY" ]; then
+    info "Signing libraries with ${SIGN_KEY}..."
+    for f in libs/*; do
+        [ -f "$f" ] || continue
+        case "$f" in *.sig) continue ;; esac
+        NEOSHELL_UPDATE_KEY="$SIGN_KEY" "$SCRIPT_DIR/sign-update.sh" "$f" >/dev/null \
+            || err "Signing failed for $f"
+        log "Signed: $(basename "$f")"
+    done
+elif [ "${ALLOW_UNSIGNED:-0}" = "1" ]; then
+    warn "No signing key at ${SIGN_KEY} and ALLOW_UNSIGNED=1 — clients will REFUSE these libraries."
+else
+    err "No signing key at ${SIGN_KEY}.
+  Create one with scripts/gen-update-key.sh, or point NEOSHELL_UPDATE_KEY at it.
+  Set ALLOW_UNSIGNED=1 to publish anyway (clients will refuse the download)."
+fi
+
+# ── Generate checksums ─────────────────────────────────────────
+info "Calculating checksums..."
 
 declare -A MD5S
+declare -A SHA256S
 declare -A SIZES
+declare -A SIGS
 for f in libs/*; do
     [ -f "$f" ] || continue
+    case "$f" in *.sig) continue ;; esac
     NAME=$(basename "$f")
     if command -v md5 &>/dev/null; then
         MD5S["$NAME"]=$(md5 -q "$f")
     else
         MD5S["$NAME"]=$(md5sum "$f" | awk '{print $1}')
     fi
+    if command -v sha256sum &>/dev/null; then
+        SHA256S["$NAME"]=$(sha256sum "$f" | awk '{print $1}')
+    else
+        SHA256S["$NAME"]=$(shasum -a 256 "$f" | awk '{print $1}')
+    fi
     SIZES["$NAME"]=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
-    log "$NAME → MD5: ${MD5S[$NAME]} (${SIZES[$NAME]} bytes)"
+    if [ -f "$f.sig" ]; then
+        SIGS["$NAME"]=$(base64 < "$f.sig" | tr -d '\n')
+    else
+        SIGS["$NAME"]=""
+    fi
+    log "$NAME → SHA256: ${SHA256S[$NAME]} (${SIZES[$NAME]} bytes)"
 done
 
 # ── Generate update.json ───────────────────────────────────────
@@ -97,37 +154,52 @@ CHANGELOG=$(gh release view "$VERSION" --repo "$REPO" --json body -q '.body' 2>/
 [ -z "$CHANGELOG" ] && CHANGELOG="NeoShell ${VER_NUM} release"
 TODAY=$(date +%Y-%m-%d)
 
+# Library filename for each platform key the client looks up.
+platform_file() {
+    case "$1" in
+        macos-aarch64)    echo "libneoshell_core-${VER_NUM}-macos-aarch64.dylib" ;;
+        macos-x86_64)     echo "libneoshell_core-${VER_NUM}-macos-x86_64.dylib" ;;
+        windows-x64)      echo "neoshell_core-${VER_NUM}-windows-x64.dll" ;;
+        linux-x86_64)     echo "libneoshell_core-${VER_NUM}-linux-x86_64.so" ;;
+        windows-win7-x64) echo "neoshell_core-${VER_NUM}-windows-win7-x64.dll" ;;
+    esac
+}
+
+# Emit an entry only for an artifact that is present and fully described. A
+# missing platform is omitted (those clients see "no update"), never published
+# with a placeholder digest — the old `:-placeholder` / `:-0` defaults turned a
+# naming drift into a live manifest that every client rejects.
+DOWNLOADS=""
+FOUND=0
+for KEY in macos-aarch64 macos-x86_64 windows-x64 linux-x86_64 windows-win7-x64; do
+    NAME="$(platform_file "$KEY")"
+    if [ ! -f "libs/$NAME" ]; then
+        warn "No artifact for ${KEY} (${NAME}) — omitting it from update.json"
+        continue
+    fi
+    [ -n "${MD5S[$NAME]:-}" ]    || err "No MD5 for ${NAME}"
+    [ -n "${SHA256S[$NAME]:-}" ] || err "No SHA256 for ${NAME}"
+    [ -n "${SIZES[$NAME]:-}" ] && [ "${SIZES[$NAME]}" -gt 0 ] || err "No size for ${NAME}"
+    [ -n "${SIGS[$NAME]:-}" ] || [ "${ALLOW_UNSIGNED:-0}" = "1" ] || err "No signature for ${NAME}"
+    [ "$FOUND" -gt 0 ] && DOWNLOADS="${DOWNLOADS},"$'\n'
+    DOWNLOADS="${DOWNLOADS}    \"${KEY}\": {
+      \"url\": \"${UPDATE_URL}/libs/${NAME}\",
+      \"md5\": \"${MD5S[$NAME]}\",
+      \"sha256\": \"${SHA256S[$NAME]}\",
+      \"sig\": \"${SIGS[$NAME]}\",
+      \"size\": ${SIZES[$NAME]}
+    }"
+    FOUND=$((FOUND + 1))
+done
+[ "$FOUND" -gt 0 ] || err "No core libraries found for ${VERSION} — nothing to publish."
+
 cat > update.json << ENDJSON
 {
   "version": "${VER_NUM}",
   "date": "${TODAY}",
   "changelog": "${CHANGELOG}",
   "downloads": {
-    "macos-aarch64": {
-      "url": "${UPDATE_URL}/libs/libneoshell_core-${VER_NUM}-macos-aarch64.dylib",
-      "md5": "${MD5S[libneoshell_core-${VER_NUM}-macos-aarch64.dylib]:-placeholder}",
-      "size": ${SIZES[libneoshell_core-${VER_NUM}-macos-aarch64.dylib]:-0}
-    },
-    "macos-x86_64": {
-      "url": "${UPDATE_URL}/libs/libneoshell_core-${VER_NUM}-macos-x86_64.dylib",
-      "md5": "${MD5S[libneoshell_core-${VER_NUM}-macos-x86_64.dylib]:-placeholder}",
-      "size": ${SIZES[libneoshell_core-${VER_NUM}-macos-x86_64.dylib]:-0}
-    },
-    "windows-x64": {
-      "url": "${UPDATE_URL}/libs/neoshell_core-${VER_NUM}-windows-x64.dll",
-      "md5": "${MD5S[neoshell_core-${VER_NUM}-windows-x64.dll]:-placeholder}",
-      "size": ${SIZES[neoshell_core-${VER_NUM}-windows-x64.dll]:-0}
-    },
-    "linux-x86_64": {
-      "url": "${UPDATE_URL}/libs/libneoshell_core-${VER_NUM}-linux-x86_64.so",
-      "md5": "${MD5S[libneoshell_core-${VER_NUM}-linux-x86_64.so]:-placeholder}",
-      "size": ${SIZES[libneoshell_core-${VER_NUM}-linux-x86_64.so]:-0}
-    },
-    "windows-win7-x64": {
-      "url": "${UPDATE_URL}/libs/neoshell_core-${VER_NUM}-windows-win7-x64.dll",
-      "md5": "${MD5S[neoshell_core-${VER_NUM}-windows-win7-x64.dll]:-placeholder}",
-      "size": ${SIZES[neoshell_core-${VER_NUM}-windows-win7-x64.dll]:-0}
-    }
+${DOWNLOADS}
   },
   "installers": {
     "macos-aarch64": "${UPDATE_URL}/../downloads/NeoShell-${VER_NUM}-macos-aarch64.dmg",
@@ -146,8 +218,19 @@ cat update.json | python3 -m json.tool 2>/dev/null || cat update.json
 # ── Upload to server ───────────────────────────────────────────
 if [ "$DRY_RUN" = "1" ]; then
     echo ""
-    warn "DRY RUN — skipping upload. Files in: $WORK_DIR"
+    # Keep the workspace so the generated manifest can actually be inspected.
+    trap - EXIT
+    warn "DRY RUN — skipping upload. Files left in: $WORK_DIR"
     exit 0
+fi
+
+if [ -z "$SERVER" ]; then
+    err "NEOSHELL_DEPLOY_HOST is not set.
+  Set it to the update server's SSH target, e.g.
+      export NEOSHELL_DEPLOY_HOST=deploy@updates.example.com
+  Optional: NEOSHELL_DEPLOY_ROOT (default /var/www/neoshell)
+            NEOSHELL_UPDATE_URL  (default https://neoshell.wwwneo.com/updates)
+  Or run with DRY_RUN=1 to generate update.json without uploading."
 fi
 
 echo ""
@@ -169,10 +252,11 @@ scp update.json "${SERVER}:${SERVER_PATH}/update.json" && \
 
 # Also update the full installer downloads
 info "Updating installer downloads..."
-ssh "$SERVER" "rm -f /var/www/neoshell/downloads/NeoShell-*"
+[ -n "$DOWNLOAD_PATH" ] || err "DOWNLOAD_PATH empty — refusing remote rm"
+ssh "$SERVER" "rm -f '${DOWNLOAD_PATH}'/NeoShell-*"
 for f in downloads/*; do
     [ -f "$f" ] || continue
-    scp "$f" "${SERVER}:/var/www/neoshell/downloads/$(basename $f)" && \
+    scp "$f" "${SERVER}:${DOWNLOAD_PATH}/$(basename "$f")" && \
         log "Uploaded: $(basename $f)"
 done
 
@@ -181,7 +265,7 @@ echo ""
 info "Verifying deployment..."
 echo ""
 
-ssh "$SERVER" "echo '=== Update Server ===' && ls -lh ${SERVER_PATH}/libs/ 2>/dev/null && echo '---' && cat ${SERVER_PATH}/update.json | head -4 && echo '...' && echo '=== Downloads ===' && ls -lh /var/www/neoshell/downloads/"
+ssh "$SERVER" "echo '=== Update Server ===' && ls -lh ${SERVER_PATH}/libs/ 2>/dev/null && echo '---' && cat ${SERVER_PATH}/update.json | head -4 && echo '...' && echo '=== Downloads ===' && ls -lh ${DOWNLOAD_PATH}/"
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"

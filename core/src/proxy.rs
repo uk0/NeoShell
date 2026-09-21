@@ -60,7 +60,12 @@ pub struct ProxyTestResult {
 }
 
 // ---------------------------------------------------------------------------
-// Proxy storage (plain JSON, not encrypted — proxy configs are not secrets)
+// Proxy storage (plain JSON, owner-only on disk)
+//
+// NOT encrypted: `password` and `passphrase` are still written in the clear.
+// Moving them into the vault is tracked separately; until then 0600 and an
+// owner-only directory are the whole protection, which is why every write goes
+// through `storage::write_private` rather than `std::fs::write`.
 // ---------------------------------------------------------------------------
 
 pub struct ProxyStore {
@@ -72,10 +77,16 @@ impl ProxyStore {
         let dir = dirs::data_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("neoshell");
-        let _ = std::fs::create_dir_all(&dir);
-        Self {
-            path: dir.join("proxies.json"),
+        if let Err(e) = crate::storage::create_dir_private(&dir) {
+            log::error!("failed to create data dir {}: {}", dir.display(), e);
         }
+        let store = Self {
+            path: dir.join("proxies.json"),
+        };
+        // A file written by a pre-0.7.0 build is 0644 on disk; narrow it now
+        // rather than waiting for the next save to rewrite it.
+        crate::storage::tighten_permissions(&store.path);
+        store
     }
 
     pub fn load(&self) -> Vec<ProxyConfig> {
@@ -86,16 +97,32 @@ impl ProxyStore {
         serde_json::from_str(&data).unwrap_or_default()
     }
 
-    pub fn save(&self, proxies: &[ProxyConfig]) {
-        if let Ok(json) = serde_json::to_string_pretty(proxies) {
-            let _ = std::fs::write(&self.path, json);
+    /// Replace the stored list, atomically and owner-only.
+    ///
+    /// Returns the failure instead of discarding it: a proxy that did not
+    /// reach disk is gone on the next launch, and silently pretending
+    /// otherwise is how a user loses a bastion definition without noticing.
+    pub fn save(&self, proxies: &[ProxyConfig]) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(proxies)
+            .map_err(|e| format!("cannot serialise proxies: {}", e))?;
+        crate::storage::write_private(&self.path, json.as_bytes())
+            .map_err(|e| format!("cannot write {}: {}", self.path.display(), e))
+    }
+
+    /// `save`, reporting a failure to the log.
+    ///
+    /// The mutators below keep returning `()` so the UI call sites are
+    /// untouched; surfacing this in the UI is the follow-up.
+    fn save_logged(&self, proxies: &[ProxyConfig], what: &str) {
+        if let Err(e) = self.save(proxies) {
+            log::error!("proxy store: {} was NOT saved: {}", what, e);
         }
     }
 
     pub fn add(&self, proxy: ProxyConfig) {
         let mut list = self.load();
         list.push(proxy);
-        self.save(&list);
+        self.save_logged(&list, "add");
     }
 
     pub fn update(&self, proxy: &ProxyConfig) {
@@ -103,13 +130,13 @@ impl ProxyStore {
         if let Some(existing) = list.iter_mut().find(|p| p.id == proxy.id) {
             *existing = proxy.clone();
         }
-        self.save(&list);
+        self.save_logged(&list, "update");
     }
 
     pub fn delete(&self, id: &str) {
         let mut list = self.load();
         list.retain(|p| p.id != id);
-        self.save(&list);
+        self.save_logged(&list, "delete");
     }
 
     pub fn get(&self, id: &str) -> Option<ProxyConfig> {
@@ -414,9 +441,18 @@ pub fn connect_via_ssh_bastion(
         .map_err(|e| format!("Bastion ssh2::Session::new failed: {}", e))?;
     session.set_tcp_stream(bastion_tcp);
     session.set_timeout(timeout.as_millis() as u32);
+    // Offer the algorithm this bastion is already trusted under first, or a
+    // host pinned as ssh-rsa answers with ed25519 and the check below reports
+    // a mismatch on a perfectly legitimate server.
+    crate::ssh::prepare_host_key_prefs_for(&session, &bastion.host, bastion.port);
     session
         .handshake()
         .map_err(|e| format!("Bastion SSH handshake failed: {}", e))?;
+    // The bastion is a distinct host from the target behind it, so it needs
+    // its own check — `try_handshake` only covers the target. Must happen
+    // before the credentials below are offered to it.
+    crate::ssh::verify_host_key(&session, &bastion.host, bastion.port)
+        .map_err(|e| crate::ssh::translate_ssh_error(&e))?;
 
     // Authenticate to bastion
     let user = bastion
@@ -691,9 +727,14 @@ fn test_ssh_bastion(bastion: &ProxyConfig) -> Result<u64, String> {
     let mut session = ssh2::Session::new().map_err(|e| format!("Session: {}", e))?;
     session.set_tcp_stream(tcp);
     session.set_timeout(10_000);
+    crate::ssh::prepare_host_key_prefs_for(&session, &bastion.host, bastion.port);
     session
         .handshake()
         .map_err(|e| format!("Handshake: {}", e))?;
+    // A host-key failure is surfaced as unreachable-with-reason rather than an
+    // auth error — this dialog is where a user should first see it.
+    crate::ssh::verify_host_key(&session, &bastion.host, bastion.port)
+        .map_err(|e| crate::ssh::translate_ssh_error(&e))?;
 
     let user = bastion
         .username

@@ -1,5 +1,5 @@
 use iced::widget::{
-    button, canvas, column, container, horizontal_space, row, scrollable, stack, text,
+    button, canvas, column, container, horizontal_space, row, stack, text,
     text_editor, text_input, vertical_space, Space,
 };
 use iced::{
@@ -145,6 +145,78 @@ fn extract_sz_filename(data: &str) -> Option<String> {
     None
 }
 
+/// Reduce a remote-supplied name to a single, safe local file name.
+///
+/// `sz` filenames are scraped out of terminal output, i.e. out of bytes the
+/// REMOTE host controls, and neither extractor rejects `/` or `..`. Path::join
+/// honours `..` and lets an absolute name replace the base directory outright,
+/// so an unsanitised name writes anywhere the user can write (~/.zshrc,
+/// ~/.ssh/authorized_keys, ~/Library/LaunchAgents/...). Returns None when the
+/// name cannot be reduced to something safe — the caller must then refuse.
+fn safe_local_basename(name: &str) -> Option<String> {
+    let base = std::path::Path::new(name).file_name()?.to_str()?;
+    if base.is_empty() || base == "." || base == ".." {
+        return None;
+    }
+    // `\` is not a path separator on unix, so Path::file_name() keeps it;
+    // reject it explicitly so the same name is safe on every platform.
+    if base
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+    {
+        return None;
+    }
+    Some(base.to_string())
+}
+
+/// True when the remote echoed `cmd` back onto the screen.
+///
+/// `cmd_buffer` is assembled from LOCAL keystrokes, with no idea whether the
+/// remote tty is echoing. `sudo`, `su`, `mysql -p` and gpg all turn echo off at
+/// their prompts, so without this gate the password is stored verbatim in
+/// `cmd_history`, rendered in plaintext by the history panel, and one click on
+/// ReplayCommand re-sends it to a shell.
+///
+/// Deliberately fails closed: when the terminal is gone or the echo has not
+/// landed yet, the line is simply not recorded.
+fn command_was_echoed(state: &NeoShell, session_id: &str, cmd: &str) -> bool {
+    let term = match state.find_terminal_for_session(session_id) {
+        Some(t) => t,
+        None => return false,
+    };
+    let grid = term.lock();
+    if grid.cells.is_empty() {
+        return false;
+    }
+    let row_text = |y: usize| -> String {
+        grid.cells
+            .get(y)
+            .map(|r| r.iter().filter(|c| !c.wide_cont).map(|c| c.c).collect())
+            .unwrap_or_default()
+    };
+    let y = grid.cursor_y.min(grid.cells.len() - 1);
+
+    // Second gate, for the case where the secret coincidentally matches text
+    // left on screen: an explicit no-echo prompt is never a command line.
+    let prompt = row_text(y).to_lowercase();
+    if prompt.contains("password")
+        || prompt.contains("passphrase")
+        || prompt.contains("\u{5bc6}\u{7801}")
+        || prompt.contains("\u{53e3}\u{4ee4}")
+    {
+        return false;
+    }
+
+    // Match a prefix rather than the whole line: with echo ON the head has long
+    // since been echoed even on a slow link, while with echo OFF not a single
+    // character reaches the grid. Join the two rows above the cursor so a
+    // command that wrapped at the right margin still matches.
+    let prefix: String = cmd.chars().take(6).collect();
+    let start = y.saturating_sub(2);
+    let visible: String = (start..=y).map(row_text).collect();
+    visible.contains(&prefix)
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -224,7 +296,6 @@ pub struct NeoShell {
 
     // Auto-updater
     updater: Updater,
-    last_update_check: std::time::Instant,
 
     // i18n locale
     locale: String,
@@ -580,7 +651,7 @@ struct ConnectionFormData {
 }
 
 #[derive(Debug, Clone)]
-struct ProcessDetailInfo {
+pub(crate) struct ProcessDetailInfo {
     pid: u32,
     fields: Vec<(String, String)>,
     children: Vec<String>,      // child process lines
@@ -601,13 +672,12 @@ struct LocalFileEntry {
 #[derive(Debug, Clone)]
 struct ContextMenu {
     conn_id: String,
-    conn_name: String,
     x: f32,
     y: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum BottomTab {
+pub(crate) enum BottomTab {
     Monitor,
     Files,
     QuickCmd,
@@ -641,6 +711,9 @@ pub enum Message {
     VaultCreated,
     UnlockVault,
     VaultUnlocked,
+    /// Start every tunnel flagged `auto_start`. Dispatched only after the vault
+    /// is open — never from `Default`, see the `tunnel_manager` field.
+    AutoStartTunnels,
 
     // Form focus (Tab cycling)
     FocusNext,
@@ -1078,7 +1151,6 @@ impl Default for NeoShell {
             selection_end: None,
             selecting: false,
             updater: Updater::new(),
-            last_update_check: std::time::Instant::now(),
             locale,
             sidebar_collapsed: false,
             show_settings: false,
@@ -1123,20 +1195,12 @@ impl Default for NeoShell {
             show_log_viewer: false,
             log_viewer_content: String::new(),
             tunnel_store: crate::tunnel::TunnelStore::new(),
-            tunnel_manager: {
-                // Auto-start any tunnel with auto_start = true on app launch.
-                let mgr = Arc::new(crate::tunnel::TunnelManager::new());
-                let ts = crate::tunnel::TunnelStore::new();
-                for t in ts.load() {
-                    if t.auto_start {
-                        log::info!("auto-starting tunnel '{}'", t.name);
-                        if let Err(e) = mgr.start(t.clone()) {
-                            log::warn!("auto-start failed for '{}': {}", t.name, e);
-                        }
-                    }
-                }
-                mgr
-            },
+            // Auto-start deliberately does NOT happen here: Default runs before
+            // the lock screen is drawn, so starting tunnels would open forwarded
+            // ports into the internal network — authenticating with the
+            // credentials in tunnels.json — without a master password. It is
+            // dispatched by Message::AutoStartTunnels once the vault is open.
+            tunnel_manager: Arc::new(crate::tunnel::TunnelManager::new()),
             tunnels: {
                 let ts = crate::tunnel::TunnelStore::new();
                 ts.load()
@@ -1250,22 +1314,6 @@ impl NeoShell {
             }
         }
         None
-    }
-
-    /// All live session ids across tabs and split panes.
-    fn all_session_ids(&self) -> Vec<String> {
-        let mut out = Vec::with_capacity(self.tabs.len() * 2);
-        for t in &self.tabs {
-            if !t.session_id.is_empty() {
-                out.push(t.session_id.clone());
-            }
-            if let Some(sp) = &t.split {
-                if !sp.session_id.is_empty() {
-                    out.push(sp.session_id.clone());
-                }
-            }
-        }
-        out
     }
 
     /// Build the Cmd+K palette item list for the current query, sorted by
@@ -1420,7 +1468,12 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.password_input.clear();
             state.confirm_input.clear();
             state.error_message.clear();
-            Task::done(Message::LoadConnections)
+            // tunnels.json survives a deleted vault, so this path needs the
+            // auto-start too.
+            Task::batch(vec![
+                Task::done(Message::LoadConnections),
+                Task::done(Message::AutoStartTunnels),
+            ])
         }
         Message::UnlockVault => {
             let store = state.store.clone();
@@ -1441,7 +1494,20 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::batch(vec![
                 Task::done(Message::LoadConnections),
                 Task::done(Message::CheckForUpdate),
+                Task::done(Message::AutoStartTunnels),
             ])
+        }
+        Message::AutoStartTunnels => {
+            for t in state.tunnel_store.load() {
+                if t.auto_start {
+                    let name = t.name.clone();
+                    log::info!("auto-starting tunnel '{}'", name);
+                    if let Err(e) = state.tunnel_manager.start(t) {
+                        log::warn!("auto-start failed for '{}': {}", name, e);
+                    }
+                }
+            }
+            Task::none()
         }
 
         // ---- connections -----------------------------------------------------
@@ -1890,12 +1956,29 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::TerminalInput(session_id, data) => {
-            // Track typed commands to capture "sz filename"
-            let buf = state.cmd_buffer.entry(session_id.clone()).or_default();
-            if data == "\r" || data == "\n" {
-                // Enter pressed — record to history
-                let cmd = buf.trim().to_string();
-                if !cmd.is_empty() {
+            // Track typed commands to capture "sz filename". Scoped so the
+            // cmd_buffer borrow ends before command_was_echoed reads the grid.
+            let submitted: Option<String> = {
+                let buf = state.cmd_buffer.entry(session_id.clone()).or_default();
+                if data == "\r" || data == "\n" {
+                    let cmd = buf.trim().to_string();
+                    buf.clear();
+                    Some(cmd)
+                } else if data == "\x7f" || data == "\x08" {
+                    buf.pop(); // Backspace
+                    None
+                } else if data.chars().all(|c| !c.is_control()) {
+                    buf.push_str(&data);
+                    None
+                } else {
+                    None
+                }
+            };
+            if let Some(cmd) = submitted {
+                // Enter pressed — record to history, but ONLY when the remote
+                // echoed the line. These characters came from the keyboard, so
+                // at a no-echo prompt they are a password, not a command.
+                if !cmd.is_empty() && command_was_echoed(state, &session_id, &cmd) {
                     // Find session title
                     let title = state.tabs.iter()
                         .find(|t| t.session_id == session_id)
@@ -1917,11 +2000,6 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         state.sz_filename.insert(session_id.clone(), filename);
                     }
                 }
-                buf.clear();
-            } else if data == "\x7f" || data == "\x08" {
-                buf.pop(); // Backspace
-            } else if data.chars().all(|c| !c.is_control()) {
-                buf.push_str(&data);
             }
 
             let ssh = state.ssh_manager.clone();
@@ -2665,7 +2743,9 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
         Message::DownloadFile(sid, remote_path) => {
             let ssh = state.ssh_manager.clone();
-            let filename = remote_path.split('/').last().unwrap_or("file").to_string();
+            // Only prefills the save dialog (the user still picks the path),
+            // but the name comes from the remote listing — sanitise it anyway.
+            let filename = safe_local_basename(&remote_path).unwrap_or_else(|| "file".to_string());
             let progress = Arc::new(TransferProgress::new());
             state.transfer_progress = Some(progress.clone());
             Task::perform(
@@ -3371,6 +3451,25 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             let current_dir = state.current_dir.get(&sid).cloned().unwrap_or("~".to_string());
 
             if let Some(fname) = filename {
+                // The name was scraped from terminal output — the remote host
+                // controls it. Reduce it to a bare file name before it touches
+                // the local filesystem; refuse rather than guess.
+                let base = match safe_local_basename(&fname) {
+                    Some(b) => b,
+                    None => {
+                        if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
+                            tab.terminal.lock().write(
+                                format!(
+                                    "\r\n\x1b[31m[NeoShell] sz: refusing unsafe remote filename {:?}\x1b[0m\r\n",
+                                    fname
+                                )
+                                .as_bytes(),
+                            );
+                        }
+                        return Task::none();
+                    }
+                };
+
                 let ssh = state.ssh_manager.clone();
                 let progress = Arc::new(TransferProgress::new());
                 state.transfer_progress = Some(progress.clone());
@@ -3379,7 +3478,7 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 let default_dir = dirs::download_dir()
                     .or_else(|| dirs::desktop_dir())
                     .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
-                let local_path = default_dir.join(&fname).to_string_lossy().to_string();
+                let local_path = default_dir.join(&base).to_string_lossy().to_string();
 
                 if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
                     tab.terminal.lock().write(
@@ -3508,7 +3607,11 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                         }
                     }
                 }
-                if let Some(pos) = pixel_to_grid_with(x, y, x_off, y_off, state.font_size) {
+                // Same font source as the canvas (see TerminalView construction),
+                // otherwise the hit-test and the renderer disagree.
+                if let Some(pos) =
+                    pixel_to_grid_with(x, y, x_off, y_off, state.theme_cfg.terminal_font_size)
+                {
                     if state.selection_start.is_none() {
                         state.selection_start = Some(pos);
                     }
@@ -3630,8 +3733,8 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.process_detail = None;
             Task::none()
         }
-        Message::ShowContextMenu(id, name, x, y) => {
-            state.context_menu = Some(ContextMenu { conn_id: id, conn_name: name, x, y });
+        Message::ShowContextMenu(id, _name, x, y) => {
+            state.context_menu = Some(ContextMenu { conn_id: id, x, y });
             Task::none()
         }
         Message::HideContextMenu => {
@@ -4235,7 +4338,14 @@ fn update(state: &mut NeoShell, message: Message) -> Task<Message> {
                 Ok(c) => {
                     const MAX: usize = 200 * 1024;
                     if c.len() > MAX {
-                        let start = c.len() - MAX;
+                        // Snap the raw byte offset forward to a char boundary
+                        // before slicing — the log holds translated CJK, and
+                        // both this slice and the unwrap_or(start) fallback
+                        // below would otherwise land mid-character.
+                        let mut start = c.len() - MAX;
+                        while start < c.len() && !c.is_char_boundary(start) {
+                            start += 1;
+                        }
                         let aligned = c[start..].find('\n').map(|i| start + i + 1).unwrap_or(start);
                         format!("…(showing last {} KB)…\n{}", (c.len() - aligned) / 1024, &c[aligned..])
                     } else {
@@ -6005,262 +6115,6 @@ fn view_sidebar(state: &NeoShell) -> Element<'_, Message> {
         .into()
 }
 
-// ---- Monitor sidebar (when terminal active) ------------------------------
-
-fn view_monitor_sidebar(state: &NeoShell) -> Element<'_, Message> {
-    #[allow(unused_variables)] let scale = state.ui_scale();
-    #[allow(unused_variables)] let c_primary = state.c_primary();
-    #[allow(unused_variables)] let c_accent = state.c_accent();
-    #[allow(unused_variables)] let c_success = state.c_success();
-    #[allow(unused_variables)] let c_danger = state.c_danger();
-    let active_session = state
-        .active_tab
-        .and_then(|idx| state.tabs.get(idx))
-        .map(|t| t.session_id.as_str());
-
-    let stats = active_session.and_then(|sid| state.server_stats.get(sid));
-    let processes = active_session.and_then(|sid| state.top_processes.get(sid));
-
-    // Scale factor applied to every monitor font size. 12 is the baseline
-    // UI font size; when the user bumps it in Settings → Appearance, every
-    // label/value/table-cell in this panel grows proportionally.
-    let scale = state.theme_cfg.ui_font_size / 12.0;
-    // text_primary / text_muted from the user's theme (defaults fall back
-    // to the hard-coded constants if the user hasn't touched the picker).
-    let c_primary = state.theme_cfg.text_primary.to_color();
-
-    let mut col = column![].spacing(0);
-
-    // ── Header ──────────────────────────────────────────────────────────
-    let header = container(
-        row![
-            text(i18n::t("monitor.system")).color(c_primary).size(13.0 * scale),
-            horizontal_space(),
-            button(text("+").color(c_accent).size(16.0 * scale))
-                .on_press(Message::ShowConnectDialog)
-                .padding(Padding::from([2, 6]))
-                .style(transparent_button_style),
-        ]
-        .align_y(alignment::Vertical::Center)
-        .padding(Padding::from([8, 10])),
-    )
-    .style(|_| container::Style {
-        background: Some(theme::BG_TERTIARY.into()),
-        ..Default::default()
-    })
-    .width(Fill);
-    col = col.push(header);
-
-    let sys_size = 10.0 * scale;
-
-    if let Some(stats) = stats {
-        col = col.push(sys_row_sized(&i18n::t("monitor.load"),
-            &format!("{:.2} / {:.2} / {:.2}", stats.load_1m, stats.load_5m, stats.load_15m), sys_size));
-        col = col.push(sys_row_sized(i18n::t("monitor.cpu"),
-            &i18n::tf("monitor.cpu_cores", &[("count", &stats.cpu_cores.to_string())]), sys_size));
-
-        let pb_color = Some(state.theme_cfg.progress_bar.to_color());
-        col = col.push(sys_row_sized(&i18n::t("monitor.mem"),
-            &format!("{} / {} MB ({:.0}%)", stats.mem_used_mb, stats.mem_total_mb, stats.mem_percent), sys_size));
-        col = col.push(progress_bar_widget_with_color(stats.mem_percent, pb_color));
-
-        if stats.disks.is_empty() {
-            col = col.push(sys_row_sized(&i18n::t("monitor.disk"),
-                &format!("{:.1} / {:.1} GB ({:.0}%)", stats.disk_used_gb, stats.disk_total_gb, stats.disk_percent), sys_size));
-            col = col.push(progress_bar_widget_with_color(stats.disk_percent, pb_color));
-        } else {
-            for d in &stats.disks {
-                col = col.push(sys_row_sized(
-                    &truncate_str(&d.mount_point, 8),
-                    &format!("{}/{} ({:.0}%)", d.used, d.total, d.percent),
-                    sys_size,
-                ));
-                col = col.push(progress_bar_widget_with_color(d.percent, pb_color));
-            }
-        }
-
-        if !stats.uptime.is_empty() {
-            col = col.push(sys_row_sized(&i18n::t("monitor.uptime"), &stats.uptime, sys_size));
-        }
-    } else {
-        col = col.push(
-            container(text(i18n::t("monitor.connecting")).color(theme::TEXT_MUTED).size(12.0 * scale))
-                .padding(Padding::from([8, 10])),
-        );
-    }
-
-    col = col.push(sidebar_divider());
-
-    // ── Top Processes ──────────────────────────────────────────────────
-    col = col.push(section_header_sized(&i18n::t("monitor.processes"), 12.0 * scale));
-
-    if let Some(procs) = processes {
-        let hdr_size = 9.0 * scale;
-        let hdr_row = row![
-            container(text(i18n::t("monitor.pid")).color(theme::TEXT_MUTED).size(hdr_size)).width(42),
-            container(text(i18n::t("monitor.proc_cpu")).color(theme::TEXT_MUTED).size(hdr_size)).width(38),
-            container(text(i18n::t("monitor.proc_mem")).color(theme::TEXT_MUTED).size(hdr_size)).width(36),
-            container(text(i18n::t("monitor.proc_cmd")).color(theme::TEXT_MUTED).size(hdr_size)).width(Fill),
-        ]
-        .spacing(2)
-        .padding(Padding::from([4, 8]));
-
-        let mut proc_col = column![hdr_row, sidebar_divider()].spacing(0);
-
-        let row_size = 9.0 * scale;
-        let bar_size = 7.0 * scale;
-
-        for (i, p) in procs.iter().take(15).enumerate() {
-            let bar_len = ((p.cpu / 100.0) * 6.0).ceil() as usize;
-            let bar: String = "\u{2588}".repeat(bar_len.min(6));
-            let pad: String = "\u{2591}".repeat(6_usize.saturating_sub(bar_len));
-
-            let color = if p.cpu > 50.0 { state.theme_cfg.danger.to_color() }
-                       else if p.cpu > 20.0 { theme::WARNING }
-                       else { theme::TEXT_SECONDARY };
-            let row_bg = if i % 2 == 0 { theme::BG_SECONDARY } else { theme::BG_TERTIARY };
-
-            let proc_row = row![
-                container(text(format!("{}", p.pid)).color(color).size(row_size)).width(42),
-                container(text(format!("{:.1}", p.cpu)).color(color).size(row_size)).width(38),
-                container(text(format!("{:.1}", p.mem)).color(color).size(row_size)).width(36),
-                text(truncate_str(&p.command, 10)).color(color).size(row_size),
-                horizontal_space(),
-                text(format!("{}{}", bar, pad)).color(color).size(bar_size).font(Font::MONOSPACE),
-            ]
-            .spacing(2)
-            .align_y(alignment::Vertical::Center);
-
-            proc_col = proc_col.push(
-                container(proc_row)
-                    .padding(Padding::from([3, 8]))
-                    .width(Fill)
-                    .style(move |_| container::Style {
-                        background: Some(row_bg.into()),
-                        ..Default::default()
-                    })
-            );
-        }
-        col = col.push(proc_col);
-    } else {
-        col = col.push(
-            container(text(i18n::t("monitor.loading")).color(theme::TEXT_MUTED).size(11.0 * scale))
-                .padding(Padding::from([8, 10])),
-        );
-    }
-
-    // ── Divider ─────────────────────────────────────────────────────────
-    col = col.push(sidebar_divider());
-
-    // ── Network (compact: only physical + total, clickable) ─────────────
-    col = col.push(section_header(&i18n::t("monitor.network")));
-
-    if let Some(stats) = stats {
-        // Filter: skip lo, show physical first, then virtual (limit 5)
-        let mut physical: Vec<&crate::ssh::NetInterface> = Vec::new();
-        let mut virtual_ifs: Vec<&crate::ssh::NetInterface> = Vec::new();
-        for iface in &stats.interfaces {
-            if iface.name == "lo" { continue; }
-            if iface.name.starts_with("eth") || iface.name.starts_with("en")
-                || iface.name.starts_with("wl") || iface.name.starts_with("bond")
-                || iface.name.starts_with("ib") {
-                physical.push(iface);
-            } else {
-                virtual_ifs.push(iface);
-            }
-        }
-
-        // Show physical interfaces (column-aligned)
-        for iface in &physical {
-            let iface_clone = (*iface).clone();
-            let net_row = row![
-                container(text(truncate_str(&iface.name, 10)).color(c_accent).size(10.0 * scale)).width(Fill),
-                container(text(format!("\u{2193}{}", format_bytes(iface.rx_bytes))).color(theme::TEXT_MUTED).size(9.0 * scale))
-                    .width(80).align_x(alignment::Horizontal::Right),
-                container(text(format!("\u{2191}{}", format_bytes(iface.tx_bytes))).color(theme::TEXT_MUTED).size(9.0 * scale))
-                    .width(80).align_x(alignment::Horizontal::Right),
-            ].spacing(2).align_y(alignment::Vertical::Center);
-
-            col = col.push(
-                button(net_row)
-                    .on_press(Message::ShowNetworkDetail(iface_clone))
-                    .padding(Padding::from([2, 10]))
-                    .width(Fill)
-                    .style(sidebar_item_style)
-            );
-        }
-
-        // Show virtual count as summary
-        if !virtual_ifs.is_empty() {
-            let virt_rx: u64 = virtual_ifs.iter().map(|i| i.rx_bytes).sum();
-            let virt_tx: u64 = virtual_ifs.iter().map(|i| i.tx_bytes).sum();
-            let virt_row = row![
-                container(text(i18n::tf("monitor.virtual_count", &[("count", &virtual_ifs.len().to_string())])).color(theme::TEXT_MUTED).size(10.0 * scale)).width(Fill),
-                container(text(format!("\u{2193}{}", format_bytes(virt_rx))).color(theme::TEXT_MUTED).size(9.0 * scale))
-                    .width(80).align_x(alignment::Horizontal::Right),
-                container(text(format!("\u{2191}{}", format_bytes(virt_tx))).color(theme::TEXT_MUTED).size(9.0 * scale))
-                    .width(80).align_x(alignment::Horizontal::Right),
-            ].spacing(2).align_y(alignment::Vertical::Center);
-            col = col.push(container(virt_row).padding(Padding::from([2, 10])));
-        }
-
-        // Total
-        let total_row = row![
-            container(text(i18n::t("monitor.total")).color(theme::TEXT_SECONDARY).size(10.0 * scale)).width(Fill),
-            container(text(format!("\u{2193}{}", format_bytes(stats.net_rx_bytes))).color(theme::TEXT_SECONDARY).size(9.0 * scale))
-                .width(80).align_x(alignment::Horizontal::Right),
-            container(text(format!("\u{2191}{}", format_bytes(stats.net_tx_bytes))).color(theme::TEXT_SECONDARY).size(9.0 * scale))
-                .width(80).align_x(alignment::Horizontal::Right),
-        ].spacing(2).align_y(alignment::Vertical::Center);
-        col = col.push(container(total_row).padding(Padding::from([2, 10])));
-
-        // Network speed (bytes/sec)
-        if let Some(sid) = active_session {
-            let rx_rate = state.net_rx_rate.get(sid).copied().unwrap_or(0.0);
-            let tx_rate = state.net_tx_rate.get(sid).copied().unwrap_or(0.0);
-            col = col.push(
-                container(
-                    text(i18n::tf("monitor.speed", &[
-                        ("down", &format_bytes(rx_rate as u64)),
-                        ("up", &format_bytes(tx_rate as u64)),
-                    ]))
-                    .color(c_success)
-                    .size(10.0 * scale)
-                )
-                .padding(Padding::from([3, 10]))
-            );
-        }
-    }
-
-    // Wrap everything in a scrollable
-    let sidebar_content = slim_scroll(col).height(Fill);
-
-    container(sidebar_content)
-        .width(280)
-        .height(Fill)
-        .style(|_theme| container::Style {
-            background: Some(theme::BG_SECONDARY.into()),
-            border: iced::Border {
-                color: theme::BORDER,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-fn sidebar_divider() -> Element<'static, Message> {
-    container(Space::new(Fill, 1))
-        .style(|_| container::Style {
-            background: Some(theme::BORDER.into()),
-            ..Default::default()
-        })
-        .width(Fill)
-        .height(1)
-        .into()
-}
-
 /// Overlay search bar that floats in the upper-right corner of the terminal.
 /// Rendered on top of the terminal canvas via `stack![]`. Uses `pick_next`
 /// wiring: typing into the input fires `TerminalSearchChanged`, pressing Enter
@@ -6372,36 +6226,6 @@ fn view_terminal_search_bar(state: &NeoShell) -> Element<'_, Message> {
     .into()
 }
 
-fn section_header(title: &str) -> Element<'static, Message> {
-    section_header_sized(title, 12.0)
-}
-
-fn section_header_sized(title: &str, size: f32) -> Element<'static, Message> {
-    container(text(title.to_string()).color(theme::TEXT_PRIMARY).size(size))
-        .padding(Padding::from([6, 10]))
-        .style(|_| container::Style {
-            background: Some(theme::BG_TERTIARY.into()),
-            ..Default::default()
-        })
-        .width(Fill)
-        .into()
-}
-
-/// A single stat row in the sidebar (owns its content to avoid borrow issues).
-fn stat_row(icon: &str, text_content: &str) -> Element<'static, Message> {
-    let content = format!("{} {}", icon, text_content);
-    let label = text(content).color(theme::TEXT_SECONDARY).size(11);
-    container(label)
-        .padding(Padding::from([3, 10]))
-        .width(Fill)
-        .into()
-}
-
-/// System info row: label(left, 60px) | value(right, fill)
-fn sys_row(label_str: &str, value_str: &str) -> Element<'static, Message> {
-    sys_row_sized(label_str, value_str, 10.0)
-}
-
 fn sys_row_sized(label_str: &str, value_str: &str, size: f32) -> Element<'static, Message> {
     let l = label_str.to_string();
     let v = value_str.to_string();
@@ -6417,11 +6241,6 @@ fn sys_row_sized(label_str: &str, value_str: &str, size: f32) -> Element<'static
     .padding(Padding::from([4, 10]))
     .width(Fill)
     .into()
-}
-
-/// A small progress bar widget for memory/disk usage.
-fn progress_bar_widget(percent: f64) -> Element<'static, Message> {
-    progress_bar_widget_with_color(percent, None)
 }
 
 fn progress_bar_widget_with_color(percent: f64, user_color: Option<Color>) -> Element<'static, Message> {
@@ -8531,8 +8350,13 @@ fn view_key_manager(state: &NeoShell) -> Element<'_, Message> {
             let mut parts = k.pubkey.split_whitespace();
             let _ty = parts.next().unwrap_or("");
             let b64 = parts.next().unwrap_or("");
-            if b64.len() > 28 {
-                format!("{}…{}", &b64[..16], &b64[b64.len() - 8..])
+            // Char-based: `pubkey` is the raw line from ~/.ssh/*.pub, which is
+            // never charset-validated, so a byte slice can split a multi-byte char.
+            let b64_chars: Vec<char> = b64.chars().collect();
+            if b64_chars.len() > 28 {
+                let head: String = b64_chars[..16].iter().collect();
+                let tail: String = b64_chars[b64_chars.len() - 8..].iter().collect();
+                format!("{}…{}", head, tail)
             } else {
                 b64.to_string()
             }
@@ -9372,11 +9196,10 @@ fn view_connection_form_overlay(state: &NeoShell) -> Element<'_, Message> {
     let error_row: Element<'_, Message> = if state.error_message.is_empty() {
         Space::new(0, 0).into()
     } else {
-        let short = if state.error_message.len() > 60 {
-            format!("{}...", &state.error_message[..57])
-        } else {
-            state.error_message.clone()
-        };
+        // Char-based on purpose: translate_ssh_error appends a translated hint,
+        // so error_message routinely mixes ASCII with CJK. A byte slice here
+        // splits a multi-byte char and, under panic = "abort", kills the app.
+        let short = truncate_str(&state.error_message, 57);
         text(short).color(c_danger).size(11.0 * scale).into()
     };
 
@@ -9569,7 +9392,15 @@ impl<Message> canvas::Program<Message> for TerminalView {
         // Resize terminal grid to fit canvas bounds.
         // cell_h was 1.5x font_size — too loose, top/htop output looked
         // double-spaced. 1.2x matches iTerm2/Windows Terminal defaults.
-        let font_size: f32 = self.font_size;
+        // Defensive: theme.json is user-editable and ThemeConfig feeds this
+        // directly. A 0.0 / NaN size makes cell_w 0.0, `bounds.width / 0.0` is
+        // inf, and `as usize` saturates to usize::MAX — which resize() would
+        // then try to allocate.
+        let font_size: f32 = if self.font_size.is_finite() {
+            self.font_size.clamp(8.0, 28.0)
+        } else {
+            14.0
+        };
         let cell_w = font_size * 0.6;
         let cell_h = font_size * 1.2;
         let new_cols = ((bounds.width / cell_w).floor() as usize).max(2);
@@ -9836,8 +9667,16 @@ fn pixel_to_grid_with(x: f32, y: f32, sidebar_w: f32, top_offset: f32, font_size
         return None;
     }
 
+    // Must match the renderer's cell metrics (TerminalView::draw) exactly, or a
+    // click resolves to the wrong row — the drift grows towards the bottom of
+    // the screen. Same defensive clamp as the renderer.
+    let font_size = if font_size.is_finite() {
+        font_size.clamp(8.0, 28.0)
+    } else {
+        14.0
+    };
     let cell_w = font_size * 0.6;
-    let cell_h = font_size * 1.5;
+    let cell_h = font_size * 1.2;
 
     let col = (term_x / cell_w) as usize;
     let row = (term_y / cell_h) as usize;
@@ -10014,11 +9853,6 @@ fn key_to_terminal_bytes(
 // Utility helpers
 // ---------------------------------------------------------------------------
 
-fn chrono_now() -> String {
-    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    format!("{}.{:03}", d.as_secs(), d.subsec_millis())
-}
-
 fn format_bytes(bytes: u64) -> String {
     if bytes > 1_073_741_824 {
         format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
@@ -10186,7 +10020,11 @@ fn parse_process_detail(pid: u32, output: &str) -> ProcessDetailInfo {
                     if !l.is_empty() && !l.starts_with("total") {
                         // Extract just the symlink target: "... -> /path"
                         if let Some(pos) = l.find("->") {
-                            open_fds.push(l[pos+3..].trim().to_string());
+                            // pos + 2 (end of "->") is always a char boundary and
+                            // always <= len; pos + 3 is neither when the target
+                            // starts with a multi-byte char or the line ends here.
+                            // trim() still drops the separating space.
+                            open_fds.push(l[pos + 2..].trim().to_string());
                         }
                     }
                 }
@@ -10344,5 +10182,60 @@ fn sidebar_item_style(_theme: &Theme, status: button::Status) -> button::Style {
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_local_basename_strips_remote_directory_components() {
+        assert_eq!(
+            safe_local_basename("report.tar.gz").as_deref(),
+            Some("report.tar.gz")
+        );
+        assert_eq!(safe_local_basename("logs/app.log").as_deref(), Some("app.log"));
+        // The two vectors: `..` traversal, and an absolute name that would
+        // otherwise replace the download directory outright.
+        assert_eq!(
+            safe_local_basename("../../../../tmp/EVIL").as_deref(),
+            Some("EVIL")
+        );
+        assert_eq!(
+            safe_local_basename("/Users/victim/.zshrc").as_deref(),
+            Some(".zshrc")
+        );
+        // Whatever comes back must never carry a separator on any platform.
+        for name in ["..\\..\\evil.txt", "a/b/c", "/etc/passwd"] {
+            if let Some(base) = safe_local_basename(name) {
+                assert!(
+                    !base.contains('/') && !base.contains('\\'),
+                    "{name:?} produced {base:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn safe_local_basename_rejects_degenerate_names() {
+        for bad in ["", ".", "..", "/", "foo/..", "a\0b", "a\nb", "a\rb"] {
+            assert_eq!(safe_local_basename(bad), None, "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn truncate_str_counts_chars_not_bytes() {
+        // Shape of a real error_message: ASCII plus a translated CJK hint.
+        let s = "Authentication failed (username/password) — 用户名或密码不正确";
+        assert!(s.len() > s.chars().count(), "fixture must be multi-byte");
+        assert!(s.chars().count() > 48);
+        // 48 lands inside the CJK run — the byte slice this replaced panicked
+        // on exactly this offset.
+        let out = truncate_str(s, 48);
+        assert_eq!(out.chars().count(), 48 + 3);
+        assert!(out.ends_with("..."));
+        // No ellipsis when nothing was dropped.
+        assert_eq!(truncate_str(s, s.chars().count()), s);
     }
 }

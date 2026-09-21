@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/rust-100%25-orange?style=flat-square&logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/license-proprietary-red?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/version-0.1.0-green?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/github/v/release/uk0/NeoShell?style=flat-square&color=green&label=version" alt="Version">
 </p>
 
 ---
@@ -31,8 +31,15 @@ NeoShell is a native desktop GUI application for SSH server management. Not Elec
 | **Real-Time Server Monitoring** | CPU, memory, disk (all partitions), per-interface network, top 15 processes |
 | **SFTP File Browser** | Browse, upload, download with progress bars, click-to-navigate directories |
 | **Quick File Editor** | Edit remote text files (JSON, YAML, TOML, configs, scripts) directly in-app |
+| **Port Forwarding** | Local tunnels with auto-start, live state polling |
+| **Proxy & Jump Hosts** | SOCKS5 / HTTP proxies, plus SSH bastion (ProxyJump) chains |
+| **SSH Key Manager** | Generate ed25519 keypairs, one-click deploy to a saved host |
+| **Batch Operations** | Broadcast a command to N sessions, or mirror every keystroke live |
+| **Auto-Reconnect** | Exponential backoff, plus optional persistent remote sessions |
+| **Command Palette** | Fuzzy action search, `Cmd/Ctrl+K` |
 | **Native GPU-Accelerated GUI** | iced framework + wgpu, batched text rendering, ~100 draw calls/frame |
-| **Cross-Platform** | macOS (arm64/x86_64), Windows (x64), Linux (x86_64/arm64) |
+| **Cross-Platform** | macOS (arm64/x86_64), Windows (x64 + Win7), Linux (x86_64) |
+| **Bilingual UI** | English / 简体中文, switchable at runtime |
 
 ## Tech Stack
 
@@ -48,15 +55,25 @@ NeoShell is a native desktop GUI application for SSH server management. Not Elec
 
 ## Architecture
 
+Cargo workspace: a thin launcher that dlopens a dynamic core library, so an
+update swaps the library without reinstalling the app.
+
 ```
-src/
-├── main.rs             # Entry point
-├── app.rs              # iced Application (state, update, view)
+launcher/src/main.rs    # dlopen core, restart loop, verified update swap
+core/src/
+├── lib.rs              # C ABI: neoshell_run() + neoshell_version()
+├── app.rs              # iced Application — the whole UI state machine (~10k lines)
 ├── crypto/mod.rs       # AES-256-GCM encryption, Argon2id KDF
 ├── storage/mod.rs      # Encrypted connection vault
 ├── ssh/mod.rs          # SSH sessions + exec + SFTP
-├── terminal/mod.rs     # VTE terminal emulator (11 unit tests)
-└── ui/theme.rs         # Color theme
+├── terminal/mod.rs     # VTE terminal emulator
+├── proxy.rs            # SOCKS5 / HTTP proxy + SSH bastion chains
+├── tunnel.rs           # Port forwarding
+├── sshkeys.rs          # ed25519 keypair generation
+├── sshconfig.rs        # ~/.ssh/config import
+├── i18n.rs             # en / zh string tables
+├── ui/theme.rs         # Color theme
+└── updater.rs          # Signed background update checker/downloader
 ```
 
 ### Security Model
@@ -82,7 +99,10 @@ Master Password
 ### Prerequisites
 
 - Rust toolchain (stable)
-- libssh2 (`brew install libssh2` on macOS, `apt install libssh2-1-dev` on Linux)
+- `cmake` (`brew install cmake`, `apt install cmake`) — libssh2 and OpenSSL are
+  built from source for full curve25519/ed25519 support. Do **not** install a
+  system libssh2; the vendored build is what CI ships.
+- Linux only: `pkg-config libxkbcommon-dev libwayland-dev libvulkan-dev`
 
 ### Build
 
@@ -96,6 +116,9 @@ cargo build --release
 ./target/release/neoshell
 ```
 
+The launcher expects `libneoshell_core.{dylib,so,dll}` beside it — `cargo build`
+produces both.
+
 ### Test
 
 ```bash
@@ -107,11 +130,23 @@ cargo test
 Tag-based CI/CD builds for all platforms:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.7.0          # must match version in core/Cargo.toml and launcher/Cargo.toml
+git push origin v0.7.0
 ```
 
-Produces: `.dmg` (macOS), `.AppImage` (Linux), `.msi` (Windows)
+Produces: `.dmg` (macOS arm64/x86_64), `.AppImage` (Linux x86_64), `.zip`
+(Windows x64 and Windows 7), plus the standalone core library for each platform.
+
+Pushing to `main` or opening a PR runs `ci.yml` (fmt, clippy, tests) instead.
+
+Self-updates are authenticated: every published core library carries a detached
+ed25519 signature, and a build without the `NEOSHELL_UPDATE_PUBKEY` signing key
+compiled in refuses to install one. See `scripts/gen-update-key.sh`.
+
+## Security
+
+Found a vulnerability? See [SECURITY.md](SECURITY.md) — please use private
+reporting rather than a public issue.
 
 ## License
 

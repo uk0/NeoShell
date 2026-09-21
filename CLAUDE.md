@@ -26,12 +26,13 @@ RUSTFLAGS="-C linker=/usr/bin/cc" CC=/usr/bin/cc CXX=/usr/bin/c++
 cargo check           # Type check
 cargo build           # Debug build
 cargo run             # Run app
-cargo test            # Run tests (terminal has 11 unit tests)
+cargo test            # Run the workspace unit tests
 cargo clippy          # Lint
 cargo build --release # Release build
 ```
 
-`libssh2` required: `brew install libssh2` (macOS).
+`cmake` required (`brew install cmake`): libssh2 and OpenSSL are vendored and
+built from source — do NOT install a system libssh2.
 
 ## Architecture
 
@@ -45,19 +46,34 @@ core/
   build.rs              # Windows resource compilation
   src/
     lib.rs              # Exports neoshell_run() + neoshell_version() via C ABI
-    app.rs              # iced Application: state, update, view, subscriptions
+    app.rs              # iced Application: state, update, view, subscriptions (~10k lines)
     crypto/mod.rs       # AES-256-GCM encryption, Argon2id key derivation
     storage/mod.rs      # Encrypted connection vault (vault.json)
-    ssh/mod.rs          # SSH session manager (ssh2 + background threads)
+    ssh/mod.rs          # SSH session manager (ssh2 + background threads); SFTP transfers
     terminal/mod.rs     # VTE terminal emulator (grid + parser)
+    proxy.rs            # SOCKS5/HTTP proxy + SSH bastion (jump host) chains — config is PLAINTEXT, not vaulted
+    tunnel.rs           # Port forwarding — config is PLAINTEXT, not vaulted
+    sshkeys.rs          # ed25519 keypair generation (OpenSSH format) for the key manager
     sshconfig.rs        # ~/.ssh/config parser
+    i18n.rs             # en/zh string tables, kept in sync
     ui/
       mod.rs            # UI module re-exports
       theme.rs          # Color constants
-    updater.rs          # Background update checker/downloader
+      theme_config.rs   # theme.json load/save (font sizes, colors)
+    updater.rs          # Background update checker/downloader (signature-verified)
 ```
 
 Build produces: `neoshell` (launcher binary) + `libneoshell_core.dylib` (cdylib with all logic).
+
+Two things a newcomer needs up front:
+- **`core/src/app.rs` is ~10k lines and holds the entire UI state machine** — the
+  `NeoShell` struct, every `Message` variant, `update()`, and all `view_*`
+  functions. Search it by function name; do not expect to read it top to bottom.
+- **The update channel requires a signing key.** Published core libraries carry a
+  detached ed25519 signature; the launcher and `updater.rs` verify it against
+  `NEOSHELL_UPDATE_PUBKEY`, compiled in at build time. A build without that
+  variable refuses to install any update. Generate the pair with
+  `scripts/gen-update-key.sh`, sign with `scripts/sign-update.sh`.
 
 ### Data Flow
 1. User interacts with iced GUI → generates `Message`
@@ -70,7 +86,7 @@ Build produces: `neoshell` (launcher binary) + `libneoshell_core.dylib` (cdylib 
 - State machine: Setup → Locked → Main screen
 - SSH sessions run on std::thread (ssh2 is blocking), communicate via channels
 - Terminal: `TerminalGrid` implements `vte::Perform` for escape sequence handling
-- Encrypted vault at `~/Library/Application Support/neoshell/vault.json`
+- Encrypted vault at the platform config dir (`dirs` crate): macOS `~/Library/Application Support/neoshell/`, Linux `~/.config/neoshell/`, Windows `%APPDATA%\neoshell\` — `vault.json`
 - Two-layer encryption: master password → KEK (Argon2id) → DEK → connection data
 
 ### Keyboard Handling
@@ -84,12 +100,19 @@ Build produces: `neoshell` (launcher binary) + `libneoshell_core.dylib` (cdylib 
 2. Connection manager with AES-256-GCM encrypted storage (implemented)
 3. Master password vault with Argon2id key derivation (implemented)
 4. VTE terminal emulator with 256-color + truecolor support (implemented)
-5. SFTP file browser/transfer (planned)
-6. Server monitoring (planned)
+5. SFTP file browser/transfer (implemented — `ssh/mod.rs` upload_file_with_progress / download_file_with_progress)
+6. Server monitoring (implemented — `app.rs` view_monitor_panel, 3s poll via FetchMonitorData)
+7. Port forwarding, proxy/bastion chains, SSH key manager, command palette, broadcast + sync input (implemented)
 
 ## Release & CI
 
-- Tag-based releases trigger CI/CD builds (not main branch pushes)
+- `.github/workflows/ci.yml` runs on push to `main` and every PR: rustfmt and clippy
+  (report-only for now — see the ratchet plan in that file) plus the full test suite
+- `.github/workflows/release.yml` runs on `v*` tags only, and builds/publishes every
+  platform artifact
 - `dev` branch is local-only, never push to remote
 - Two-artifact output: launcher binary + core dylib, no web runtime dependencies
 - Updater checks https://neoshell.wwwneo.com/updates/update.json for new core library versions
+- `scripts/publish-update.sh` signs and uploads the release. It needs
+  `NEOSHELL_DEPLOY_HOST` set (no default — the host is deliberately not in the repo)
+- Security policy and private reporting: `SECURITY.md`

@@ -1,0 +1,160 @@
+name: CI
+
+# Continuous checks on every push to main and every pull request.
+# Release artifacts are built by release.yml, which runs on `v*` tags only.
+#
+# RATCHET PLAN — read before changing the `continue-on-error` flags below.
+#   As of 0.7.0 the tree carries ~539 rustfmt hunks and 59 clippy warnings.
+#   Gating on either today would paint every build red and teach everyone to
+#   ignore CI, so `fmt` and `clippy` REPORT ONLY for now (they write a summary
+#   and never fail the job). The intent is to ratchet both to blocking:
+#     1. land one mechanical `cargo fmt --all` commit (record it in
+#        .git-blame-ignore-revs), then drop `continue-on-error` from `fmt`;
+#     2. work the clippy backlog down, then drop `continue-on-error` from
+#        `clippy` — starting with `-D clippy::correctness -D clippy::suspicious`,
+#        which already passes on 0.7.0 with zero code changes.
+#   `test` is blocking from day one; the suite is green.
+#
+# NOTE: the `RUSTFLAGS=-C linker=/usr/bin/cc` workaround in CLAUDE.md is for a
+# broken local toolchain only. Do NOT copy it into CI — runners are fine.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets a branch that is not main be checked without opening a PR:
+  #   gh workflow run ci.yml --ref <branch>
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt (report only)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-21
+        with:
+          components: rustfmt
+
+      # Non-blocking until the one-off `cargo fmt --all` commit lands — see the
+      # RATCHET PLAN at the top of this file. Formatting is semantically inert,
+      # so this is the first of the two to become blocking.
+      - name: Check formatting
+        id: fmtcheck
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Report formatting backlog
+        if: always()
+        run: |
+          COUNT=$(cargo fmt --all -- --check 2>/dev/null | grep -c '^Diff in' || true)
+          if [ "${COUNT:-0}" -eq 0 ]; then
+            echo "rustfmt: clean — this job is ready to become blocking." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "rustfmt: **$COUNT** files differ (report only, not blocking)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Cheap drift guard that IS blocking: the two crate versions must agree.
+      # Five different version numbers have drifted apart in this repo before.
+      - name: Version sync
+        run: |
+          C=$(grep -m1 '^version' core/Cargo.toml | cut -d'"' -f2)
+          L=$(grep -m1 '^version' launcher/Cargo.toml | cut -d'"' -f2)
+          echo "core=$C launcher=$L"
+          [ "$C" = "$L" ] || { echo "::error::core/Cargo.toml ($C) and launcher/Cargo.toml ($L) disagree"; exit 1; }
+
+  clippy:
+    name: clippy (report only)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-21
+        with:
+          components: clippy
+
+      # ssh2 builds vendored OpenSSL on every platform (see core/Cargo.toml),
+      # so cmake + pkg-config are mandatory; iced/winit needs the xkb/wayland/
+      # vulkan headers. Do not trim this list — the build breaks without it.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake \
+            libxkbcommon-dev libwayland-dev libvulkan-dev
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-clippy-ubuntu-22.04-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-clippy-ubuntu-22.04-
+
+      # Non-blocking while the backlog is worked down — see the RATCHET PLAN.
+      # `-D warnings` is NOT viable today. The first group to gate on is
+      # `-D clippy::correctness -D clippy::suspicious`.
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets 2>&1 | tee /tmp/clippy.log
+
+      - name: Report clippy backlog
+        if: always()
+        run: |
+          COUNT=$(grep -c '^warning' /tmp/clippy.log 2>/dev/null || true)
+          echo "clippy: **${COUNT:-0}** warnings (report only, not blocking)." >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      OPENSSL_STATIC: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-21
+
+      - name: Install NASM (vendored OpenSSL needs it on Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake \
+            libxkbcommon-dev libwayland-dev libvulkan-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-test-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-test-${{ matrix.os }}-
+
+      # The whole suite, not the single `algorithm_tests` filter release.yml runs.
+      # Blocking.
+      - name: Test
+        run: cargo test --workspace

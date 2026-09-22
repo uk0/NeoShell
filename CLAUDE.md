@@ -51,8 +51,8 @@ core/
     storage/mod.rs      # Encrypted connection vault (vault.json)
     ssh/mod.rs          # SSH session manager (ssh2 + background threads); SFTP transfers
     terminal/mod.rs     # VTE terminal emulator (grid + parser)
-    proxy.rs            # SOCKS5/HTTP proxy + SSH bastion (jump host) chains — config is PLAINTEXT, not vaulted
-    tunnel.rs           # Port forwarding — config is PLAINTEXT, not vaulted
+    proxy.rs            # SOCKS5/HTTP proxy + SSH bastion (jump host) chains — proxies.json holds the non-secret fields; passwords/passphrases live in the vault
+    tunnel.rs           # Port forwarding (-L / -R / -D SOCKS5) — tunnels.json holds the non-secret fields; secrets live in the vault
     sshkeys.rs          # ed25519 keypair generation (OpenSSH format) for the key manager
     sshconfig.rs        # ~/.ssh/config parser
     i18n.rs             # en/zh string tables, kept in sync
@@ -66,7 +66,7 @@ core/
 Build produces: `neoshell` (launcher binary) + `libneoshell_core.dylib` (cdylib with all logic).
 
 Two things a newcomer needs up front:
-- **`core/src/app.rs` is ~10k lines and holds the entire UI state machine** — the
+- **`core/src/app.rs` is ~19k lines and holds the entire UI state machine** — the
   `NeoShell` struct, every `Message` variant, `update()`, and all `view_*`
   functions. Search it by function name; do not expect to read it top to bottom.
 - **The update channel requires a signing key.** Published core libraries carry a
@@ -74,6 +74,15 @@ Two things a newcomer needs up front:
   `NEOSHELL_UPDATE_PUBKEY`, compiled in at build time. A build without that
   variable refuses to install any update. Generate the pair with
   `scripts/gen-update-key.sh`, sign with `scripts/sign-update.sh`.
+- **Two dependencies are vendored and patched** under `vendor/`, wired in through
+  `[patch.crates-io]` and listed as workspace members so their patch tests run in
+  CI. Read each `PATCHES.md` before touching them; do not reformat them.
+  - `vendor/ssh2` (0.9.5): on Windows, SFTP names that are not UTF-8 (GBK) aborted
+    the process. Its `.gitattributes` keeps upstream's CRLF files byte-identical.
+  - `vendor/iced_winit` (0.13.0): input method (IME) support, so Chinese can be
+    typed at all, plus `iced_winit::ime`, which `app.rs` uses to turn the IME off
+    while a password field has focus. Drop both once iced is upgraded to a release
+    with input method support.
 
 ### Data Flow
 1. User interacts with iced GUI → generates `Message`
@@ -93,6 +102,10 @@ Two things a newcomer needs up front:
 - `event::listen_with` captures keyboard events when terminal is active
 - `key_to_terminal_bytes()` converts iced key events to terminal escape sequences
 - Keys NOT captured by widgets (text_input) are forwarded to active SSH session
+- IME commits arrive as one `KeyPressed` per character with `Key::Unidentified`
+  and empty modifiers (see `vendor/iced_winit/PATCHES.md`)
+- Every `.secure(true)` text input needs a widget id listed in `SECRET_INPUT_IDS`,
+  or the input method stays on while it has focus
 
 ## Core Features
 
@@ -102,7 +115,8 @@ Two things a newcomer needs up front:
 4. VTE terminal emulator with 256-color + truecolor support (implemented)
 5. SFTP file browser/transfer (implemented — `ssh/mod.rs` upload_file_with_progress / download_file_with_progress)
 6. Server monitoring (implemented — `app.rs` view_monitor_panel, 3s poll via FetchMonitorData)
-7. Port forwarding, proxy/bastion chains, SSH key manager, command palette, broadcast + sync input (implemented)
+7. Port forwarding (-L, -R, -D SOCKS5), proxy/bastion chains, SSH key manager, command palette, broadcast + sync input (implemented)
+8. Chinese input (IME) in every text field and the terminal; collapsible, persisted connection groups (implemented)
 
 ## Release & CI
 

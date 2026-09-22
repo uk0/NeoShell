@@ -11,6 +11,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # GUI
 iced = { version = "0.13", features = ["tokio", "canvas", "advanced", "image"] }
+# Direct dependency only for the input-method control that vendor/iced_winit adds
+# (iced_winit::ime) — resolved to the vendored crate via [patch.crates-io].
+iced_winit = { version = "0.13", default-features = false }
 
 image = { version = "0.24", default-features = false, features = ["png"] }
 

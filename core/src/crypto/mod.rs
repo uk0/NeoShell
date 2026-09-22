@@ -237,6 +237,14 @@ impl CryptoEngine {
     pub fn is_unlocked(&self) -> bool {
         self.dek.is_some()
     }
+
+    /// Drop back to the locked state, wiping the DEK in place.
+    ///
+    /// The public half of `clear_dek`, for the idle / manual re-lock in the
+    /// UI. Idempotent: locking an already-locked engine is a no-op.
+    pub fn lock(&mut self) {
+        self.clear_dek();
+    }
 }
 
 /// Derive a 32-byte key from a password and salt using Argon2id at the given cost.
@@ -275,6 +283,31 @@ mod tests {
         // Both engines hold the same DEK: ciphertext from one decrypts in the other.
         let (nonce, data) = a.encrypt(b"hello vault").unwrap();
         assert_eq!(b.decrypt(&nonce, &data).unwrap().as_slice(), b"hello vault");
+    }
+
+    #[test]
+    fn lock_drops_the_dek_and_unlock_restores_it() {
+        let mut a = CryptoEngine::new();
+        let header = a.init_vault(PW).unwrap();
+        let (nonce, data) = a.encrypt(b"still here after the lock").unwrap();
+
+        a.lock();
+        assert!(!a.is_unlocked(), "lock must clear the DEK");
+        // Every operation that needs the key now refuses, rather than
+        // silently working off a stale copy.
+        assert_eq!(a.decrypt(&nonce, &data).unwrap_err(), "Vault is locked");
+        assert_eq!(a.encrypt(b"x").unwrap_err(), "Vault is locked");
+        // Idempotent: the idle timer may fire again before the user reacts.
+        a.lock();
+        assert!(!a.is_unlocked());
+
+        // Nothing on disk changed, so the same password brings it all back.
+        assert!(a.unlock(PW, &header).unwrap());
+        assert!(a.is_unlocked());
+        assert_eq!(
+            a.decrypt(&nonce, &data).unwrap().as_slice(),
+            b"still here after the lock"
+        );
     }
 
     #[test]

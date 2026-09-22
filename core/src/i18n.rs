@@ -350,6 +350,209 @@ static EN: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("status.shortcuts", "{mod}+H:History  {mod}+T:Connect");
     m.insert("welcome.select", "Select a connection from the sidebar to begin");
     m.insert("confirm.delete", "Delete \"{name}\"?");
+    m.insert("vault.locked_secret", "Vault is locked — unlock it to use this credential.");
+    m.insert("vault.no_credential", "No stored credential — unlock the vault, or re-enter it in the settings.");
+    m.insert("lock.now", "LOCK");
+    m.insert("settings.lock_now", "Lock now");
+    m.insert("settings.lock_timeout", "Auto-lock");
+    m.insert("settings.lock_never", "Never");
+    m.insert("settings.lock_minutes", "{n} min");
+    m.insert("shortcuts.desc.lock", "Lock the vault now (sessions stay connected)");
+    // UI pass: tooltips on glyph-only controls, welcome screen, error copy,
+    // palette route to the sidebar row actions.
+    m.insert("tip.sidebar_hide", "Hide sidebar");
+    m.insert("tip.sidebar_show", "Show sidebar");
+    m.insert("tip.panel_hide", "Hide bottom panel");
+    m.insert("tip.panel_show", "Show bottom panel");
+    m.insert("tip.close", "Close");
+    m.insert("tip.close_tab", "Close tab");
+    m.insert("tip.parent_dir", "Parent folder");
+    m.insert("tip.replay", "Run again");
+    m.insert("tip.decrease", "Decrease");
+    m.insert("tip.increase", "Increase");
+    m.insert("tip.delete", "Delete");
+    m.insert("tip.match_case", "Match case");
+    m.insert("welcome.subtitle_empty", "Add a server to get started");
+    m.insert("welcome.import_ssh", "Import from ~/.ssh/config ({count})");
+    m.insert("err.copy", "Copy");
+    m.insert("err.copied", "Copied");
+    m.insert("palette.act.edit_conn", "Edit: {name}");
+    m.insert("palette.act.test_conn", "Test: {name}");
+    m.insert("palette.act.clone_conn", "Clone: {name}");
+    m.insert("palette.act.delete_conn", "Delete: {name}");
+    // Feature wiring: SFTP file operations, folder transfer, drag-and-drop,
+    // keyboard-interactive auth, process kill, listening ports, presets.
+    m.insert("sftp.new_folder", "New folder");
+    m.insert("sftp.rename", "Rename");
+    m.insert("sftp.permissions", "Permissions");
+    m.insert("sftp.delete", "Delete");
+    m.insert("sftp.new_folder_title", "New folder in {dir}");
+    m.insert("sftp.rename_title", "Rename \"{name}\"");
+    m.insert("sftp.chmod_title", "Permissions of \"{name}\"");
+    m.insert("sftp.name_hint", "A single name, without \"/\"");
+    m.insert("sftp.mode_hint", "Octal, e.g. 755 or 0644");
+    m.insert("sftp.err_name", "Enter a single file name: not empty, no \"/\", not \".\" or \"..\"");
+    m.insert("sftp.err_mode", "Enter 1-4 octal digits (0-7), e.g. 755");
+    m.insert("sftp.ok", "OK");
+    m.insert("sftp.apply", "Apply");
+    m.insert("sftp.confirm_delete", "Delete this file? This cannot be undone.");
+    m.insert("sftp.confirm_delete_dir", "Delete this folder and everything inside it? This cannot be undone.");
+    m.insert("sftp.confirm_chmod", "Change permissions to {mode}?");
+    m.insert("filebrowser.upload_dir", "^ Folder");
+    m.insert("filedialog.upload_dir", "Select folder to upload");
+    m.insert("filedialog.download_dir", "Choose where to save the folder");
+    m.insert("tip.upload_dir", "Upload a folder");
+    m.insert("tip.download_dir", "Download folder");
+    m.insert("transfer.busy", "A transfer is already running — wait for it, or cancel it first.");
+    m.insert("drop.no_target", "Nowhere to upload to: open a session and let the Files tab load a remote folder first.");
+    m.insert("quickcmd.accept_hint", "Tab / ↓ to accept · click to pick");
+    m.insert("auth.title", "Server authentication");
+    m.insert("auth.from_server", "Asked by the server; your answers go only to it. NeoShell never asks for the master password here.");
+    m.insert("auth.continue", "Continue");
+    m.insert("auth.queued", "{count} more waiting");
+    m.insert("auth.purpose.shell", "terminal session");
+    m.insert("auth.purpose.exec", "monitor / file transfer connection");
+    m.insert("auth.purpose.reconnect", "reconnect");
+    m.insert("auth.purpose.test", "connection test");
+    m.insert("auth.purpose.deploy", "key deployment");
+    m.insert("form.auth_interactive", "Interactive");
+    m.insert("form.auth_agent", "Agent");
+    m.insert("form.password_optional", "Password (optional)");
+    m.insert("form.interactive_hint", "For PAM / one-time-code logins. The server's questions appear in a dialog; a saved password answers a plain password prompt.");
+    m.insert("form.agent_hint", "Uses the keys loaded in your ssh-agent (SSH_AUTH_SOCK). Nothing is stored.");
+    m.insert("process.sigterm", "SIGTERM");
+    m.insert("process.sigkill", "SIGKILL");
+    m.insert("process.sigterm_tip", "Ask the process to exit");
+    m.insert("process.sigkill_tip", "Force-kill the process");
+    m.insert("process.confirm_kill", "Send {signal} to PID {pid}?");
+    m.insert("process.send_signal", "Send");
+    m.insert("bottom.ports", "Ports");
+    m.insert("ports.title", "Listening ports");
+    m.insert("ports.hint", "Click a row to inspect its process");
+    m.insert("ports.proto", "Proto");
+    m.insert("ports.addr", "Address");
+    m.insert("ports.port", "Port");
+    m.insert("ports.pid", "PID");
+    m.insert("ports.process", "Process");
+    m.insert("ports.loading", "Loading...");
+    m.insert("ports.empty", "No listening sockets found (ss / netstat may be missing on this host)");
+    m.insert("monitor.swap", "Swap");
+    m.insert("theme.preset", "Color scheme");
+    m.insert("shortcuts.desc.shift_select", "Select text even while a program (vim, htop, tmux) reads the mouse");
+    m.insert("shortcuts.desc.drop_upload", "Drop files or folders on the window to upload them to the remote folder");
+    m.insert("confirm.on_host", "on {host}");
+    m.insert("transfer.bad_local", "Cannot upload \"{path}\": it has no name to give the remote copy.");
+    // ssh/mod.rs: SFTP / kill / agent + interactive auth errors
+    m.insert("sftp.err.path_empty", "remote path is empty");
+    m.insert("sftp.err.path_control", "remote path contains a control character");
+    m.insert("sftp.err.path_relative", "remote path must be absolute: {path}");
+    m.insert("sftp.err.path_root", "refusing to operate on the filesystem root '/'");
+    m.insert("sftp.err.path_dotdot", "remote path must not contain '..': {path}");
+    m.insert("sftp.err.not_dir", "'{path}' exists and is not a directory");
+    m.insert("sftp.err.mkdir", "Failed to create remote directory '{path}': {err}");
+    m.insert("sftp.err.rename", "Failed to rename '{from}' to '{to}': {err}");
+    m.insert("sftp.err.bad_mode", "invalid permission bits: {mode}");
+    m.insert("sftp.err.chmod", "Failed to chmod '{path}' to {mode}: {err}");
+    m.insert("sftp.err.too_deep", "refusing to recurse past {max} levels at '{path}'");
+    m.insert("sftp.err.stat", "Failed to stat '{path}': {err}");
+    m.insert("sftp.err.list", "Failed to list '{path}': {err}");
+    m.insert("sftp.err.bad_entry", "the server listed an entry under '{path}' whose name cannot be deleted exactly as listed — nothing was deleted");
+    m.insert("sftp.err.unaddressable", "'{path}' cannot be addressed exactly from this system: its SFTP library would send '\\' as '/' — nothing was deleted");
+    m.insert("sftp.err.delete", "Failed to delete '{path}': {err}");
+    m.insert("sftp.err.rmdir", "Failed to remove directory '{path}': {err}");
+    m.insert("process.err.kill_exit", "kill -{signal} {pid} failed (exit {status})");
+    m.insert("process.err.kill", "kill -{signal} {pid} failed: {detail}");
+    m.insert("auth.err.no_handler", "the server asked an interactive question but no prompt handler is registered");
+    m.insert("auth.err.handler_gone", "the prompt handler is gone");
+    m.insert("auth.err.no_answer", "no answer to the server's challenge: {err}");
+    m.insert("auth.err.agent_unavailable", "ssh-agent unavailable: {err}");
+    m.insert("auth.err.agent_connect", "could not connect to ssh-agent: {err} (is SSH_AUTH_SOCK set?)");
+    m.insert("auth.err.agent_list", "could not list ssh-agent identities: {err}");
+    m.insert("auth.err.agent_read", "could not read ssh-agent identities: {err}");
+    m.insert("auth.err.agent_empty", "ssh-agent holds no identities (run `ssh-add` first)");
+    m.insert("auth.err.agent_rejected", "no ssh-agent identity was accepted ({count} tried, last: {last})");
+    // ssh/mod.rs + proxy.rs: exec-connection rebuild gate, proxy credentials
+    m.insert("exec.err.needs_reconnect", "Monitoring and file access for this session are paused: the connection behind them dropped, and re-opening it would mean another sign-in challenge. Reconnect the session to resume.");
+    m.insert("exec.err.rebuilding", "The connection behind monitoring and file access is being re-established — try again in a moment.");
+    m.insert("exec.err.cooldown", "The connection behind monitoring and file access could not be re-established; the next attempt is in {secs}s.");
+    m.insert("proxy.err.missing", "Proxy '{id}' is configured for this connection but no longer exists. Refusing to connect directly — re-create the proxy or clear it from the connection.");
+    m.insert("proxy.err.vault_locked", "Vault is locked — unlock it to reconnect through proxy '{name}'.");
+    m.insert("proxy.err.no_password", "Proxy '{name}' has a username but no password — unlock the vault, or re-enter the password in the proxy settings.");
+    // ssh/mod.rs: reconnect cancel, skipped names, local folder errors
+    m.insert("ssh.err.reconnect_cancelled", "Reconnect cancelled: the sign-in challenge was dismissed.");
+    m.insert("sftp.err.skipped_names", "{count} item(s) skipped: names not representable on this system.");
+    m.insert("transfer.err.not_dir", "'{path}' is not a directory");
+    m.insert("transfer.err.local_empty", "The local directory path is empty.");
+    m.insert("transfer.err.local_mkdir", "Failed to create local directory '{path}': {err}");
+    m.insert("transfer.err.local_read_dir", "Failed to read local directory '{path}': {err}");
+    // app.rs: unlock-time history warning, parked monitoring, skipped items
+    m.insert("history.warn.title", "Command history not saved");
+    m.insert("history.warn.unsettled", "The previous write of the command history has not finished, so the commands you run in this session will not be saved. They stay in the history panel until the vault locks or NeoShell quits.");
+    m.insert("history.warn.unreadable", "The command history file could not be read, nor moved aside to start a new one, so the commands you run in this session will not be saved. See the log for details.");
+    m.insert("monitor.parked", "Monitoring paused — this server requires a verification code");
+    m.insert("monitor.reconnect", "Reconnect monitoring");
+    m.insert("monitor.reconnecting", "Reconnecting...");
+    m.insert("notice.skipped_title", "Finished — some items were skipped");
+    // ssh/mod.rs: type-checked SFTP ops, backslash paths, exec sign-in, session ids
+    m.insert("sftp.err.changed", "'{path}' has changed since it was listed — refresh and try again. Nothing was changed.");
+    m.insert("sftp.err.chmod_symlink", "'{path}' is a symbolic link: over SFTP its permissions cannot be changed without changing the file it points to instead. Nothing was changed.");
+    m.insert("sftp.err.path_backslash", "remote path must not contain a backslash: {path}");
+    m.insert("auth.err.exec_interactive", "Keyboard-interactive sign-in failed for the monitoring / file transfer connection: {err}");
+    m.insert("auth.err.exec_agent", "SSH agent sign-in failed for the monitoring / file transfer connection: {err}");
+    m.insert("ssh.err.bad_session_id", "Session id '{id}' is invalid or already in use.");
+    // tunnel.rs: forward-rule parse errors, tunnel store and runtime failures
+    m.insert("tunnel.err.bad_socks_port", "bad SOCKS5 listen port '{port}': {err}");
+    m.insert("tunnel.err.socks_port_zero", "SOCKS5 listen port must not be 0");
+    m.insert("tunnel.err.bad_remote", "invalid remote: {remote}");
+    m.insert("tunnel.err.bad_remote_port", "bad remote port '{port}': {err}");
+    m.insert("tunnel.err.bad_local_port", "bad local port '{port}': {err}");
+    m.insert("tunnel.err.bad_rule", "expected 'LOCAL:REMOTE_HOST:REMOTE_PORT', 'REMOTE:PORT->LOCAL:PORT', 'R:LOCAL:REMOTE_HOST:REMOTE_PORT' or 'D:LOCAL', got '{rule}'");
+    m.insert("tunnel.err.missing_host", "missing remote host in '{rule}'");
+    m.insert("tunnel.err.not_found", "Tunnel '{id}' not found");
+    m.insert("tunnel.err.vault_not_retained", "vault did not retain the credential for tunnel '{id}' — leaving {path} as it is");
+    m.insert("tunnel.err.bind", "bind {addr}: {err}");
+    m.insert("tunnel.err.remote_listen", "remote listen on {bind}:{port}: {err} (the server may need GatewayPorts for a non-loopback bind)");
+    m.insert("tunnel.err.remote_accept", "remote accept on port {port}: {err}");
+    // app.rs: type-stated SFTP confirmations, fresh kill check, groups, i18n pass
+    m.insert("sftp.kind.file", "file");
+    m.insert("sftp.kind.dir", "folder");
+    m.insert("sftp.kind.symlink", "symbolic link");
+    m.insert("sftp.kind.other", "special file");
+    m.insert("sftp.confirm_delete_named", "Delete the {kind} “{name}”? This cannot be undone.");
+    m.insert("sftp.confirm_delete_dir_named", "Delete the folder “{name}” and everything inside it? This cannot be undone.");
+    m.insert("sftp.confirm_delete_link_named", "Delete the symbolic link “{name}”? Only the link is removed; what it points to is left alone.");
+    m.insert("sftp.confirm_chmod_named", "Change the permissions of the {kind} “{name}” to {mode}?");
+    m.insert("sftp.rename_title_named", "Rename the {kind} “{name}”");
+    m.insert("sftp.chmod_title_named", "Permissions of the {kind} “{name}”");
+    m.insert("sftp.name_marks", "In the name, · stands for a space at its start or end or next to another space, and \\u{…} for a character that would not show.");
+    m.insert("process.err.gone", "Process {pid} is no longer running. No signal was sent.");
+    m.insert("process.err.changed", "PID {pid} now belongs to a different process than the one you confirmed. No signal was sent.");
+    m.insert("process.signal_n", "signal {n}");
+    m.insert("files.parked", "File browsing paused — this server requires a verification code");
+    m.insert("tunnel.err.start", "Could not start the tunnel: {err}");
+    m.insert("shortcuts.key.drag", "Drag");
+    m.insert("shortcuts.key.shift_drag", "Shift+Drag");
+    m.insert("shortcuts.key.right_click", "Right-click");
+    m.insert("shortcuts.key.drop", "Drop");
+    m.insert("tab.split_suffix", "{title} (split)");
+    m.insert("sidebar.collapse_all", "Collapse all groups");
+    m.insert("sidebar.expand_all", "Expand all groups");
+    m.insert("palette.act.collapse_group", "Collapse group “{name}”");
+    m.insert("palette.act.expand_group", "Expand group “{name}”");
+    m.insert("sftp.err.unverified", "'{path}' was not changed: this server offers no SFTP, so the folder was listed from the shell and its entries cannot be changed safely from the file browser.");
+    m.insert("sftp.err.not_utf8", "'{path}' cannot be addressed exactly from this system: its name on the server is not valid UTF-8, or could not be read exactly. Nothing was changed.");
+    m.insert("sftp.err.start", "Could not start SFTP: {err}");
+    // app.rs: form validation, copied connection, reconnect marker, log viewer
+    m.insert("form.err.title", "Check the form");
+    m.insert("form.err.port", "“{port}” is not a port. Enter a number from 1 to 65535.");
+    m.insert("conn.copy_name", "{name} (Copy)");
+    m.insert("tab.reconnecting", "{title} [Reconnecting... {n}]");
+    m.insert("tunnel.err.no_forwards", "At least one forward rule is required.");
+    m.insert("tunnel.err.forward_parse", "Forward rule not understood: {err}");
+    m.insert("log.truncated", "…(showing the last {kb} KB)…");
+    m.insert("log.err.read", "Cannot read the log file {path}: {err}");
+    m.insert("term.sz_refused", "[NeoShell] sz: refusing unsafe remote filename {name}");
+    m.insert("status.sync_badge", "SYNC {n}");
     m
 });
 
@@ -680,6 +883,207 @@ static ZH: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
     m.insert("status.shortcuts", "{mod}+H:历史  {mod}+T:连接");
     m.insert("welcome.select", "从左侧选择一个连接以开始");
     m.insert("confirm.delete", "确认删除 \"{name}\"?");
+    m.insert("vault.locked_secret", "保险库已锁定 — 解锁后才能使用该凭据。");
+    m.insert("vault.no_credential", "没有可用凭据 — 请解锁保险库，或在设置中重新填写。");
+    m.insert("lock.now", "锁定");
+    m.insert("settings.lock_now", "立即锁定");
+    m.insert("settings.lock_timeout", "自动锁定");
+    m.insert("settings.lock_never", "从不");
+    m.insert("settings.lock_minutes", "{n} 分钟");
+    m.insert("shortcuts.desc.lock", "立即锁定保险库（会话保持连接）");
+    // 界面整理：纯图标控件的提示、欢迎页、复制错误信息、命令面板中的连接操作
+    m.insert("tip.sidebar_hide", "隐藏侧边栏");
+    m.insert("tip.sidebar_show", "显示侧边栏");
+    m.insert("tip.panel_hide", "收起底部面板");
+    m.insert("tip.panel_show", "展开底部面板");
+    m.insert("tip.close", "关闭");
+    m.insert("tip.close_tab", "关闭标签页");
+    m.insert("tip.parent_dir", "上级目录");
+    m.insert("tip.replay", "再次执行");
+    m.insert("tip.decrease", "减小");
+    m.insert("tip.increase", "增大");
+    m.insert("tip.delete", "删除");
+    m.insert("tip.match_case", "区分大小写");
+    m.insert("welcome.subtitle_empty", "添加一台服务器即可开始");
+    m.insert("welcome.import_ssh", "从 ~/.ssh/config 导入（{count}）");
+    m.insert("err.copy", "复制");
+    m.insert("err.copied", "已复制");
+    m.insert("palette.act.edit_conn", "编辑：{name}");
+    m.insert("palette.act.test_conn", "测试：{name}");
+    m.insert("palette.act.clone_conn", "复制：{name}");
+    m.insert("palette.act.delete_conn", "删除：{name}");
+    // 功能接入：SFTP 文件操作、文件夹传输、拖放上传、键盘交互认证、结束进程、监听端口、配色方案
+    m.insert("sftp.new_folder", "新建文件夹");
+    m.insert("sftp.rename", "重命名");
+    m.insert("sftp.permissions", "权限");
+    m.insert("sftp.delete", "删除");
+    m.insert("sftp.new_folder_title", "在 {dir} 中新建文件夹");
+    m.insert("sftp.rename_title", "重命名“{name}”");
+    m.insert("sftp.chmod_title", "“{name}”的权限");
+    m.insert("sftp.name_hint", "单个名称，不能包含“/”");
+    m.insert("sftp.mode_hint", "八进制，例如 755 或 0644");
+    m.insert("sftp.err_name", "请输入单个文件名：不能为空、不能包含“/”，也不能是“.”或“..”");
+    m.insert("sftp.err_mode", "请输入 1-4 位八进制数字（0-7），例如 755");
+    m.insert("sftp.ok", "确定");
+    m.insert("sftp.apply", "应用");
+    m.insert("sftp.confirm_delete", "删除此文件？此操作无法撤销。");
+    m.insert("sftp.confirm_delete_dir", "删除此文件夹及其中的全部内容？此操作无法撤销。");
+    m.insert("sftp.confirm_chmod", "将权限修改为 {mode}？");
+    m.insert("filebrowser.upload_dir", "^ 文件夹");
+    m.insert("filedialog.upload_dir", "选择要上传的文件夹");
+    m.insert("filedialog.download_dir", "选择文件夹的保存位置");
+    m.insert("tip.upload_dir", "上传文件夹");
+    m.insert("tip.download_dir", "下载文件夹");
+    m.insert("transfer.busy", "已有传输正在进行——请等待完成，或先取消。");
+    m.insert("drop.no_target", "没有可上传的位置：请先打开会话，并等待“文件”页加载出远程目录。");
+    m.insert("quickcmd.accept_hint", "Tab / ↓ 采用 · 点击选择");
+    m.insert("auth.title", "服务器身份验证");
+    m.insert("auth.from_server", "这是服务器的提问，答案只会发送给该服务器。NeoShell 不会在这里索要主密码。");
+    m.insert("auth.continue", "继续");
+    m.insert("auth.queued", "还有 {count} 个等待回答");
+    m.insert("auth.purpose.shell", "终端会话");
+    m.insert("auth.purpose.exec", "监控 / 文件传输连接");
+    m.insert("auth.purpose.reconnect", "重新连接");
+    m.insert("auth.purpose.test", "连接测试");
+    m.insert("auth.purpose.deploy", "部署公钥");
+    m.insert("form.auth_interactive", "交互式");
+    m.insert("form.auth_agent", "ssh-agent");
+    m.insert("form.password_optional", "密码（可选）");
+    m.insert("form.interactive_hint", "用于 PAM / 一次性验证码登录。服务器的提问会在对话框中显示；已保存的密码会自动回答普通的密码提示。");
+    m.insert("form.agent_hint", "使用 ssh-agent（SSH_AUTH_SOCK）中已加载的密钥，不保存任何凭据。");
+    m.insert("process.sigterm", "SIGTERM 终止");
+    m.insert("process.sigkill", "SIGKILL 强杀");
+    m.insert("process.sigterm_tip", "请求进程退出");
+    m.insert("process.sigkill_tip", "强制结束进程");
+    m.insert("process.confirm_kill", "向 PID {pid} 发送 {signal}？");
+    m.insert("process.send_signal", "发送");
+    m.insert("bottom.ports", "端口");
+    m.insert("ports.title", "监听端口");
+    m.insert("ports.hint", "点击一行查看对应进程");
+    m.insert("ports.proto", "协议");
+    m.insert("ports.addr", "地址");
+    m.insert("ports.port", "端口");
+    m.insert("ports.pid", "PID");
+    m.insert("ports.process", "进程");
+    m.insert("ports.loading", "加载中...");
+    m.insert("ports.empty", "未发现监听端口（该主机可能没有 ss / netstat）");
+    m.insert("monitor.swap", "交换");
+    m.insert("theme.preset", "配色方案");
+    m.insert("shortcuts.desc.shift_select", "即使程序（vim、htop、tmux）占用鼠标，也能选择文本");
+    m.insert("shortcuts.desc.drop_upload", "把文件或文件夹拖到窗口上，即可上传到远程目录");
+    m.insert("confirm.on_host", "主机：{host}");
+    m.insert("transfer.bad_local", "无法上传“{path}”：它没有可用于远程副本的名称。");
+    // ssh/mod.rs: SFTP / kill / agent + interactive auth errors
+    m.insert("sftp.err.path_empty", "远程路径为空");
+    m.insert("sftp.err.path_control", "远程路径包含控制字符");
+    m.insert("sftp.err.path_relative", "远程路径必须是绝对路径：{path}");
+    m.insert("sftp.err.path_root", "拒绝对文件系统根目录“/”执行此操作");
+    m.insert("sftp.err.path_dotdot", "远程路径不能包含“..”：{path}");
+    m.insert("sftp.err.not_dir", "“{path}”已存在，但不是目录");
+    m.insert("sftp.err.mkdir", "创建远程目录“{path}”失败：{err}");
+    m.insert("sftp.err.rename", "将“{from}”重命名为“{to}”失败：{err}");
+    m.insert("sftp.err.bad_mode", "无效的权限位：{mode}");
+    m.insert("sftp.err.chmod", "将“{path}”的权限修改为 {mode} 失败：{err}");
+    m.insert("sftp.err.too_deep", "“{path}”处的目录层级超过 {max} 层，已停止");
+    m.insert("sftp.err.stat", "读取“{path}”的属性失败：{err}");
+    m.insert("sftp.err.list", "列出“{path}”的内容失败：{err}");
+    m.insert("sftp.err.bad_entry", "服务器在“{path}”下列出的某个条目名称无法按原样删除——未删除任何内容");
+    m.insert("sftp.err.unaddressable", "无法从本系统精确定位“{path}”：此处的 SFTP 库会把“\\”当作“/”发送——未删除任何内容");
+    m.insert("sftp.err.delete", "删除“{path}”失败：{err}");
+    m.insert("sftp.err.rmdir", "删除目录“{path}”失败：{err}");
+    m.insert("process.err.kill_exit", "kill -{signal} {pid} 失败（退出码 {status}）");
+    m.insert("process.err.kill", "kill -{signal} {pid} 失败：{detail}");
+    m.insert("auth.err.no_handler", "服务器发起了交互式提问，但没有注册提示处理程序");
+    m.insert("auth.err.handler_gone", "提示处理程序已不可用");
+    m.insert("auth.err.no_answer", "未回答服务器的验证提问：{err}");
+    m.insert("auth.err.agent_unavailable", "ssh-agent 不可用：{err}");
+    m.insert("auth.err.agent_connect", "无法连接 ssh-agent：{err}（是否已设置 SSH_AUTH_SOCK？）");
+    m.insert("auth.err.agent_list", "无法列出 ssh-agent 中的身份：{err}");
+    m.insert("auth.err.agent_read", "无法读取 ssh-agent 中的身份：{err}");
+    m.insert("auth.err.agent_empty", "ssh-agent 中没有任何身份（请先运行 `ssh-add`）");
+    m.insert("auth.err.agent_rejected", "服务器未接受任何 ssh-agent 身份（已尝试 {count} 个，最后一个：{last}）");
+    // ssh/mod.rs + proxy.rs: exec-connection rebuild gate, proxy credentials
+    m.insert("exec.err.needs_reconnect", "该会话的监控与文件访问已暂停：其后台连接已断开，重新建立需要再次完成登录验证。请重新连接该会话以恢复。");
+    m.insert("exec.err.rebuilding", "正在重新建立监控与文件访问所用的连接，请稍后重试。");
+    m.insert("exec.err.cooldown", "无法重新建立监控与文件访问所用的连接，将在 {secs} 秒后再次尝试。");
+    m.insert("proxy.err.missing", "此连接配置的代理“{id}”已不存在。为避免绕过代理，已拒绝直接连接 — 请重新创建该代理，或在连接设置中清除它。");
+    m.insert("proxy.err.vault_locked", "保险库已锁定 — 解锁后才能通过代理“{name}”重新连接。");
+    m.insert("proxy.err.no_password", "代理“{name}”设置了用户名但没有密码 — 请解锁保险库，或在代理设置中重新填写密码。");
+    // ssh/mod.rs: reconnect cancel, skipped names, local folder errors
+    m.insert("ssh.err.reconnect_cancelled", "已取消重新连接：登录验证已被关闭。");
+    m.insert("sftp.err.skipped_names", "已跳过 {count} 个项目：其名称无法在本系统上表示。");
+    m.insert("transfer.err.not_dir", "“{path}”不是目录");
+    m.insert("transfer.err.local_empty", "本地目录路径为空。");
+    m.insert("transfer.err.local_mkdir", "创建本地目录“{path}”失败：{err}");
+    m.insert("transfer.err.local_read_dir", "读取本地目录“{path}”失败：{err}");
+    // app.rs: unlock-time history warning, parked monitoring, skipped items
+    m.insert("history.warn.title", "命令历史未保存");
+    m.insert("history.warn.unsettled", "上一次命令历史写入尚未完成，本次会话中运行的命令将不会被保存。在保险库锁定或 NeoShell 退出之前，它们仍会显示在历史面板中。");
+    m.insert("history.warn.unreadable", "无法读取命令历史文件，也无法将其移到一旁以新建文件，本次会话中运行的命令将不会被保存。详情请查看日志。");
+    m.insert("monitor.parked", "监控已暂停——此服务器需要验证码");
+    m.insert("monitor.reconnect", "重新连接监控");
+    m.insert("monitor.reconnecting", "正在重新连接...");
+    m.insert("notice.skipped_title", "已完成——部分项目已跳过");
+    // ssh/mod.rs: type-checked SFTP ops, backslash paths, exec sign-in, session ids
+    m.insert("sftp.err.changed", "“{path}”在列出后已发生变化——请刷新后重试。未做任何修改。");
+    m.insert("sftp.err.chmod_symlink", "“{path}”是符号链接：通过 SFTP 修改它的权限，实际会改到它所指向的文件上。未做任何修改。");
+    m.insert("sftp.err.path_backslash", "远程路径不能包含反斜杠：{path}");
+    m.insert("auth.err.exec_interactive", "监控 / 文件传输连接的键盘交互式登录失败：{err}");
+    m.insert("auth.err.exec_agent", "监控 / 文件传输连接的 SSH agent 登录失败：{err}");
+    m.insert("ssh.err.bad_session_id", "会话 ID“{id}”无效或已被占用。");
+    // tunnel.rs: forward-rule parse errors, tunnel store and runtime failures
+    m.insert("tunnel.err.bad_socks_port", "SOCKS5 监听端口“{port}”无效：{err}");
+    m.insert("tunnel.err.socks_port_zero", "SOCKS5 监听端口不能为 0");
+    m.insert("tunnel.err.bad_remote", "远端地址无效：{remote}");
+    m.insert("tunnel.err.bad_remote_port", "远端端口“{port}”无效：{err}");
+    m.insert("tunnel.err.bad_local_port", "本地端口“{port}”无效：{err}");
+    m.insert("tunnel.err.bad_rule", "无法识别转发规则“{rule}”，应为 LOCAL:REMOTE_HOST:REMOTE_PORT、REMOTE:PORT->LOCAL:PORT、R:LOCAL:REMOTE_HOST:REMOTE_PORT 或 D:LOCAL");
+    m.insert("tunnel.err.missing_host", "转发规则“{rule}”缺少远端主机");
+    m.insert("tunnel.err.not_found", "未找到隧道“{id}”");
+    m.insert("tunnel.err.vault_not_retained", "保险库未能保存隧道“{id}”的凭据——{path} 保持原样");
+    m.insert("tunnel.err.bind", "无法监听本地地址 {addr}：{err}");
+    m.insert("tunnel.err.remote_listen", "无法在 SSH 主机上监听 {bind}:{port}：{err}（绑定非回环地址时，服务器可能需要开启 GatewayPorts）");
+    m.insert("tunnel.err.remote_accept", "SSH 主机端口 {port} 接受连接失败：{err}");
+    // app.rs: type-stated SFTP confirmations, fresh kill check, groups, i18n pass
+    m.insert("sftp.kind.file", "文件");
+    m.insert("sftp.kind.dir", "文件夹");
+    m.insert("sftp.kind.symlink", "符号链接");
+    m.insert("sftp.kind.other", "特殊文件");
+    m.insert("sftp.confirm_delete_named", "删除{kind}“{name}”？此操作无法撤销。");
+    m.insert("sftp.confirm_delete_dir_named", "删除文件夹“{name}”及其中的全部内容？此操作无法撤销。");
+    m.insert("sftp.confirm_delete_link_named", "删除符号链接“{name}”？只删除链接本身，它指向的内容保持不变。");
+    m.insert("sftp.confirm_chmod_named", "将{kind}“{name}”的权限修改为 {mode}？");
+    m.insert("sftp.rename_title_named", "重命名{kind}“{name}”");
+    m.insert("sftp.chmod_title_named", "{kind}“{name}”的权限");
+    m.insert("sftp.name_marks", "名称中的 · 表示位于开头、结尾或与其他空格相连的空格，\\u{…} 表示原本不可见的字符。");
+    m.insert("process.err.gone", "进程 {pid} 已不在运行，未发送任何信号。");
+    m.insert("process.err.changed", "PID {pid} 现在对应的已不是您确认的那个进程，未发送任何信号。");
+    m.insert("process.signal_n", "信号 {n}");
+    m.insert("files.parked", "文件浏览已暂停——此服务器需要验证码");
+    m.insert("tunnel.err.start", "无法启动隧道：{err}");
+    m.insert("shortcuts.key.drag", "拖动");
+    m.insert("shortcuts.key.shift_drag", "Shift+拖动");
+    m.insert("shortcuts.key.right_click", "右键单击");
+    m.insert("shortcuts.key.drop", "拖放");
+    m.insert("tab.split_suffix", "{title}（分屏）");
+    m.insert("sidebar.collapse_all", "折叠全部分组");
+    m.insert("sidebar.expand_all", "展开全部分组");
+    m.insert("palette.act.collapse_group", "折叠分组“{name}”");
+    m.insert("palette.act.expand_group", "展开分组“{name}”");
+    m.insert("sftp.err.unverified", "未修改“{path}”：该服务器不提供 SFTP，目录内容是通过 shell 列出的，无法在文件浏览器中安全地修改其中的条目。");
+    m.insert("sftp.err.not_utf8", "无法从本系统精确定位“{path}”：它在服务器上的名称不是有效的 UTF-8，或无法被准确读取。未做任何修改。");
+    m.insert("sftp.err.start", "无法启动 SFTP：{err}");
+    // app.rs: form validation, copied connection, reconnect marker, log viewer
+    m.insert("form.err.title", "请检查表单");
+    m.insert("form.err.port", "“{port}”不是有效的端口，请输入 1 到 65535 之间的数字。");
+    m.insert("conn.copy_name", "{name}（副本）");
+    m.insert("tab.reconnecting", "{title} [正在重连… {n}]");
+    m.insert("tunnel.err.no_forwards", "至少需要一条转发规则。");
+    m.insert("tunnel.err.forward_parse", "无法识别的转发规则：{err}");
+    m.insert("log.truncated", "…（仅显示最后 {kb} KB）…");
+    m.insert("log.err.read", "无法读取日志文件 {path}：{err}");
+    m.insert("term.sz_refused", "[NeoShell] sz：已拒绝不安全的远程文件名 {name}");
+    m.insert("status.sync_badge", "同步 {n}");
     m
 });
 
@@ -695,12 +1099,45 @@ pub fn t(key: &str) -> &'static str {
 
 /// Format a translated string with named parameters.
 /// Usage: `tf("update.ready", &[("version", "1.0")])`
+///
+/// One pass over the template: each `{name}` that names a parameter becomes
+/// its value, once, and a value is never scanned again. Replacing the
+/// parameters one after another substituted into the values already put in —
+/// a remote file named "{mode}" turned into the mode in the chmod error. A
+/// `{…}` that names no parameter stays as written.
 pub fn tf(key: &str, params: &[(&str, &str)]) -> String {
-    let mut s = t(key).to_string();
-    for (name, value) in params {
-        s = s.replace(&format!("{{{}}}", name), value);
+    fill(t(key), params)
+}
+
+/// [`tf`] on a template already looked up.
+fn fill(template: &str, params: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let value = after.find('}').and_then(|close| {
+            let name = &after[..close];
+            params
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| (close, *v))
+        });
+        match value {
+            Some((close, v)) => {
+                out.push_str(v);
+                rest = &after[close + 1..];
+            }
+            // Not a parameter: the brace is text, and the scan goes on
+            // right after it — "{{mode}}" is "{" and then "{mode}".
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
     }
-    s
+    out.push_str(rest);
+    out
 }
 
 pub fn current_locale() -> String {
@@ -709,4 +1146,58 @@ pub fn current_locale() -> String {
 
 pub fn set_locale(locale: &str) {
     *LOCALE.write() = locale.to_string();
+}
+
+#[cfg(test)]
+mod tf_tests {
+    use super::{fill, tf};
+
+    /// `sftp.err.chmod`, as both tables have it.
+    const CHMOD: [&str; 2] = [
+        "Failed to chmod '{path}' to {mode}: {err}",
+        "将“{path}”的权限修改为 {mode} 失败：{err}",
+    ];
+
+    #[test]
+    fn a_value_is_put_in_as_it_is_and_never_scanned_again() {
+        // A remote file named "{mode}": the sequential replace turned it into
+        // "/srv/755" in the chmod error.
+        let params = [("path", "/srv/{mode}"), ("mode", "755"), ("err", "denied")];
+        assert_eq!(
+            fill(CHMOD[0], &params),
+            "Failed to chmod '/srv/{mode}' to 755: denied"
+        );
+        // A value holding every placeholder name, given for every parameter.
+        let every = "{path}{mode}{err}{}{unknown}";
+        let params = [("path", every), ("mode", every), ("err", every)];
+        assert_eq!(
+            fill(CHMOD[0], &params),
+            format!("Failed to chmod '{0}' to {0}: {0}", every)
+        );
+    }
+
+    #[test]
+    fn tf_fills_a_real_template_in_one_pass() {
+        // Either language: another test in this binary may flip the locale.
+        let got = tf(
+            "sftp.err.chmod",
+            &[("path", "/srv/{mode}"), ("mode", "755"), ("err", "{path}")],
+        );
+        let want = [
+            "Failed to chmod '/srv/{mode}' to 755: {path}",
+            "将“/srv/{mode}”的权限修改为 755 失败：{path}",
+        ];
+        assert!(want.contains(&got.as_str()), "{}", got);
+    }
+
+    #[test]
+    fn braces_that_name_no_parameter_stay_as_written() {
+        assert_eq!(fill("{a} {b} {} {", &[("a", "1")]), "1 {b} {} {");
+        assert_eq!(fill("{{a}}", &[("a", "1")]), "{1}");
+        assert_eq!(fill("{a}{a}", &[("a", "x")]), "xx");
+        assert_eq!(fill("no parameters", &[]), "no parameters");
+        assert_eq!(fill("中{a}文", &[("a", "“x”")]), "中“x”文");
+        // The first of two parameters with the same name, as before.
+        assert_eq!(fill("{a}", &[("a", "1"), ("a", "2")]), "1");
+    }
 }

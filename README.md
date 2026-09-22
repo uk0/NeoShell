@@ -94,6 +94,28 @@ Master Password
 - Vault file is binary garbage without correct password
 - Dual SSH connections per session (interactive + exec) — no lock contention
 
+## Upgrading to 0.7.0
+
+The first time you unlock 0.7.0, it moves proxy and tunnel credentials
+(password, key path, passphrase) out of `proxies.json` and `tunnels.json` and
+into the encrypted `vault.json`.
+
+Versions before 0.7.0 cannot read the new layout. They show empty proxy and
+tunnel lists, and the first time they save the vault — adding, editing or
+deleting a connection — they write it back without the moved credentials.
+Downgrading after that first unlock therefore loses your stored proxy and
+tunnel credentials.
+
+To keep the option of going back, copy `vault.json`, `proxies.json` and
+`tunnels.json` somewhere safe before the first unlock, and restore all three
+before starting an older version. They are in:
+
+| OS | Folder |
+|----|--------|
+| macOS | `~/Library/Application Support/neoshell/` |
+| Linux | `~/.local/share/neoshell/` |
+| Windows | `%APPDATA%\neoshell\` |
+
 ## Building
 
 ### Prerequisites

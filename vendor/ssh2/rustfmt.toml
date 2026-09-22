@@ -1,0 +1,4 @@
+# NeoShell: vendored upstream code. As a workspace member this crate is reached
+# by `cargo fmt --all`; leave it alone so it stays byte-identical to ssh2 0.9.5
+# apart from the change recorded in PATCHES.md.
+disable_all_formatting = true

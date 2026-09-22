@@ -1,5 +1,6 @@
 [workspace]
-members = ["launcher", "core"]
+# The vendored crates are members so `cargo test --workspace` runs their patch tests on every OS.
+members = ["launcher", "core", "vendor/ssh2", "vendor/iced_winit"]
 resolver = "2"
 
 [profile.release]
@@ -8,3 +9,9 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# ssh2 0.9.5 + one fix (Windows panicked on non-UTF-8 SFTP names): see mkpath in vendor/ssh2/src/sftp.rs
+[patch.crates-io]
+ssh2 = { path = "vendor/ssh2" }
+# iced_winit 0.13.0 + input method support (CJK typing): see vendor/iced_winit/PATCHES.md
+iced_winit = { path = "vendor/iced_winit" }

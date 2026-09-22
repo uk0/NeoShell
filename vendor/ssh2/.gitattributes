@@ -1,0 +1,5 @@
+# NeoShell: keep the vendored crate byte-identical to the crates.io release.
+# Several upstream src files use CRLF, and core.autocrlf=input would otherwise
+# rewrite them to LF on commit, so `diff -r` against upstream would show every
+# line as changed. Store everything here exactly as it is on disk.
+* -text

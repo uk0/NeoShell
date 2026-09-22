@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use crate::storage::{ConnectionStore, ProxySecret};
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -60,88 +63,375 @@ pub struct ProxyTestResult {
 }
 
 // ---------------------------------------------------------------------------
-// Proxy storage (plain JSON, owner-only on disk)
+// Proxy storage
 //
-// NOT encrypted: `password` and `passphrase` are still written in the clear.
-// Moving them into the vault is tracked separately; until then 0600 and an
-// owner-only directory are the whole protection, which is why every write goes
-// through `storage::write_private` rather than `std::fs::write`.
+// proxies.json keeps only what the UI needs to list a proxy while the vault is
+// locked — id, name, type, host, port, username. `password`, `private_key` and
+// `passphrase` live in the vault under `proxy:<id>`, AES-256-GCM under the same
+// DEK as a connection. A bastion is usually the more privileged hop, so it gets
+// the same protection as the host behind it rather than 0600 alone.
+//
+// Entries written before 0.7.0 still carry the secret inline; `migrate_secrets`
+// moves them across exactly once, and `schema` records that it happened.
 // ---------------------------------------------------------------------------
 
+/// On-disk schema for proxies.json.
+///
+/// * 0 — bare JSON array, `password` / `private_key` / `passphrase` inline.
+/// * 1 — `{ "schema": 1, "proxies": [...] }`, secrets in the vault.
+pub const PROXY_SCHEMA: u32 = 1;
+
+/// Vault key holding this proxy's credentials.
+pub fn proxy_secret_key(id: &str) -> String {
+    format!("proxy:{}", id)
+}
+
+/// The schema-1 document. Both fields default, so `{}` and a file written by a
+/// future build that adds a field still parse.
+#[derive(Serialize, Deserialize, Default)]
+struct ProxyFile {
+    #[serde(default)]
+    schema: u32,
+    #[serde(default)]
+    proxies: Vec<ProxyConfig>,
+}
+
 pub struct ProxyStore {
-    path: std::path::PathBuf,
+    path: PathBuf,
+    /// An explicitly supplied vault. `None` means "ask the process-wide
+    /// registry at the point of use" — `new()` runs inside the app's `Default`,
+    /// which is before the vault has been registered.
+    vault: Option<Arc<ConnectionStore>>,
 }
 
 impl ProxyStore {
+    /// The normal entry point. Resolves the process-wide vault lazily —
+    /// `establish_tcp` builds a store from an SSH worker thread that has no
+    /// other way to reach one.
     pub fn new() -> Self {
+        Self::with_vault(None)
+    }
+
+    /// `new`, with the vault handle supplied explicitly.
+    pub fn with_vault(vault: Option<Arc<ConnectionStore>>) -> Self {
         let dir = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .unwrap_or_else(|| PathBuf::from("."))
             .join("neoshell");
         if let Err(e) = crate::storage::create_dir_private(&dir) {
             log::error!("failed to create data dir {}: {}", dir.display(), e);
         }
-        let store = Self {
-            path: dir.join("proxies.json"),
-        };
+        let store = Self::at(dir.join("proxies.json"), vault);
         // A file written by a pre-0.7.0 build is 0644 on disk; narrow it now
         // rather than waiting for the next save to rewrite it.
         crate::storage::tighten_permissions(&store.path);
         store
     }
 
-    pub fn load(&self) -> Vec<ProxyConfig> {
-        let data = match std::fs::read_to_string(&self.path) {
-            Ok(d) => d,
-            Err(_) => return Vec::new(),
-        };
-        serde_json::from_str(&data).unwrap_or_default()
+    /// Explicit path — `new()` is the real entry point; this is for tests,
+    /// including the ones in `ssh` that drive the connect path.
+    pub(crate) fn at(path: PathBuf, vault: Option<Arc<ConnectionStore>>) -> Self {
+        Self { path, vault }
     }
 
-    /// Replace the stored list, atomically and owner-only.
+    /// The vault to use: the explicit handle, else whatever is registered.
+    /// `None` once it is locked — a locked vault is no more usable than none.
+    fn vault_handle(&self) -> Option<Arc<ConnectionStore>> {
+        self.vault
+            .clone()
+            .or_else(crate::storage::global_vault)
+            .filter(|v| v.is_unlocked())
+    }
+
+    /// The vault, or the reason it cannot be used. Never falls back to writing
+    /// a credential into proxies.json in the clear.
+    fn vault(&self) -> Result<Arc<ConnectionStore>, String> {
+        self.vault_handle()
+            .ok_or_else(|| crate::i18n::t("vault.locked_secret").to_string())
+    }
+
+    fn read_file(&self) -> ProxyFile {
+        let data = match std::fs::read_to_string(&self.path) {
+            Ok(d) => d,
+            // No file yet: nothing to migrate, so start at the current schema.
+            Err(_) => return ProxyFile { schema: PROXY_SCHEMA, proxies: Vec::new() },
+        };
+        if let Ok(file) = serde_json::from_str::<ProxyFile>(&data) {
+            return file;
+        }
+        // Pre-0.7.0 shape: a bare array with the secrets inline.
+        match serde_json::from_str::<Vec<ProxyConfig>>(&data) {
+            Ok(proxies) => ProxyFile { schema: 0, proxies },
+            Err(e) => {
+                // Report the current schema so nothing rewrites — and thereby
+                // destroys — a file we simply failed to understand.
+                log::error!("cannot parse {}: {}", self.path.display(), e);
+                ProxyFile { schema: PROXY_SCHEMA, proxies: Vec::new() }
+            }
+        }
+    }
+
+    /// Fill in `cfg`'s secrets from the vault. `Err` means they exist but are
+    /// out of reach, which is not the same as a proxy that has none.
+    fn resolve_secret(&self, schema: u32, cfg: &mut ProxyConfig) -> Result<(), String> {
+        if schema < PROXY_SCHEMA {
+            return Ok(()); // not migrated yet — the secret is still inline
+        }
+        if let Some(s) = self.vault()?.get_secret(&proxy_secret_key(&cfg.id))? {
+            cfg.password = s.password;
+            cfg.private_key = s.private_key;
+            cfg.passphrase = s.passphrase;
+        }
+        Ok(())
+    }
+
+    /// Move `cfg`'s secrets into the vault, leaving `cfg` secret-free and ready
+    /// to serialize. Clearing every field deletes the stored secret, so a
+    /// password the user emptied in the form does not come back.
+    fn store_secret(&self, cfg: &mut ProxyConfig) -> Result<(), String> {
+        let secret = ProxySecret {
+            password: cfg.password.take(),
+            private_key: cfg.private_key.take(),
+            passphrase: cfg.passphrase.take(),
+        };
+        let key = proxy_secret_key(&cfg.id);
+        let vault = self.vault()?;
+        if secret.is_empty() {
+            vault.delete_secret(&key)
+        } else {
+            vault.put_secret(&key, &secret)
+        }
+    }
+
+    /// Every proxy, with its credentials filled in when the vault allows.
     ///
-    /// Returns the failure instead of discarding it: a proxy that did not
-    /// reach disk is gone on the next launch, and silently pretending
-    /// otherwise is how a user loses a bastion definition without noticing.
-    pub fn save(&self, proxies: &[ProxyConfig]) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(proxies)
+    /// A proxy whose secret cannot be read is still listed — the manager panel
+    /// has to show it — just without the credential. The connect path uses
+    /// `get_for_connect`, which refuses instead.
+    pub fn load(&self) -> Vec<ProxyConfig> {
+        let mut file = self.read_file();
+        for p in file.proxies.iter_mut() {
+            if let Err(e) = self.resolve_secret(file.schema, p) {
+                log::debug!("proxy '{}': credentials unavailable: {}", p.id, e);
+            }
+        }
+        file.proxies
+    }
+
+    fn write(&self, file: &ProxyFile, scrubbing: bool) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(file)
             .map_err(|e| format!("cannot serialise proxies: {}", e))?;
-        crate::storage::write_private(&self.path, json.as_bytes())
+        let write = if scrubbing {
+            crate::storage::write_private_scrubbing
+        } else {
+            crate::storage::write_private
+        };
+        write(&self.path, json.as_bytes())
             .map_err(|e| format!("cannot write {}: {}", self.path.display(), e))
     }
 
-    /// `save`, reporting a failure to the log.
+    /// Move every inline secret into the vault, exactly once.
     ///
-    /// The mutators below keep returning `()` so the UI call sites are
-    /// untouched; surfacing this in the UI is the follow-up.
-    fn save_logged(&self, proxies: &[ProxyConfig], what: &str) {
-        if let Err(e) = self.save(proxies) {
-            log::error!("proxy store: {} was NOT saved: {}", what, e);
+    /// Returns whether the file on disk changed. Idempotent: `schema` records
+    /// that it ran. A locked vault defers to the next unlock rather than
+    /// dropping anything, and the plaintext is only cleared after the vault is
+    /// confirmed to hold the secret — a failure anywhere leaves proxies.json
+    /// untouched and the migration is simply retried.
+    pub fn migrate_secrets(&self) -> Result<bool, String> {
+        let mut file = self.read_file();
+        if file.schema >= PROXY_SCHEMA {
+            return Ok(false);
         }
-    }
 
-    pub fn add(&self, proxy: ProxyConfig) {
-        let mut list = self.load();
-        list.push(proxy);
-        self.save_logged(&list, "add");
-    }
-
-    pub fn update(&self, proxy: &ProxyConfig) {
-        let mut list = self.load();
-        if let Some(existing) = list.iter_mut().find(|p| p.id == proxy.id) {
-            *existing = proxy.clone();
+        let pending = file.proxies.iter().filter(|p| has_inline_secret(p)).count();
+        if pending > 0 {
+            let vault = match self.vault_handle() {
+                Some(v) => v,
+                None => {
+                    log::info!(
+                        "proxy store: {} entries still hold an inline credential; \
+                         deferring migration until the vault is unlocked",
+                        pending
+                    );
+                    return Ok(false);
+                }
+            };
+            for p in file.proxies.iter_mut() {
+                let secret = ProxySecret {
+                    password: p.password.take(),
+                    private_key: p.private_key.take(),
+                    passphrase: p.passphrase.take(),
+                };
+                if secret.is_empty() {
+                    continue;
+                }
+                let key = proxy_secret_key(&p.id);
+                vault.put_secret(&key, &secret)?;
+                // Read it back before the cleartext is destroyed below.
+                if vault.get_secret(&key)?.as_ref() != Some(&secret) {
+                    return Err(format!(
+                        "vault did not retain the credential for proxy '{}' — \
+                         leaving {} as it is",
+                        p.id,
+                        self.path.display()
+                    ));
+                }
+            }
         }
-        self.save_logged(&list, "update");
+
+        file.schema = PROXY_SCHEMA;
+        // The bytes being replaced are the ones holding the cleartext.
+        self.write(&file, true)?;
+        log::info!("proxy store: migrated {} credentials into the vault", pending);
+        Ok(true)
     }
 
-    pub fn delete(&self, id: &str) {
-        let mut list = self.load();
-        list.retain(|p| p.id != id);
-        self.save_logged(&list, "delete");
+    /// Migrate if needed, then hand back the file — or refuse, because writing
+    /// on top of a deferred migration would either strand the secrets that
+    /// never moved or mark them migrated when they were not.
+    fn file_for_write(&self) -> Result<ProxyFile, String> {
+        self.migrate_secrets()?;
+        let file = self.read_file();
+        if file.schema < PROXY_SCHEMA {
+            return Err(crate::i18n::t("vault.locked_secret").to_string());
+        }
+        Ok(file)
     }
 
+    /// Append `proxy`, its credentials moved into the vault.
+    pub fn try_add(&self, mut proxy: ProxyConfig) -> Result<(), String> {
+        let mut file = self.file_for_write()?;
+        self.store_secret(&mut proxy)?;
+        file.proxies.push(proxy);
+        self.write(&file, false)
+    }
+
+    /// Replace the entry with `proxy.id`, its credentials moved into the vault.
+    pub fn try_update(&self, proxy: &ProxyConfig) -> Result<(), String> {
+        let mut file = self.file_for_write()?;
+        let mut proxy = proxy.clone();
+        self.store_secret(&mut proxy)?;
+        if let Some(existing) = file.proxies.iter_mut().find(|p| p.id == proxy.id) {
+            *existing = proxy;
+        }
+        self.write(&file, false)
+    }
+
+    /// Remove the entry with `id`, and its credentials from the vault.
+    pub fn try_delete(&self, id: &str) -> Result<(), String> {
+        let mut file = self.file_for_write()?;
+        file.proxies.retain(|p| p.id != id);
+        match self.vault_handle() {
+            Some(v) => v.delete_secret(&proxy_secret_key(id))?,
+            // Harmless — an unreferenced blob — but worth knowing about.
+            None => log::warn!("proxy '{}' deleted; its vault secret was left behind", id),
+        }
+        self.write(&file, false)
+    }
+
+    /// One proxy, credentials filled in where possible. Same caveat as `load`.
+    ///
+    /// Test-only: it answers a locked vault with a config that silently lacks
+    /// its secret, which is exactly how `establish_tcp` came to offer proxies
+    /// an empty password. Anything that connects uses `get_for_connect`.
+    #[cfg(test)]
     pub fn get(&self, id: &str) -> Option<ProxyConfig> {
-        self.load().into_iter().find(|p| p.id == id)
+        let file = self.read_file();
+        let mut cfg = file.proxies.into_iter().find(|p| p.id == id)?;
+        if let Err(e) = self.resolve_secret(file.schema, &mut cfg) {
+            log::debug!("proxy '{}': credentials unavailable: {}", id, e);
+        }
+        Some(cfg)
     }
+
+    /// One proxy, for actually connecting through it.
+    ///
+    /// Fails closed. A proxy that no longer exists is an error, not a reason to
+    /// dial the target directly, and one whose credential is locked in the
+    /// vault surfaces as "unlock first" instead of a handshake that offers the
+    /// proxy an empty password. A proxy configured without authentication
+    /// takes nothing from the vault, so it keeps working while it is locked.
+    pub fn get_for_connect(&self, id: &str) -> Result<ProxyConfig, String> {
+        let file = self.read_file();
+        let mut cfg = file
+            .proxies
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| crate::i18n::tf("proxy.err.missing", &[("id", id)]))?;
+        if !needs_credential(&cfg) {
+            return Ok(cfg);
+        }
+        if file.schema >= PROXY_SCHEMA && self.vault_handle().is_none() {
+            return Err(crate::i18n::tf(
+                "proxy.err.vault_locked",
+                &[("name", &cfg.name)],
+            ));
+        }
+        self.resolve_secret(file.schema, &mut cfg)?;
+        Ok(cfg)
+    }
+}
+
+/// Does this entry still carry a credential in the JSON file?
+fn has_inline_secret(p: &ProxyConfig) -> bool {
+    p.password.is_some() || p.private_key.is_some() || p.passphrase.is_some()
+}
+
+/// Whether connecting through `p` takes a secret from the vault: a bastion
+/// always authenticates, a SOCKS5 / HTTP proxy only when it has a username.
+fn needs_credential(p: &ProxyConfig) -> bool {
+    p.proxy_type == ProxyType::SshBastion || p.username.is_some()
+}
+
+/// The username and password a SOCKS5 or HTTP proxy authenticates with, or
+/// `None` when it is configured without authentication.
+///
+/// A username with no password is an error, never an empty password. With the
+/// secret in the vault, "no password" far more often means "out of reach" than
+/// "deliberately blank", and an auto-reconnect offers it again on every retry —
+/// enough to lock the account behind the proxy.
+fn proxy_credentials(proxy: &ProxyConfig) -> Result<Option<(&str, &str)>, String> {
+    match (proxy.username.as_deref(), proxy.password.as_deref()) {
+        (None, _) => Ok(None),
+        (Some(user), Some(pass)) => Ok(Some((user, pass))),
+        (Some(_), None) => Err(crate::i18n::tf(
+            "proxy.err.no_password",
+            &[("name", &proxy.name)],
+        )),
+    }
+}
+
+/// How an SSH bastion authenticates.
+enum BastionAuth<'a> {
+    Password(&'a str),
+    Key {
+        path: &'a str,
+        passphrase: Option<&'a str>,
+    },
+}
+
+/// The bastion's username and credential, or why there is none. Called before
+/// anything is dialled: no credential, no network traffic.
+fn bastion_credentials(bastion: &ProxyConfig) -> Result<(&str, BastionAuth<'_>), String> {
+    let user = bastion
+        .username
+        .as_deref()
+        .ok_or_else(|| "Bastion: username required".to_string())?;
+    if bastion.auth_type.as_deref() == Some("key") {
+        let path = bastion
+            .private_key
+            .as_deref()
+            .ok_or_else(|| "Bastion: private_key path required".to_string())?;
+        let passphrase = bastion.passphrase.as_deref();
+        return Ok((user, BastionAuth::Key { path, passphrase }));
+    }
+    // No fallback to "": the password now lives in the vault, and offering an
+    // empty one to a bastion because the vault is locked is exactly the silent
+    // failure this must not have.
+    let pass = bastion
+        .password
+        .as_deref()
+        .ok_or_else(|| crate::i18n::tf("proxy.err.no_password", &[("name", &bastion.name)]))?;
+    Ok((user, BastionAuth::Password(pass)))
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +450,10 @@ pub fn connect_via_proxy(
     if proxy.proxy_type == ProxyType::SshBastion {
         return connect_via_ssh_bastion(proxy, target_host, target_port, timeout);
     }
+
+    // Credentials before the socket: a proxy we could not authenticate to is
+    // not dialled at all.
+    proxy_credentials(proxy)?;
 
     // Connect to proxy server
     let proxy_addr = format!("{}:{}", proxy.host, proxy.port);
@@ -212,7 +506,8 @@ fn socks5_handshake(
     target_port: u16,
     proxy: &ProxyConfig,
 ) -> Result<TcpStream, String> {
-    let has_auth = proxy.username.is_some();
+    let creds = proxy_credentials(proxy)?;
+    let has_auth = creds.is_some();
 
     // 1. Greeting: VER=5, NMETHODS, METHODS
     if has_auth {
@@ -233,12 +528,12 @@ fn socks5_handshake(
         return Err(format!("SOCKS5: invalid version {}", resp[0]));
     }
 
-    match resp[1] {
-        0x00 => {} // No auth needed
-        0x02 => {
-            // Username/password auth (RFC 1929)
-            let user = proxy.username.as_deref().unwrap_or("");
-            let pass = proxy.password.as_deref().unwrap_or("");
+    match (resp[1], creds) {
+        (0x00, _) => {} // No auth needed
+        // Username/password auth (RFC 1929). Only ever offered with a real
+        // credential in hand: a server that picks it anyway gets the
+        // "unsupported" error below, not an empty username and password.
+        (0x02, Some((user, pass))) => {
             let mut auth_req = vec![0x01]; // VER
             auth_req.push(user.len() as u8);
             auth_req.extend_from_slice(user.as_bytes());
@@ -254,8 +549,8 @@ fn socks5_handshake(
                 return Err("SOCKS5: authentication failed".to_string());
             }
         }
-        0xFF => return Err("SOCKS5: no acceptable auth method".to_string()),
-        m => return Err(format!("SOCKS5: unsupported auth method {}", m)),
+        (0xFF, _) => return Err("SOCKS5: no acceptable auth method".to_string()),
+        (m, _) => return Err(format!("SOCKS5: unsupported auth method {}", m)),
     }
 
     // 3. CONNECT request — use DOMAINNAME (0x03) for SOCKS5H (remote DNS)
@@ -337,9 +632,9 @@ fn http_connect_handshake(
         target_host, target_port, target_host, target_port
     );
 
-    // Add proxy auth if configured
-    if let Some(ref user) = proxy.username {
-        let pass = proxy.password.as_deref().unwrap_or("");
+    // Add proxy auth if configured — a username without a password is refused
+    // before a byte is sent, never offered as "user:".
+    if let Some((user, pass)) = proxy_credentials(proxy)? {
         let cred = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
             format!("{}:{}", user, pass),
@@ -410,6 +705,12 @@ pub fn connect_via_ssh_bastion(
     target_port: u16,
     timeout: Duration,
 ) -> Result<TcpStream, String> {
+    // Credentials first. Nothing — not the loopback listener, not a packet to
+    // the bastion — is opened for a hop we could not authenticate to; a locked
+    // vault used to cost a TCP connect, a handshake and a host-key check
+    // before failing here.
+    let (user, auth) = bastion_credentials(bastion)?;
+
     // Create a local loopback pair so ssh2 can operate on a regular TcpStream:
     //   listener on 127.0.0.1:ephemeral — the relay thread accepts().
     //   client_end — connect back; caller uses this as the SSH transport.
@@ -454,25 +755,14 @@ pub fn connect_via_ssh_bastion(
     crate::ssh::verify_host_key(&session, &bastion.host, bastion.port)
         .map_err(|e| crate::ssh::translate_ssh_error(&e))?;
 
-    // Authenticate to bastion
-    let user = bastion
-        .username
-        .as_deref()
-        .ok_or_else(|| "Bastion: username required".to_string())?;
-    let auth_type = bastion.auth_type.as_deref().unwrap_or("password");
-    match auth_type {
-        "key" => {
-            let key_path = bastion
-                .private_key
-                .as_deref()
-                .ok_or_else(|| "Bastion: private_key path required".to_string())?;
-            let passphrase = bastion.passphrase.as_deref();
+    // Authenticate to bastion, with the credential resolved above.
+    match auth {
+        BastionAuth::Key { path, passphrase } => {
             session
-                .userauth_pubkey_file(user, None, &PathBuf::from(key_path), passphrase)
+                .userauth_pubkey_file(user, None, &PathBuf::from(path), passphrase)
                 .map_err(|e| format!("Bastion key auth failed: {}", e))?;
         }
-        _ => {
-            let pass = bastion.password.as_deref().unwrap_or("");
+        BastionAuth::Password(pass) => {
             session
                 .userauth_password(user, pass)
                 .map_err(|e| format!("Bastion password auth failed: {}", e))?;
@@ -710,6 +1000,8 @@ pub fn test_proxy(proxy: &ProxyConfig) -> ProxyTestResult {
 }
 
 fn test_ssh_bastion(bastion: &ProxyConfig) -> Result<u64, String> {
+    // As in `connect_via_ssh_bastion`: no credential, no handshake.
+    let (user, auth) = bastion_credentials(bastion)?;
     let start = Instant::now();
     let addr = format!("{}:{}", bastion.host, bastion.port);
     let tcp = TcpStream::connect_timeout(
@@ -736,28 +1028,13 @@ fn test_ssh_bastion(bastion: &ProxyConfig) -> Result<u64, String> {
     crate::ssh::verify_host_key(&session, &bastion.host, bastion.port)
         .map_err(|e| crate::ssh::translate_ssh_error(&e))?;
 
-    let user = bastion
-        .username
-        .as_deref()
-        .ok_or_else(|| "Username required".to_string())?;
-    let auth_type = bastion.auth_type.as_deref().unwrap_or("password");
-    match auth_type {
-        "key" => {
-            let key_path = bastion
-                .private_key
-                .as_deref()
-                .ok_or_else(|| "Key path required".to_string())?;
+    match auth {
+        BastionAuth::Key { path, passphrase } => {
             session
-                .userauth_pubkey_file(
-                    user,
-                    None,
-                    &PathBuf::from(key_path),
-                    bastion.passphrase.as_deref(),
-                )
+                .userauth_pubkey_file(user, None, &PathBuf::from(path), passphrase)
                 .map_err(|e| format!("Key auth: {}", e))?;
         }
-        _ => {
-            let pass = bastion.password.as_deref().unwrap_or("");
+        BastionAuth::Password(pass) => {
             session
                 .userauth_password(user, pass)
                 .map_err(|e| format!("Password auth: {}", e))?;
@@ -767,4 +1044,472 @@ fn test_ssh_bastion(bastion: &ProxyConfig) -> Result<u64, String> {
         return Err("Auth failed".to_string());
     }
     Ok(start.elapsed().as_millis() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const PW: &str = "correct horse battery staple";
+
+    /// A scratch directory holding a vault plus a proxies.json, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "neoshell-proxy-test-{}-{}-{}",
+                std::process::id(),
+                tag,
+                N.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn proxies(&self) -> PathBuf {
+            self.0.join("proxies.json")
+        }
+
+        /// An unlocked vault over this directory.
+        fn vault(&self) -> Arc<ConnectionStore> {
+            let v = Arc::new(ConnectionStore::with_vault_path(self.0.join("vault.json")));
+            if v.vault_exists() {
+                v.unlock(PW).unwrap();
+            } else {
+                v.set_master_password(PW).unwrap();
+            }
+            v
+        }
+
+        /// A vault that exists but is still locked.
+        fn locked_vault(&self) -> Arc<ConnectionStore> {
+            let _ = self.vault();
+            Arc::new(ConnectionStore::with_vault_path(self.0.join("vault.json")))
+        }
+
+        /// `None` means no vault at all here: nothing in the test binary
+        /// calls `set_global_vault`, so the lazy fallback finds nothing.
+        fn store(&self, vault: Option<Arc<ConnectionStore>>) -> ProxyStore {
+            ProxyStore::at(self.proxies(), vault)
+        }
+
+        fn raw(&self) -> String {
+            std::fs::read_to_string(self.proxies()).unwrap()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Exactly what a pre-0.7.0 build left on disk: a bare array, secrets inline.
+    fn write_legacy(s: &Scratch) {
+        std::fs::write(
+            s.proxies(),
+            r#"[
+              {"id":"p1","name":"bastion","proxy_type":"sshbastion","host":"10.0.0.9",
+               "port":22,"username":"jump","password":"hunter2","auth_type":"password"},
+              {"id":"p2","name":"corp","proxy_type":"socks5h","host":"127.0.0.1","port":1080}
+            ]"#,
+        )
+        .unwrap();
+    }
+
+    fn sample(id: &str) -> ProxyConfig {
+        ProxyConfig {
+            id: id.to_string(),
+            name: "bastion".to_string(),
+            proxy_type: ProxyType::SshBastion,
+            host: "10.0.0.9".to_string(),
+            port: 22,
+            username: Some("jump".to_string()),
+            password: Some("hunter2".to_string()),
+            auth_type: Some("password".to_string()),
+            private_key: None,
+            passphrase: None,
+        }
+    }
+
+    #[test]
+    fn an_unmigrated_file_still_loads_with_its_secrets() {
+        let s = Scratch::new("legacy-load");
+        write_legacy(&s);
+
+        // Even with no vault at all: the secrets are still inline.
+        let list = s.store(None).load();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].password.as_deref(), Some("hunter2"));
+        assert_eq!(list[1].password, None);
+    }
+
+    #[test]
+    fn migration_moves_the_secret_and_clears_the_plaintext() {
+        let s = Scratch::new("migrate");
+        write_legacy(&s);
+        let vault = s.vault();
+        let store = s.store(Some(vault.clone()));
+
+        assert!(store.migrate_secrets().unwrap());
+
+        let raw = s.raw();
+        assert!(!raw.contains("hunter2"), "plaintext survived: {}", raw);
+        assert!(raw.contains("\"schema\": 1"), "schema not recorded: {}", raw);
+        // The non-secret half stays behind so the UI can list it while locked.
+        assert!(raw.contains("10.0.0.9"));
+        assert!(raw.contains("jump"));
+
+        assert_eq!(
+            vault.get_secret("proxy:p1").unwrap(),
+            Some(ProxySecret { password: Some("hunter2".into()), ..Default::default() })
+        );
+        // A proxy that had no credential gets no blob.
+        assert_eq!(vault.get_secret("proxy:p2").unwrap(), None);
+
+        // And the round trip still produces the original config.
+        assert_eq!(store.get("p1").unwrap().password.as_deref(), Some("hunter2"));
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let s = Scratch::new("migrate-twice");
+        write_legacy(&s);
+        let store = s.store(Some(s.vault()));
+
+        assert!(store.migrate_secrets().unwrap());
+        let after_first = s.raw();
+        assert!(!store.migrate_secrets().unwrap(), "second run must be a no-op");
+        assert_eq!(s.raw(), after_first);
+        assert_eq!(store.get("p1").unwrap().password.as_deref(), Some("hunter2"));
+    }
+
+    #[test]
+    fn a_locked_vault_defers_migration_instead_of_destroying_the_secret() {
+        let s = Scratch::new("migrate-locked");
+        write_legacy(&s);
+        let before = s.raw();
+
+        for store in [s.store(None), s.store(Some(s.locked_vault()))] {
+            assert!(!store.migrate_secrets().unwrap());
+            assert_eq!(s.raw(), before, "a locked vault must not touch the file");
+            // The secret is still readable, because it never moved.
+            assert_eq!(store.get("p1").unwrap().password.as_deref(), Some("hunter2"));
+            // And nothing may be written on top of a deferred migration.
+            assert!(store.try_delete("p2").is_err());
+        }
+
+        // Unlocking later completes it.
+        let store = s.store(Some(s.vault()));
+        assert!(store.migrate_secrets().unwrap());
+        assert!(!s.raw().contains("hunter2"));
+    }
+
+    #[test]
+    fn add_writes_the_credential_to_the_vault_and_not_to_the_file() {
+        let s = Scratch::new("add");
+        let vault = s.vault();
+        let store = s.store(Some(vault.clone()));
+
+        store.try_add(sample("p1")).unwrap();
+        assert!(!s.raw().contains("hunter2"), "cleartext in proxies.json: {}", s.raw());
+        assert_eq!(store.get("p1").unwrap().password.as_deref(), Some("hunter2"));
+        assert_eq!(store.get_for_connect("p1").unwrap().password.as_deref(), Some("hunter2"));
+
+        // Clearing the field in the form drops the stored secret rather than
+        // leaving the old one to be resurrected on the next read.
+        let mut cleared = sample("p1");
+        cleared.password = None;
+        store.try_update(&cleared).unwrap();
+        assert_eq!(vault.get_secret("proxy:p1").unwrap(), None);
+        assert_eq!(store.get("p1").unwrap().password, None);
+
+        store.try_delete("p1").unwrap();
+        assert!(store.get("p1").is_none());
+        assert!(store.get_for_connect("p1").is_err());
+    }
+
+    #[test]
+    fn a_locked_vault_refuses_to_connect_rather_than_offering_no_credential() {
+        let s = Scratch::new("connect-locked");
+        s.store(Some(s.vault())).try_add(sample("p1")).unwrap();
+
+        let locked = s.store(Some(s.locked_vault()));
+        // Listing still works — the manager panel needs it.
+        assert_eq!(locked.load().len(), 1);
+        assert_eq!(locked.load()[0].host, "10.0.0.9");
+        assert_eq!(locked.load()[0].password, None);
+        // Connecting does not — and it says which proxy, and why.
+        let err = locked.get_for_connect("p1").unwrap_err();
+        assert!(
+            is_message(&err, "proxy.err.vault_locked", &[("name", "bastion")]),
+            "{}",
+            err
+        );
+        assert!(locked.try_add(sample("p2")).is_err());
+        assert!(locked.try_update(&sample("p1")).is_err());
+    }
+
+    #[test]
+    fn a_proxy_without_authentication_still_connects_while_the_vault_is_locked() {
+        let s = Scratch::new("connect-locked-open");
+        let unlocked = s.store(Some(s.vault()));
+        let mut open = sample("p2");
+        open.proxy_type = ProxyType::Socks5h;
+        open.username = None;
+        open.password = None;
+        open.auth_type = None;
+        unlocked.try_add(open).unwrap();
+        let mut authed = sample("p3");
+        authed.proxy_type = ProxyType::Socks5h;
+        authed.name = "corp-socks".to_string();
+        unlocked.try_add(authed).unwrap();
+
+        let locked = s.store(Some(s.locked_vault()));
+        // Nothing of p2's lives in the vault, so the lock is no reason to
+        // strand a session that reconnects through it.
+        assert_eq!(locked.get_for_connect("p2").unwrap().host, "10.0.0.9");
+        // p3 authenticates: refused, by name.
+        let err = locked.get_for_connect("p3").unwrap_err();
+        assert!(
+            is_message(&err, "proxy.err.vault_locked", &[("name", "corp-socks")]),
+            "{}",
+            err
+        );
+        // A proxy that is gone is refused too, never bypassed.
+        let err = locked.get_for_connect("gone").unwrap_err();
+        assert!(
+            is_message(&err, "proxy.err.missing", &[("id", "gone")]),
+            "{}",
+            err
+        );
+    }
+
+    /// Every translation of `key`, with `params` filled in, read from the
+    /// tables' source rather than through the process-wide locale — another
+    /// test in this binary flips that locale while it runs.
+    fn is_message(err: &str, key: &str, params: &[(&str, &str)]) -> bool {
+        const SRC: &str = include_str!("i18n.rs");
+        let needle = format!("m.insert(\"{}\", \"", key);
+        let all: Vec<String> = SRC
+            .match_indices(&needle)
+            .map(|(at, _)| {
+                let rest = &SRC[at + needle.len()..];
+                let mut text = rest[..rest.find("\");").expect("end of entry")].to_string();
+                for (name, value) in params {
+                    text = text.replace(&format!("{{{}}}", name), value);
+                }
+                text
+            })
+            .collect();
+        assert_eq!(all.len(), 2, "{} should be in both tables", key);
+        all.iter().any(|t| t == err)
+    }
+
+    /// A live local port that records whether anything connected to it: the
+    /// proof that a refused credential cost no network traffic.
+    struct Tripwire(TcpListener);
+
+    impl Tripwire {
+        fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            Tripwire(listener)
+        }
+
+        fn port(&self) -> u16 {
+            self.0.local_addr().unwrap().port()
+        }
+
+        fn tripped(&self) -> bool {
+            match self.0.accept() {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => false,
+                Err(e) => panic!("tripwire: {}", e),
+            }
+        }
+    }
+
+    #[test]
+    fn a_bastion_with_no_password_fails_before_the_handshake() {
+        // A live listener where the bastion would be. While the credential
+        // was only checked after connecting, this saw a connection and the
+        // error was the SSH handshake timing out against it.
+        let wire = Tripwire::new();
+        let mut cfg = sample("p1");
+        cfg.name = "jump-no-password".to_string();
+        cfg.password = None;
+        cfg.host = "127.0.0.1".to_string();
+        cfg.port = wire.port();
+        let name = [("name", "jump-no-password")];
+
+        let err =
+            connect_via_ssh_bastion(&cfg, "target", 22, Duration::from_millis(300)).unwrap_err();
+        assert!(is_message(&err, "proxy.err.no_password", &name), "{}", err);
+        assert!(
+            !wire.tripped(),
+            "the bastion was dialled without a credential"
+        );
+
+        // The proxy dialog's "Test" button takes the same path.
+        let err = test_ssh_bastion(&cfg).unwrap_err();
+        assert!(is_message(&err, "proxy.err.no_password", &name), "{}", err);
+        assert!(
+            !wire.tripped(),
+            "the bastion test dialled without a credential"
+        );
+    }
+
+    #[test]
+    fn a_proxy_username_without_a_password_is_refused_before_dialling() {
+        for kind in [ProxyType::Socks5h, ProxyType::Http] {
+            let wire = Tripwire::new();
+            let cfg = ProxyConfig {
+                id: "p9".to_string(),
+                name: "corp-no-password".to_string(),
+                proxy_type: kind.clone(),
+                host: "127.0.0.1".to_string(),
+                port: wire.port(),
+                username: Some("alice".to_string()),
+                password: None,
+                auth_type: None,
+                private_key: None,
+                passphrase: None,
+            };
+            let err =
+                connect_via_proxy(&cfg, "target", 22, Duration::from_millis(300)).unwrap_err();
+            assert!(
+                is_message(
+                    &err,
+                    "proxy.err.no_password",
+                    &[("name", "corp-no-password")]
+                ),
+                "{:?}: {}",
+                kind,
+                err
+            );
+            assert!(!wire.tripped(), "{:?} proxy dialled with no password", kind);
+        }
+    }
+
+    /// What a fake SOCKS5 server received: the greeting, then everything after.
+    type Received = (Vec<u8>, Vec<u8>);
+
+    /// A one-shot SOCKS5 server that answers any greeting by choosing
+    /// username/password auth, then records everything the client sends.
+    fn socks5_demanding_auth() -> (u16, std::thread::JoinHandle<Received>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut greeting = vec![0u8; 2];
+            if s.read_exact(&mut greeting).is_err() {
+                return (Vec::new(), Vec::new());
+            }
+            let mut methods = vec![0u8; greeting[1] as usize];
+            let _ = s.read_exact(&mut methods);
+            greeting.extend_from_slice(&methods);
+            let _ = s.write_all(&[0x05, 0x02]);
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest);
+            (greeting, rest)
+        });
+        (port, server)
+    }
+
+    fn socks(name: &str, port: u16, username: Option<&str>) -> ProxyConfig {
+        ProxyConfig {
+            id: "p8".to_string(),
+            name: name.to_string(),
+            proxy_type: ProxyType::Socks5h,
+            host: "127.0.0.1".to_string(),
+            port,
+            username: username.map(str::to_string),
+            password: None,
+            auth_type: None,
+            private_key: None,
+            passphrase: None,
+        }
+    }
+
+    fn client(port: u16) -> TcpStream {
+        let tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        tcp
+    }
+
+    #[test]
+    fn the_socks5_handshake_never_sends_an_empty_credential() {
+        // A username with no password: refused before even the greeting.
+        let (port, server) = socks5_demanding_auth();
+        let cfg = socks("corp-socks", port, Some("alice"));
+        let err = socks5_handshake(client(port), "target", 22, &cfg).unwrap_err();
+        assert!(
+            is_message(&err, "proxy.err.no_password", &[("name", "corp-socks")]),
+            "{}",
+            err
+        );
+        assert_eq!(
+            server.join().unwrap(),
+            (Vec::new(), Vec::new()),
+            "bytes reached the proxy"
+        );
+
+        // No username, and a server that picks username/password anyway: it
+        // used to be sent an empty username and password.
+        let (port, server) = socks5_demanding_auth();
+        let cfg = socks("corp-socks", port, None);
+        let err = socks5_handshake(client(port), "target", 22, &cfg).unwrap_err();
+        assert_eq!(err, "SOCKS5: unsupported auth method 2");
+        let (greeting, rest) = server.join().unwrap();
+        assert_eq!(
+            greeting,
+            vec![0x05, 0x01, 0x00],
+            "offered more than no-auth"
+        );
+        assert!(
+            rest.is_empty(),
+            "sent {:?} after an unoffered method was picked",
+            rest
+        );
+    }
+
+    #[test]
+    fn the_http_handshake_never_sends_user_colon_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut got = Vec::new();
+            let _ = s.read_to_end(&mut got);
+            got
+        });
+        let mut cfg = socks("corp-http", port, Some("alice"));
+        cfg.proxy_type = ProxyType::Http;
+        let err = http_connect_handshake(client(port), "target", 22, &cfg).unwrap_err();
+        assert!(
+            is_message(&err, "proxy.err.no_password", &[("name", "corp-http")]),
+            "{}",
+            err
+        );
+        let got = server.join().unwrap();
+        assert!(got.is_empty(), "sent {:?}", String::from_utf8_lossy(&got));
+    }
+
+    #[test]
+    fn a_garbled_file_is_reported_and_never_silently_replaced() {
+        let s = Scratch::new("garbled");
+        std::fs::write(s.proxies(), "{not json").unwrap();
+        let store = s.store(Some(s.vault()));
+        assert!(store.load().is_empty());
+        // Migration must not "fix" it by writing an empty list over the top.
+        assert!(!store.migrate_secrets().unwrap());
+        assert_eq!(s.raw(), "{not json");
+    }
 }

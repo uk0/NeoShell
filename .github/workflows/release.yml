@@ -32,13 +32,13 @@ jobs:
       # secret, and sign each library with scripts/sign-update.sh.
       NEOSHELL_UPDATE_PUBKEY: ${{ secrets.NEOSHELL_UPDATE_PUBKEY }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-21
         with:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -161,7 +161,7 @@ jobs:
           hdiutil create -volname NeoShell -srcfolder "$DMG_DIR" -ov -format UDZO "dist/NeoShell-${VERSION}-macos-${ARCH}.dmg"
 
       - name: Upload to Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*.dmg
 
@@ -174,7 +174,7 @@ jobs:
           cp "$DYLIB" "dist/libneoshell_core-${VERSION}-macos-${ARCH}.dylib"
 
       - name: Upload core library
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/libneoshell_core-*-macos-*.dylib
@@ -189,11 +189,11 @@ jobs:
       # secret, and sign each library with scripts/sign-update.sh.
       NEOSHELL_UPDATE_PUBKEY: ${{ secrets.NEOSHELL_UPDATE_PUBKEY }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-21
 
       - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -263,7 +263,7 @@ jobs:
 
       - name: Upload to Release
         if: always()
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/*.AppImage
@@ -277,7 +277,7 @@ jobs:
           cp "$SO" "dist/libneoshell_core-${VERSION}-linux-x86_64.so"
 
       - name: Upload core library
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/libneoshell_core-*-linux-*.so
@@ -292,14 +292,14 @@ jobs:
       # secret, and sign each library with scripts/sign-update.sh.
       NEOSHELL_UPDATE_PUBKEY: ${{ secrets.NEOSHELL_UPDATE_PUBKEY }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-21
 
       - name: Install NASM (for openssl vendored build)
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
       - name: Cache cargo registry + build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -328,7 +328,7 @@ jobs:
           Compress-Archive -Path dist\NeoShell\* -DestinationPath "dist\NeoShell-$VERSION-windows-x64.zip"
 
       - name: Upload to Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*.zip
 
@@ -340,7 +340,7 @@ jobs:
           Copy-Item $DLL.FullName "dist\neoshell_core-$VERSION-windows-x64.dll"
 
       - name: Upload core library
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/neoshell_core-*-windows-*.dll
@@ -355,14 +355,14 @@ jobs:
       # secret, and sign each library with scripts/sign-update.sh.
       NEOSHELL_UPDATE_PUBKEY: ${{ secrets.NEOSHELL_UPDATE_PUBKEY }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-21
 
       - name: Install NASM (for openssl vendored build)
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
       - name: Cache cargo registry + build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -403,7 +403,7 @@ jobs:
           Compress-Archive -Path "dist\NeoShell-Win7\*" -DestinationPath "dist\NeoShell-$VERSION-windows-win7-x64.zip"
 
       - name: Upload to Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*-win7-*.zip
 
@@ -415,7 +415,7 @@ jobs:
           Copy-Item $DLL.FullName "dist\neoshell_core-$VERSION-windows-win7-x64.dll"
 
       - name: Upload core library
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/neoshell_core-*-windows-win7-*.dll

@@ -46,7 +46,14 @@ core/
   build.rs              # Windows resource compilation
   src/
     lib.rs              # Exports neoshell_run() + neoshell_version() via C ABI
-    app.rs              # iced Application: state, update, view, subscriptions (~10k lines)
+    app/                # iced Application, split by concern (was one ~19.6k-line app.rs)
+      mod.rs            #   NeoShell state, Message, run/update/subscription, handle_message
+      view/             #   every view_* function, grouped by area (sidebar, panels, forms, overlays, …)
+      terminal_view.rs  #   the terminal Canvas program, key/mouse encoding
+      files.rs          #   file browser listing, remote paths, transfers, ZMODEM
+      history.rs  groups.rs  settings.rs  focus.rs  auth.rs  events.rs
+      palette.rs  forms.rs  monitor.rs  style.rs
+      tests.rs          #   the app's unit tests
     crypto/mod.rs       # AES-256-GCM encryption, Argon2id key derivation
     storage/mod.rs      # Encrypted connection vault (vault.json)
     ssh/mod.rs          # SSH session manager (ssh2 + background threads); SFTP transfers
@@ -66,9 +73,12 @@ core/
 Build produces: `neoshell` (launcher binary) + `libneoshell_core.dylib` (cdylib with all logic).
 
 Two things a newcomer needs up front:
-- **`core/src/app.rs` is ~19k lines and holds the entire UI state machine** — the
-  `NeoShell` struct, every `Message` variant, `update()`, and all `view_*`
-  functions. Search it by function name; do not expect to read it top to bottom.
+- **`core/src/app/` holds the entire UI state machine.** `mod.rs` has the `NeoShell`
+  struct, every `Message` variant and `handle_message` (still ~4k lines: one
+  match over every message). Everything else is in a module per concern; each
+  child module starts with `use super::*;`, so items move between them freely.
+  A child that uses `column!` must `use iced::widget::column;` explicitly —
+  through the glob it is ambiguous with std's `column!`.
 - **The update channel requires a signing key.** Published core libraries carry a
   detached ed25519 signature; the launcher and `updater.rs` verify it against
   `NEOSHELL_UPDATE_PUBKEY`, compiled in at build time. A build without that
@@ -80,7 +90,7 @@ Two things a newcomer needs up front:
   - `vendor/ssh2` (0.9.5): on Windows, SFTP names that are not UTF-8 (GBK) aborted
     the process. Its `.gitattributes` keeps upstream's CRLF files byte-identical.
   - `vendor/iced_winit` (0.13.0): input method (IME) support, so Chinese can be
-    typed at all, plus `iced_winit::ime`, which `app.rs` uses to turn the IME off
+    typed at all, plus `iced_winit::ime`, which `app/focus.rs` uses to turn the IME off
     while a password field has focus. Drop both once iced is upgraded to a release
     with input method support.
 
@@ -114,7 +124,7 @@ Two things a newcomer needs up front:
 3. Master password vault with Argon2id key derivation (implemented)
 4. VTE terminal emulator with 256-color + truecolor support (implemented)
 5. SFTP file browser/transfer (implemented — `ssh/mod.rs` upload_file_with_progress / download_file_with_progress)
-6. Server monitoring (implemented — `app.rs` view_monitor_panel, 3s poll via FetchMonitorData)
+6. Server monitoring (implemented — `app/view/panels.rs` view_monitor_panel, 3s poll via FetchMonitorData)
 7. Port forwarding (-L, -R, -D SOCKS5), proxy/bastion chains, SSH key manager, command palette, broadcast + sync input (implemented)
 8. Chinese input (IME) in every text field and the terminal; collapsible, persisted connection groups (implemented)
 

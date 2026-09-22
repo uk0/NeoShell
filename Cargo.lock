@@ -2102,7 +2102,7 @@ dependencies = [
  "log",
  "rustc-hash 2.1.2",
  "sysinfo",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "wasm-bindgen-futures",
  "web-sys",

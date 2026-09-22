@@ -16,7 +16,7 @@ dirs = "5"
 # of a staged core library before installing it. Kept deliberately minimal —
 # both crates are leaf dependencies with no transitive weight of their own.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

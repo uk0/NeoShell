@@ -267,6 +267,10 @@ pub struct NeoShell {
     // SSH
     ssh_manager: Arc<SshManager>,
     ssh_event_rx: Option<mpsc::Receiver<SshEvent>>,
+    /// An event for a session whose tab was still connecting, held back
+    /// ahead of everything still queued until the tab shows the session
+    /// (see [`next_ssh_event`]).
+    ssh_held: Option<SshEvent>,
 
     // Terminal tabs
     tabs: Vec<TerminalTab>,
@@ -568,6 +572,70 @@ impl Default for AlertConfig {
     }
 }
 
+/// Save one of the small settings files, owner-only and atomic like the
+/// rest of what NeoShell writes (see `storage::write_private`). A failure is
+/// logged, not shown: the setting still applies for this run and is only
+/// lost on restart, which used to happen without a word. Returns whether the
+/// file was saved.
+/// Save a small settings file off the UI thread. `write_private` fsyncs the
+/// file and its directory (F_FULLFSYNC on macOS), and a slider drag saves on
+/// every step, so writing inline stalled the window. One writer thread keeps
+/// the writes to each file in order, and a newer save of a file replaces one
+/// still waiting, so a drag ends in a single write of its last value. A save
+/// queued in the last milliseconds before the process exits can be lost.
+fn save_setting(path: &std::path::Path, contents: &[u8]) {
+    type Save = (std::path::PathBuf, Vec<u8>);
+    static WRITER: std::sync::OnceLock<Option<mpsc::Sender<Save>>> = std::sync::OnceLock::new();
+    let writer = WRITER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Save>();
+        std::thread::Builder::new()
+            .name("settings-writer".into())
+            .spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    for (path, contents) in coalesce_saves(std::iter::once(first).chain(rx.try_iter())) {
+                        write_setting(&path, &contents);
+                    }
+                }
+            })
+            .ok()
+            .map(|_| tx)
+    });
+    let queued = writer
+        .as_ref()
+        .is_some_and(|tx| tx.send((path.to_path_buf(), contents.to_vec())).is_ok());
+    if !queued {
+        // No writer thread: write inline rather than lose the setting.
+        write_setting(path, contents);
+    }
+}
+
+/// Write one settings file now, owner-only and atomically. False, and logged,
+/// when it could not be saved.
+fn write_setting(path: &std::path::Path, contents: &[u8]) -> bool {
+    match crate::storage::write_private(path, contents) {
+        Ok(()) => true,
+        Err(e) => {
+            log::error!("could not save {}: {}", path.display(), e);
+            false
+        }
+    }
+}
+
+/// The last contents queued for each file, in the order the files were first
+/// queued.
+fn coalesce_saves(
+    saves: impl IntoIterator<Item = (std::path::PathBuf, Vec<u8>)>,
+) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut out: Vec<(std::path::PathBuf, Vec<u8>)> = Vec::new();
+    for (path, contents) in saves {
+        match out.iter_mut().find(|(p, _)| *p == path) {
+            Some(slot) => slot.1 = contents,
+            None => out.push((path, contents)),
+        }
+    }
+    out
+}
+
 fn alerts_path() -> std::path::PathBuf {
     let dir = dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -585,7 +653,7 @@ fn load_alerts() -> AlertConfig {
 
 fn save_alerts(cfg: &AlertConfig) {
     if let Ok(json) = serde_json::to_string_pretty(cfg) {
-        let _ = std::fs::write(alerts_path(), json);
+        save_setting(&alerts_path(), json.as_bytes());
     }
 }
 
@@ -979,7 +1047,7 @@ fn load_snippets() -> Vec<Snippet> {
 
 fn save_snippets(list: &[Snippet]) {
     if let Ok(json) = serde_json::to_string_pretty(list) {
-        let _ = std::fs::write(snippets_path(), json);
+        save_setting(&snippets_path(), json.as_bytes());
     }
 }
 
@@ -1981,8 +2049,7 @@ fn load_ui_scale() -> f32 {
 fn save_ui_scale(scale: f32) {
     if let Some(config_dir) = dirs::config_dir() {
         let neo_dir = config_dir.join("neoshell");
-        let _ = std::fs::create_dir_all(&neo_dir);
-        let _ = std::fs::write(neo_dir.join("scale"), format!("{:.2}", scale));
+        save_setting(&neo_dir.join("scale"), format!("{:.2}", scale).as_bytes());
     }
 }
 
@@ -2001,8 +2068,7 @@ fn load_font_size() -> f32 {
 fn save_font_size(size: f32) {
     if let Some(d) = dirs::config_dir() {
         let dir = d.join("neoshell");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("fontsize"), format!("{:.1}", size));
+        save_setting(&dir.join("fontsize"), format!("{:.1}", size).as_bytes());
     }
 }
 
@@ -2063,8 +2129,7 @@ fn load_lock_timeout() -> u32 {
 fn save_lock_timeout(mins: u32) {
     if let Some(d) = dirs::config_dir() {
         let dir = d.join("neoshell");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("locktimeout"), mins.to_string());
+        save_setting(&dir.join("locktimeout"), mins.to_string().as_bytes());
     }
 }
 
@@ -2258,8 +2323,7 @@ fn list_local_dir(path: &str) -> Vec<LocalFileEntry> {
 fn save_locale(locale: &str) {
     if let Some(config_dir) = dirs::config_dir() {
         let neo_dir = config_dir.join("neoshell");
-        let _ = std::fs::create_dir_all(&neo_dir);
-        let _ = std::fs::write(neo_dir.join("lang"), locale);
+        save_setting(&neo_dir.join("lang"), locale.as_bytes());
     }
 }
 
@@ -2291,9 +2355,10 @@ impl Default for NeoShell {
         theme_config::set_live(&theme_cfg);
 
         // Keyboard-interactive auth: SSH threads park their challenges on
-        // this channel and block until the modal answers. Registered once.
+        // this channel and block until the modal answers. Registered once,
+        // with the event channel's waker: a challenge wakes the drain too.
         let (auth_tx, auth_rx) = mpsc::channel();
-        crate::ssh::set_auth_prompter(auth_tx);
+        crate::ssh::set_auth_prompter(crate::ssh::UiSender::new(auth_tx, ssh_manager.waker()));
 
         Self {
             screen,
@@ -2304,6 +2369,7 @@ impl Default for NeoShell {
             connections: Vec::new(),
             ssh_manager: Arc::new(ssh_manager),
             ssh_event_rx: Some(ssh_event_rx),
+            ssh_held: None,
             tabs: Vec::new(),
             active_tab: None,
             show_form: false,
@@ -2929,6 +2995,21 @@ impl NeoShell {
     /// A transfer holds the single progress bar.
     fn transfer_busy(&self) -> bool {
         bar_busy(self.transfer_progress.as_ref(), self.upload_job_running)
+    }
+
+    /// A progress bar is on screen whose counters another thread moves: a
+    /// transfer's, or the update download's. No message comes as they move,
+    /// so the view only catches up on a drain (see [`poll_interval`]).
+    fn progress_moving(&self) -> bool {
+        let transfer = self
+            .transfer_progress
+            .as_ref()
+            .is_some_and(|p| !p.is_finished());
+        let update = {
+            let s = self.updater.state.lock();
+            s.available && !s.ready && s.download_progress > 0.0 && s.download_progress < 1.0
+        };
+        transfer || update
     }
 
     /// While a transfer holds the bar, say so and return true. Starting
@@ -4415,6 +4496,12 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
 
         // ---- terminal --------------------------------------------------------
         Message::SshConnected(tab_id, session_id, title, connection_id) => {
+            // Output held back until this connect landed (see
+            // `next_ssh_event`) is drained in a later update: after the
+            // screen clear below, or dropped if the tab is gone.
+            if state.ssh_held.is_some() {
+                state.ssh_manager.waker().notify_one();
+            }
             // Update existing placeholder tab (created in ConnectTo)
             let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) else {
                 // Closed while it connected — `TabClosed` already gave the
@@ -4612,14 +4699,17 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
 
         // ---- SSH event polling -----------------------------------------------
         Message::PollSshEvents => {
-            // Keyboard-interactive challenges ride this tick rather than a
+            // Keyboard-interactive challenges ride this drain rather than a
             // timer of their own; a new one comes back as a focus task.
             let auth = poll_auth_prompts(state);
             let mut rz_sessions: Vec<String> = Vec::new();
             let mut sz_sessions: Vec<String> = Vec::new();
 
+            let mut budget = DrainBudget::new(SSH_DRAIN_BYTES, SSH_DRAIN_EVENTS);
             if let Some(rx) = &state.ssh_event_rx {
-                while let Ok(event) = rx.try_recv() {
+                while let Some(event) =
+                    next_ssh_event(&mut state.ssh_held, rx, &mut budget, &state.tabs)
+                {
                     match event {
                         SshEvent::Data { session_id, data } => {
                             // Skip ZMODEM residual binary data for 2s after detection
@@ -4744,6 +4834,17 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
                     }
                 }
             }
+            // Out of budget with output perhaps still queued: the rest comes
+            // in a fresh update, so the window redraws and takes input in
+            // between instead of freezing until a flood is through. A message
+            // rather than a wake, so the wakes' frame pacing (`ssh_wakes`)
+            // does not throttle a backlog. Not while output is held for a
+            // connect: `SshConnected` wakes the drain for that.
+            let auth = if !budget.has_room() && state.ssh_held.is_none() {
+                Task::batch([auth, Task::done(Message::PollSshEvents)])
+            } else {
+                auth
+            };
 
             // Dispatch ZMODEM messages (only one Task can be returned per update)
             if let Some(sid) = rz_sessions.into_iter().next() {
@@ -5985,6 +6086,10 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             )
         }
         Message::SplitConnected(tab_id, vertical, session_id) => {
+            // As in `SshConnected`: output held for this split goes next.
+            if state.ssh_held.is_some() {
+                state.ssh_manager.waker().notify_one();
+            }
             if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
                 // Only the split this tab is still waiting for.
                 if tab.split.is_none() && tab.split_pending.as_deref() == Some(session_id.as_str()) {
@@ -7821,9 +7926,76 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
 // Subscription
 // ---------------------------------------------------------------------------
 
+/// Least time between two drains the SSH side wakes: about a frame at 60 Hz.
+/// Output that keeps trickling in would otherwise run update() and view()
+/// back to back, far more often than the screen can show them. A quiet
+/// session's next output still drains at once.
+const WAKE_MIN_GAP: Duration = Duration::from_millis(16);
+
+/// When a wake that came at `now` may drain: at once, unless the last
+/// wake-driven drain began less than [`WAKE_MIN_GAP`] before.
+fn wake_drain_at(last: Option<std::time::Instant>, now: std::time::Instant) -> std::time::Instant {
+    match last {
+        Some(last) => (last + WAKE_MIN_GAP).max(now),
+        None => now,
+    }
+}
+
+/// A `PollSshEvents` each time the SSH side wakes the UI (see
+/// `crate::ssh::UiSender`), paced by [`wake_drain_at`].
+///
+/// No wake is lost between a drain and the next await: `notify_one` leaves a
+/// permit when nothing is waiting, and the next `notified()` takes it at
+/// once. Wakes that come while a drain is pending fold into that one permit,
+/// so a burst of output costs one extra drain at most.
+fn ssh_wakes(wake: Arc<tokio::sync::Notify>) -> impl iced::futures::Stream<Item = Message> {
+    iced::futures::stream::unfold((wake, None), |(wake, last)| async move {
+        wake.notified().await;
+        let now = std::time::Instant::now();
+        let at = wake_drain_at(last, now);
+        if at > now {
+            tokio::time::sleep(at - now).await;
+        }
+        Some((Message::PollSshEvents, (wake, Some(at))))
+    })
+}
+
+/// A timer drain, beside the wakes, while something on screen moves with no
+/// message of its own: a transfer's or the update download's progress bar,
+/// read from counters other threads move, or a waiting sign-in challenge,
+/// whose modal takes the focus and arms its fields on a drain
+/// (`deliver_auth_focus`). The rate the always-on poll used to run at.
+const LIVE_POLL: Duration = Duration::from_millis(50);
+/// The slow timer under the wakes wherever output or a challenge can
+/// arrive, so that a missed wake could never strand either. It also retires
+/// unanswered challenges, and keeps what other threads change without a
+/// message (a tunnel count, an update found) from going stale on screen.
+const SAFETY_POLL: Duration = Duration::from_secs(1);
+
+/// How often `PollSshEvents` also runs on a timer, if at all. The wakes do
+/// the work (see [`ssh_wakes`]); nothing is left to poll for on the setup
+/// screen, or on the lock screen with no session and no challenge.
+fn poll_interval(
+    on_main: bool,
+    sessions: bool,
+    challenge_waiting: bool,
+    progress_moving: bool,
+) -> Option<Duration> {
+    if on_main && (challenge_waiting || progress_moving) {
+        Some(LIVE_POLL)
+    } else if on_main || sessions || challenge_waiting {
+        Some(SAFETY_POLL)
+    } else {
+        None
+    }
+}
+
 fn subscription(state: &NeoShell) -> Subscription<Message> {
     let mut subs = vec![
-        time::every(Duration::from_millis(50)).map(|_| Message::PollSshEvents),
+        // Output and sign-in challenges wake the drain themselves. On every
+        // screen: sessions run on under the lock screen, and a reconnect can
+        // ask for a code there. Waiting costs nothing while nothing arrives.
+        Subscription::run_with_id("ssh-events", ssh_wakes(state.ssh_manager.waker())),
         // Check for updates every hour
         time::every(Duration::from_secs(3600)).map(|_| Message::CheckForUpdate),
         // Always-on listener for CloseRequested — the × button is intercepted
@@ -7836,6 +8008,15 @@ fn subscription(state: &NeoShell) -> Subscription<Message> {
             _ => None,
         }),
     ];
+
+    if let Some(every) = poll_interval(
+        state.screen == Screen::Main,
+        !state.tabs.is_empty() || state.ssh_held.is_some(),
+        !state.auth_queue.is_empty(),
+        state.progress_moving(),
+    ) {
+        subs.push(time::every(every).map(|_| Message::PollSshEvents));
+    }
 
     // Monitor refresh every 3 seconds when there is an active tab
     if state.screen == Screen::Main && state.active_tab.is_some() {
@@ -15422,10 +15603,118 @@ fn quick_cmd_input_focused() -> Task<bool> {
         .map(|ids: Vec<Id>| ids.iter().any(|id| *id == Id::new(QUICK_CMD_INPUT_ID)))
 }
 
-/// Drain the challenges SSH threads parked for the modal. Runs on the
-/// `PollSshEvents` tick, which is on every screen: a reconnect can ask at any
-/// time. Returns the focus task for the front challenge's first field, once
-/// the modal is on screen to take it (see `deliver_auth_focus`).
+/// Most terminal output one `PollSshEvents` feeds to the grids. A flooding
+/// remote (`cat` of a large file) queues output faster than the grids take
+/// it, and draining all of it in one update froze the window until the
+/// backlog was through. What a drain leaves stays queued, in order.
+const SSH_DRAIN_BYTES: usize = 256 * 1024;
+/// Most events one drain takes, whatever they carry: output trickling in a
+/// few bytes per read stalls the UI in bulk as surely as large reads do.
+const SSH_DRAIN_EVENTS: usize = 1024;
+
+/// What one `PollSshEvents` drain may still take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DrainBudget {
+    bytes: usize,
+    events: usize,
+}
+
+impl DrainBudget {
+    fn new(bytes: usize, events: usize) -> Self {
+        DrainBudget { bytes, events }
+    }
+
+    /// Whether another event may be taken. Asked before one is taken: an
+    /// event once off the channel is handled whole, never put back.
+    fn has_room(&self) -> bool {
+        self.bytes > 0 && self.events > 0
+    }
+
+    /// Count one event carrying `bytes` of output. The event that crosses
+    /// the line is still handled whole: a drain may overshoot its byte
+    /// budget by one event, and never splits one.
+    fn charge(&mut self, bytes: usize) {
+        self.bytes = self.bytes.saturating_sub(bytes);
+        self.events = self.events.saturating_sub(1);
+    }
+}
+
+/// The next event off `rx` while `budget` has room, charged to it. What is
+/// not taken stays on the channel, in order, for the next drain.
+fn take_within<T>(
+    rx: &mpsc::Receiver<T>,
+    budget: &mut DrainBudget,
+    size: impl Fn(&T) -> usize,
+) -> Option<T> {
+    if !budget.has_room() {
+        return None;
+    }
+    let event = rx.try_recv().ok()?;
+    budget.charge(size(&event));
+    Some(event)
+}
+
+/// What an event weighs against a drain's byte budget: the output it carries.
+fn ssh_event_bytes(event: &SshEvent) -> usize {
+    match event {
+        SshEvent::Data { data, .. } => data.len(),
+        _ => 0,
+    }
+}
+
+/// The session an event is about.
+fn ssh_event_session(event: &SshEvent) -> &str {
+    match event {
+        SshEvent::Data { session_id, .. }
+        | SshEvent::Closed { session_id }
+        | SshEvent::Error { session_id, .. }
+        | SshEvent::Reconnecting { session_id, .. }
+        | SshEvent::Reconnected { session_id } => session_id,
+    }
+}
+
+/// Whether `session_id` is a connect or a split still in flight: a tab holds
+/// its id, but no pane shows the session yet.
+fn session_connecting(tabs: &[TerminalTab], session_id: &str) -> bool {
+    !session_id.is_empty()
+        && tabs.iter().any(|t| {
+            t.pending_session_id == session_id || t.split_pending.as_deref() == Some(session_id)
+        })
+}
+
+/// The next event for a `PollSshEvents` drain, in arrival order.
+///
+/// An event held back earlier comes first. `None` ends the drain: the
+/// channel is empty, `budget` is spent, or the event now due belongs to a
+/// session still connecting ([`session_connecting`]). That event is kept in
+/// `held`, ahead of everything still queued, until `SshConnected` or
+/// `SplitConnected` gives the session a pane; the handler would find none and
+/// drop it. A server that prints the moment its shell starts can send output
+/// before the connect has returned. The 50 ms timer this drain used to run
+/// on lost that output only when it fired in the gap; a drain that the
+/// output itself wakes would lose it nearly every time.
+fn next_ssh_event(
+    held: &mut Option<SshEvent>,
+    rx: &mpsc::Receiver<SshEvent>,
+    budget: &mut DrainBudget,
+    tabs: &[TerminalTab],
+) -> Option<SshEvent> {
+    let event = match held.take() {
+        Some(event) => event,
+        None => take_within(rx, budget, ssh_event_bytes)?,
+    };
+    if session_connecting(tabs, ssh_event_session(&event)) {
+        *held = Some(event);
+        return None;
+    }
+    Some(event)
+}
+
+/// Drain the challenges SSH threads parked for the modal. Runs on every
+/// `PollSshEvents`, which a challenge's arrival wakes on every screen: a
+/// reconnect can ask at any time. Returns the focus task for the front
+/// challenge's first field, once the modal is on screen to take it (see
+/// `deliver_auth_focus`).
 fn poll_auth_prompts(state: &mut NeoShell) -> Task<Message> {
     let was_empty = state.auth_queue.is_empty();
     if let Some(rx) = &state.auth_rx {
@@ -18821,6 +19110,22 @@ mod tests {
     }
 
     #[test]
+    fn a_burst_of_saves_writes_each_file_once_with_its_last_value() {
+        let p = |s: &str| std::path::PathBuf::from(s);
+        let saves = vec![
+            (p("alerts.json"), b"50".to_vec()),
+            (p("scale"), b"1.00".to_vec()),
+            (p("alerts.json"), b"55".to_vec()),
+            (p("alerts.json"), b"60".to_vec()),
+        ];
+        assert_eq!(
+            coalesce_saves(saves),
+            vec![(p("alerts.json"), b"60".to_vec()), (p("scale"), b"1.00".to_vec())]
+        );
+        assert!(coalesce_saves(Vec::new()).is_empty());
+    }
+
+    #[test]
     fn only_the_overlays_with_a_secret_field_wait_for_the_focus_answer() {
         assert_eq!(
             Overlay::HOLDS_SECRETS,
@@ -19049,5 +19354,279 @@ mod tests {
             assert_ne!(i18n::t(key), "???", "{key}");
         }
         assert!(i18n::tf("conn.copy_name", &[("name", "db")]).contains("db"));
+    }
+
+    #[test]
+    fn a_drain_budget_counts_bytes_and_events_and_never_underflows() {
+        let mut b = DrainBudget::new(10, 3);
+        assert!(b.has_room());
+        b.charge(4);
+        assert_eq!(
+            b,
+            DrainBudget {
+                bytes: 6,
+                events: 2
+            }
+        );
+        // A Closed or an Error: an event, no bytes.
+        b.charge(0);
+        assert_eq!(
+            b,
+            DrainBudget {
+                bytes: 6,
+                events: 1
+            }
+        );
+        assert!(b.has_room());
+        b.charge(0);
+        assert!(!b.has_room(), "out of events with bytes to spare");
+
+        let mut b = DrainBudget::new(10, 3);
+        b.charge(25);
+        assert_eq!(
+            b,
+            DrainBudget {
+                bytes: 0,
+                events: 2
+            },
+            "the crossing event is taken whole"
+        );
+        assert!(!b.has_room());
+
+        let data = SshEvent::Data {
+            session_id: "s".into(),
+            data: vec![0; 7],
+        };
+        assert_eq!(ssh_event_bytes(&data), 7);
+        assert_eq!(
+            ssh_event_bytes(&SshEvent::Closed {
+                session_id: "s".into()
+            }),
+            0
+        );
+    }
+
+    /// A flood is taken a budget at a time, and what one drain leaves is the
+    /// next one's, in order: nothing dropped, nothing taken twice.
+    #[test]
+    fn a_drain_stops_at_its_budget_and_the_rest_waits_in_order() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        for i in 0..6u8 {
+            tx.send(vec![i; 100_000]).unwrap();
+        }
+        let drain = || {
+            let mut budget = DrainBudget::new(SSH_DRAIN_BYTES, SSH_DRAIN_EVENTS);
+            let mut taken = Vec::new();
+            while let Some(chunk) = take_within(&rx, &mut budget, |c: &Vec<u8>| c.len()) {
+                taken.push(chunk[0]);
+            }
+            (taken, budget.has_room())
+        };
+        // 256 KiB: the third 100 kB read crosses the line and is taken whole.
+        assert_eq!(drain(), (vec![0, 1, 2], false));
+        assert_eq!(drain(), (vec![3, 4, 5], false));
+        assert_eq!(drain(), (vec![], true));
+
+        // Many small reads end a drain on the event count instead.
+        for _ in 0..SSH_DRAIN_EVENTS + 10 {
+            tx.send(vec![1]).unwrap();
+        }
+        let (taken, room) = drain();
+        assert_eq!((taken.len(), room), (SSH_DRAIN_EVENTS, false));
+        assert_eq!(rx.try_iter().count(), 10, "the rest still queued");
+    }
+
+    /// Output for a session whose tab is still connecting waits, in its place
+    /// ahead of everything queued behind it, until the tab shows the session:
+    /// the handler would find no pane for it and drop it.
+    #[test]
+    fn output_that_beats_its_connect_is_held_in_place_until_the_tab_shows_it() {
+        let (tx, rx) = mpsc::channel();
+        let data = |sid: &str, byte: u8| SshEvent::Data {
+            session_id: sid.into(),
+            data: vec![byte],
+        };
+        let drain = |held: &mut Option<SshEvent>, tabs: &[TerminalTab]| {
+            let mut budget = DrainBudget::new(SSH_DRAIN_BYTES, SSH_DRAIN_EVENTS);
+            let mut taken = Vec::new();
+            while let Some(event) = next_ssh_event(held, &rx, &mut budget, tabs) {
+                if let SshEvent::Data { data, .. } = event {
+                    taken.push(data[0]);
+                }
+            }
+            taken
+        };
+        tx.send(data("dialled", 1)).unwrap();
+        tx.send(data("live", 2)).unwrap();
+        tx.send(data("dialled", 3)).unwrap();
+        let mut tabs = vec![test_tab("", "dialled"), test_tab("live", "")];
+        let mut held = None;
+        assert_eq!(drain(&mut held, &tabs), [0u8; 0], "nothing overtakes it");
+        assert_eq!(drain(&mut held, &tabs), [0u8; 0], "still connecting");
+        assert!(held.is_some());
+        // `SshConnected`: the tab shows the session now.
+        tabs[0].session_id = "dialled".into();
+        tabs[0].pending_session_id.clear();
+        assert_eq!(drain(&mut held, &tabs), [1, 2, 3]);
+        assert!(held.is_none());
+
+        // Closed while connecting: handed on for the handler to drop, as ever.
+        tx.send(data("gone", 4)).unwrap();
+        tx.send(data("live", 5)).unwrap();
+        let mut tabs = vec![test_tab("", "gone"), test_tab("live", "")];
+        assert_eq!(drain(&mut held, &tabs), [0u8; 0]);
+        tabs.remove(0);
+        assert_eq!(drain(&mut held, &tabs), [4, 5]);
+
+        // A split still dialling is connecting too; a live pane is not.
+        let mut tab = test_tab("live", "");
+        tab.split_pending = Some("pane-dialling".into());
+        let tabs = [tab];
+        assert!(session_connecting(&tabs, "pane-dialling"));
+        assert!(!session_connecting(&tabs, "live"));
+        assert!(
+            !session_connecting(&tabs, ""),
+            "a tab's empty pending id matches nothing"
+        );
+    }
+
+    #[test]
+    fn a_wake_drains_at_once_unless_the_last_drain_was_under_a_frame_ago() {
+        let t0 = std::time::Instant::now();
+        assert_eq!(wake_drain_at(None, t0), t0, "the first wake");
+        let later = t0 + Duration::from_millis(100);
+        assert_eq!(
+            wake_drain_at(Some(t0), later),
+            later,
+            "a quiet session's next output"
+        );
+        let soon = t0 + Duration::from_millis(5);
+        assert_eq!(
+            wake_drain_at(Some(t0), soon),
+            t0 + WAKE_MIN_GAP,
+            "output still trickling in"
+        );
+        assert_eq!(
+            wake_drain_at(Some(t0), t0 + WAKE_MIN_GAP),
+            t0 + WAKE_MIN_GAP
+        );
+    }
+
+    #[test]
+    fn the_wake_stream_keeps_early_wakes_folds_bursts_and_paces_a_trickle() {
+        use iced::futures::StreamExt;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let wake = Arc::new(tokio::sync::Notify::new());
+            let mut wakes = Box::pin(ssh_wakes(Arc::clone(&wake)));
+            let long = Duration::from_secs(5);
+            // Wakes that came while nothing awaited them (the UI still busy
+            // with a drain) are kept, and a burst of them is one drain.
+            for _ in 0..3 {
+                wake.notify_one();
+            }
+            let first = tokio::time::timeout(long, wakes.next()).await;
+            assert!(matches!(first, Ok(Some(Message::PollSshEvents))));
+            let quiet = tokio::time::timeout(Duration::from_millis(50), wakes.next()).await;
+            assert!(quiet.is_err(), "one drain for the burst");
+            // A wake while the stream waits...
+            wake.notify_one();
+            let second = tokio::time::timeout(long, wakes.next()).await;
+            assert!(matches!(second, Ok(Some(Message::PollSshEvents))));
+            // ...and one right behind it, as from output that keeps coming:
+            // it waits out the rest of a frame.
+            let drained = std::time::Instant::now();
+            wake.notify_one();
+            let third = tokio::time::timeout(long, wakes.next()).await;
+            assert!(matches!(third, Ok(Some(Message::PollSshEvents))));
+            assert!(
+                drained.elapsed() >= Duration::from_millis(10),
+                "{:?}",
+                drained.elapsed()
+            );
+        });
+    }
+
+    #[test]
+    fn the_timer_drain_runs_only_where_something_can_be_waiting() {
+        // (on the main screen, sessions, a challenge waiting, a bar moving)
+        assert_eq!(
+            poll_interval(false, false, false, false),
+            None,
+            "setup; locked, no session"
+        );
+        assert_eq!(
+            poll_interval(false, true, false, false),
+            Some(SAFETY_POLL),
+            "sessions run on under the lock"
+        );
+        assert_eq!(
+            poll_interval(false, false, true, false),
+            Some(SAFETY_POLL),
+            "it still expires"
+        );
+        assert_eq!(
+            poll_interval(false, true, true, true),
+            Some(SAFETY_POLL),
+            "nothing on screen moves under the lock"
+        );
+        assert_eq!(
+            poll_interval(true, false, false, false),
+            Some(SAFETY_POLL),
+            "idle"
+        );
+        assert_eq!(
+            poll_interval(true, true, false, false),
+            Some(SAFETY_POLL),
+            "idle sessions"
+        );
+        assert_eq!(
+            poll_interval(true, true, true, false),
+            Some(LIVE_POLL),
+            "the sign-in modal"
+        );
+        assert_eq!(
+            poll_interval(true, false, false, true),
+            Some(LIVE_POLL),
+            "a progress bar"
+        );
+        assert_eq!(
+            LIVE_POLL,
+            Duration::from_millis(50),
+            "the rate the old poll ran at"
+        );
+        assert!(SAFETY_POLL <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_setting_is_saved_owner_only_and_a_failed_save_says_so() {
+        let dir =
+            std::env::temp_dir().join(format!("neoshell-app-test-{}-settings", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("neoshell").join("fontsize");
+        assert!(
+            write_setting(&path, b"14.0"),
+            "its directory is made on the way"
+        );
+        assert_eq!(std::fs::read(&path).expect("saved"), b"14.0");
+        assert!(write_setting(&path, b"15.0"));
+        assert_eq!(std::fs::read(&path).expect("replaced"), b"15.0");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // `fontsize` is a file: nothing can be saved under it.
+        let blocked = path.join("lang");
+        assert!(!write_setting(&blocked, b"zh"));
+        assert!(!blocked.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -11,6 +11,7 @@ use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use ssh2::{KeyboardInteractivePrompt, MethodType, Session};
+use tokio::sync::Notify;
 
 use crate::i18n;
 
@@ -533,13 +534,14 @@ impl AuthChallenge {
 /// minimal mode the terminal reader's lock along with it.
 const AUTH_PROMPT_TIMEOUT: Duration = Duration::from_secs(180);
 
-static AUTH_PROMPTER: Lazy<RwLock<Option<mpsc::Sender<AuthChallenge>>>> =
+static AUTH_PROMPTER: Lazy<RwLock<Option<UiSender<AuthChallenge>>>> =
     Lazy::new(|| RwLock::new(None));
 
-/// Register the GUI's challenge channel; `app.rs` calls this once at startup.
-/// Until it does, a plain PAM password challenge still completes on its own
-/// (see `GuiPrompter`), but a real 2FA question has nowhere to go.
-pub fn set_auth_prompter(tx: mpsc::Sender<AuthChallenge>) {
+/// Register the GUI's challenge channel; `app.rs` calls this once at startup,
+/// with its `SshManager`'s waker, so that a challenge wakes the UI the way an
+/// event does. Until it does, a plain PAM password challenge still completes
+/// on its own (see `GuiPrompter`), but a real 2FA question has nowhere to go.
+pub fn set_auth_prompter(tx: UiSender<AuthChallenge>) {
     *AUTH_PROMPTER.write() = Some(tx);
 }
 
@@ -551,7 +553,7 @@ struct GuiPrompter<'a> {
     purpose: &'a str,
     /// Where challenges go: the channel registered with
     /// [`set_auth_prompter`], read once when the login starts.
-    gui: Option<mpsc::Sender<AuthChallenge>>,
+    gui: Option<UiSender<AuthChallenge>>,
     /// Password saved on the connection, for [`saved_password_answer`]:
     /// PAM-backed servers ask for the first factor through
     /// keyboard-interactive, and OpenSSH's own client answers it the same way.
@@ -1350,6 +1352,45 @@ pub enum SshEvent {
     Reconnected { session_id: String },
 }
 
+/// A channel into the UI that also wakes it.
+///
+/// The UI does not poll its receivers on a fast timer: it drains them when
+/// woken (see `ssh_wakes` in app.rs). Every [`SshEvent`] and every
+/// [`AuthChallenge`] goes out through one of these, so no send can happen
+/// without a wake. `send` keeps `mpsc::Sender::send`'s signature, and the
+/// call sites read as they did.
+pub struct UiSender<T> {
+    tx: mpsc::Sender<T>,
+    wake: Arc<Notify>,
+}
+
+impl<T> UiSender<T> {
+    pub fn new(tx: mpsc::Sender<T>, wake: Arc<Notify>) -> Self {
+        UiSender { tx, wake }
+    }
+
+    /// Queue `value`, then wake the UI, in that order: the drain the wake
+    /// starts must find the value already queued. `notify_one` leaves a
+    /// permit when nothing awaits it yet (the UI is still busy with the last
+    /// batch, say), so a wake is never lost; and a burst of sends shares that
+    /// single permit, so it costs one drain, not one per send.
+    pub fn send(&self, value: T) -> Result<(), mpsc::SendError<T>> {
+        self.tx.send(value)?;
+        self.wake.notify_one();
+        Ok(())
+    }
+}
+
+// By hand: a derive would demand `T: Clone`, and neither payload is.
+impl<T> Clone for UiSender<T> {
+    fn clone(&self) -> Self {
+        UiSender {
+            tx: self.tx.clone(),
+            wake: Arc::clone(&self.wake),
+        }
+    }
+}
+
 /// Credentials and connection parameters stored for automatic reconnection.
 #[derive(Clone)]
 pub struct ConnectParams {
@@ -2005,6 +2046,58 @@ fn read_output(stream: &mut impl IoRead) -> std::io::Result<String> {
     })
 }
 
+/// Shortest wait of a session's reader between two reads that found nothing.
+/// Output comes in bursts, and the rest of one is usually close behind.
+const READ_WAIT_MIN: Duration = Duration::from_millis(1);
+/// Longest wait, reached after a few quiet rounds. It bounds how late the
+/// reader notices output a quiet session starts on its own (a `tail -f` line,
+/// a job finishing); typed input does not wait for it, since the writer wakes
+/// the reader. An idle session polls about 60 times a second at 16 ms, down
+/// from 100 at the fixed 10 ms sleep this replaced.
+const READ_WAIT_MAX: Duration = Duration::from_millis(16);
+
+/// The reader's idle backoff: how long to wait after an empty non-blocking
+/// read before trying again.
+#[derive(Debug)]
+struct ReadBackoff {
+    next: Duration,
+}
+
+impl ReadBackoff {
+    fn new() -> Self {
+        ReadBackoff {
+            next: READ_WAIT_MIN,
+        }
+    }
+
+    /// Output arrived, or input went out and its echo is on the way: poll
+    /// fast again.
+    fn reset(&mut self) {
+        self.next = READ_WAIT_MIN;
+    }
+
+    /// The wait after an empty read. It doubles with each quiet round, up to
+    /// [`READ_WAIT_MAX`].
+    fn wait(&mut self) -> Duration {
+        let wait = self.next;
+        self.next = (wait * 2).min(READ_WAIT_MAX);
+        wait
+    }
+
+    /// One quiet round of the reader thread: park for the wait. The writer
+    /// cuts it short by unparking the thread once it has sent input, which it
+    /// flags in `input_sent`; the echo is then on its way, and the next
+    /// rounds poll fast again. A spurious wakeup or the timeout just ends the
+    /// round: the caller reads again either way. An unpark that lands before
+    /// the park is not lost, since it makes the park return at once.
+    fn park(&mut self, input_sent: &AtomicBool) {
+        std::thread::park_timeout(self.wait());
+        if input_sent.swap(false, Ordering::AcqRel) {
+            self.reset();
+        }
+    }
+}
+
 /// A handle to a single active SSH session.
 pub struct SshSession {
     pub session_id: String,
@@ -2038,7 +2131,10 @@ pub struct SshSession {
 /// Manages multiple concurrent SSH sessions.
 pub struct SshManager {
     sessions: RwLock<HashMap<String, SshSession>>,
-    event_tx: mpsc::Sender<SshEvent>,
+    event_tx: UiSender<SshEvent>,
+    /// What the UI awaits to drain: `event_tx` and the sign-in challenge
+    /// channel both notify it (see [`UiSender`]).
+    wake: Arc<Notify>,
     /// Previous `/proc/stat` sample per session id, for the CPU% delta.
     /// Index 0 is the aggregate `cpu` line, the rest are per-core in kernel
     /// order. Dropped by `disconnect`.
@@ -2054,16 +2150,24 @@ pub struct SshManager {
 impl SshManager {
     pub fn new() -> (Self, mpsc::Receiver<SshEvent>) {
         let (event_tx, event_rx) = mpsc::channel();
+        let wake = Arc::new(Notify::new());
         (
             SshManager {
                 sessions: RwLock::new(HashMap::new()),
-                event_tx,
+                event_tx: UiSender::new(event_tx, Arc::clone(&wake)),
+                wake,
                 cpu_samples: RwLock::new(HashMap::new()),
                 utc_offsets: RwLock::new(HashMap::new()),
                 login_dirs: RwLock::new(HashMap::new()),
             },
             event_rx,
         )
+    }
+
+    /// What the UI awaits before it drains events and sign-in challenges
+    /// (see [`UiSender`]); notifying it starts a drain.
+    pub fn waker(&self) -> Arc<Notify> {
+        Arc::clone(&self.wake)
     }
 
     /// Quickly verify a connection is reachable and authenticates.
@@ -2670,11 +2774,17 @@ impl SshManager {
         let stop = Arc::new(AtomicBool::new(false));
         let reader_stop = Arc::clone(&stop);
 
+        // Raised by the writer when input went out, just before it unparks
+        // the reader: the reader then polls fast for the echo.
+        let input_sent = Arc::new(AtomicBool::new(false));
+        let reader_input = Arc::clone(&input_sent);
+
         // --- Reader thread: reads from SSH channel, emits SshEvent ---------
         // On EOF or error (not WouldBlock), attempts auto-reconnect with
         // exponential backoff before giving up and sending Closed.
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut backoff = ReadBackoff::new();
             'outer: loop {
                 if reader_stop.load(Ordering::Relaxed) {
                     // disconnect() already tore the session down and told the
@@ -2692,6 +2802,7 @@ impl SshManager {
                 };
                 match result {
                     Ok(n) if n > 0 => {
+                        backoff.reset();
                         let data = buf[..n].to_vec();
                         if event_tx
                             .send(SshEvent::Data {
@@ -2705,8 +2816,11 @@ impl SshManager {
                         continue 'outer;
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // Non-blocking read: nothing available yet.
-                        std::thread::sleep(Duration::from_millis(10));
+                        // Non-blocking read: nothing available yet. Park
+                        // rather than sleep, so the writer can wake this
+                        // thread the moment it has sent input: the echo is
+                        // read at once instead of after the wait.
+                        backoff.park(&reader_input);
                         if reader_stop.load(Ordering::Relaxed) {
                             break 'outer;
                         }
@@ -2834,6 +2948,7 @@ impl SshManager {
         let sid_writer = session_id.clone();
         let channel_writer = Arc::clone(&channel);
         let event_tx_w = self.event_tx.clone();
+        let reader_thread = reader.thread().clone();
         std::thread::spawn(move || {
             // No `.expect` here: the crate is built with panic = "abort", so a
             // runtime that fails to build (OS out of fds / threads) would kill
@@ -2851,6 +2966,15 @@ impl SshManager {
                     });
                     return;
                 }
+            };
+
+            // Output is on its way: cut the reader's idle wait short, and
+            // have it poll fast until the output shows (see
+            // `ReadBackoff::park`). Called with the locks released, since
+            // the reader needs them.
+            let nudge_reader = move || {
+                input_sent.store(true, Ordering::Release);
+                reader_thread.unpark();
             };
 
             rt.block_on(async move {
@@ -2875,6 +2999,10 @@ impl SshManager {
                                 });
                             }
                             sess.set_blocking(false);
+                            drop(ch);
+                            drop(sess);
+                            // The echo of what was just typed.
+                            nudge_reader();
                         }
                         SshCommand::Resize(cols, rows) => {
                             let sess = session_writer.lock();
@@ -2887,6 +3015,10 @@ impl SshManager {
                                 });
                             }
                             sess.set_blocking(false);
+                            drop(ch);
+                            drop(sess);
+                            // A full-screen program redraws at the new size.
+                            nudge_reader();
                         }
                         SshCommand::Disconnect => {
                             let sess = session_writer.lock();
@@ -2894,6 +3026,11 @@ impl SshManager {
                             let mut ch = channel_writer.lock();
                             let _ = ch.send_eof();
                             let _ = ch.close();
+                            drop(ch);
+                            drop(sess);
+                            // `disconnect` raised the stop flag before it sent
+                            // this: the reader sees it now, not after its wait.
+                            nudge_reader();
                             break;
                         }
                     }
@@ -7632,7 +7769,7 @@ mod prompter_tests {
             session_id: "tab-7-session",
             target: "alice@host:22",
             purpose: "reconnect",
-            gui: Some(gui),
+            gui: Some(UiSender::new(gui, Arc::new(Notify::new()))),
             password,
             failure: None,
             dismissed: false,
@@ -8932,18 +9069,121 @@ mod session_id_tests {
 }
 
 #[cfg(test)]
-mod scratch_probe_tests {
+mod wake_tests {
+    use super::*;
+
+    /// Whether `wake` fires within `within`; at once when it holds a permit.
+    fn fires(wake: &Notify, within: Duration) -> bool {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(async { tokio::time::timeout(within, wake.notified()).await.is_ok() })
+    }
+
     #[test]
-    fn scratch_unconnected_session_probe() {
-        let sess = ssh2::Session::new().unwrap();
-        sess.set_blocking(true);
-        sess.set_timeout(2_000);
-        let t = std::time::Instant::now();
-        let ch = sess.channel_session();
-        eprintln!("channel_session: {:?} after {:?}", ch.as_ref().err(), t.elapsed());
-        let t = std::time::Instant::now();
-        let sf = sess.sftp();
-        eprintln!("sftp: {:?} after {:?}", sf.as_ref().err(), t.elapsed());
-        eprintln!("last_error: {:?}", ssh2::Error::last_session_error(&sess).map(|e| e.code()));
+    fn a_send_is_queued_before_its_wake_and_a_burst_shares_one() {
+        let wake = Arc::new(Notify::new());
+        let (tx, rx) = mpsc::channel();
+        let tx = UiSender::new(tx, Arc::clone(&wake));
+        // Nothing awaits the wake while these go out, as when the UI is still
+        // busy with the last batch: the wake is kept for its next await...
+        tx.send(1).unwrap();
+        tx.clone().send(2).unwrap();
+        assert!(fires(&wake, Duration::from_secs(5)));
+        // ...and the drain it starts finds both, in order.
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [1, 2]);
+        assert!(
+            !fires(&wake, Duration::from_millis(20)),
+            "two sends, one wake: one drain, not two"
+        );
+    }
+
+    #[test]
+    fn a_send_wakes_a_drain_that_is_already_waiting() {
+        let wake = Arc::new(Notify::new());
+        let (tx, rx) = mpsc::channel();
+        let tx = UiSender::new(tx, Arc::clone(&wake));
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            tx.send("typed").unwrap();
+        });
+        assert!(
+            fires(&wake, Duration::from_secs(5)),
+            "the waiting drain is woken"
+        );
+        assert_eq!(
+            rx.try_recv(),
+            Ok("typed"),
+            "and finds the value already queued"
+        );
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn a_send_the_ui_can_no_longer_receive_fails_and_wakes_nothing() {
+        let wake = Arc::new(Notify::new());
+        let (tx, rx) = mpsc::channel::<u8>();
+        drop(rx);
+        let tx = UiSender::new(tx, Arc::clone(&wake));
+        assert!(tx.send(7).is_err(), "the reader thread stops on this");
+        assert!(!fires(&wake, Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn the_idle_reader_backs_off_to_its_cap_and_polls_fast_again_after_output() {
+        let ms = Duration::from_millis;
+        let mut backoff = ReadBackoff::new();
+        let waits: Vec<Duration> = (0..7).map(|_| backoff.wait()).collect();
+        assert_eq!(waits, [ms(1), ms(2), ms(4), ms(8), ms(16), ms(16), ms(16)]);
+        assert!(
+            READ_WAIT_MAX <= ms(20),
+            "a quiet session's output waits no longer"
+        );
+        backoff.reset();
+        assert_eq!(backoff.wait(), READ_WAIT_MIN);
+        assert_eq!(backoff.wait(), ms(2));
+    }
+
+    /// The writer's nudge ends even a long wait at once, and resets the
+    /// backoff: the echo it announced is on its way.
+    #[test]
+    fn a_nudge_cuts_the_readers_wait_short_and_resets_the_backoff() {
+        let input_sent = Arc::new(AtomicBool::new(false));
+        let reader_input = Arc::clone(&input_sent);
+        let reader = std::thread::spawn(move || {
+            let mut backoff = ReadBackoff {
+                next: Duration::from_secs(60),
+            };
+            let parked = std::time::Instant::now();
+            backoff.park(&reader_input);
+            (parked.elapsed(), backoff.next)
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        input_sent.store(true, Ordering::Release);
+        reader.thread().unpark();
+        let (waited, next) = reader.join().unwrap();
+        assert!(waited < Duration::from_secs(30), "waited {:?}", waited);
+        assert_eq!(next, READ_WAIT_MIN);
+        assert!(!input_sent.load(Ordering::Acquire), "taken by the reader");
+    }
+
+    /// A nudge that lands while the reader is busy reading is not lost: its
+    /// next wait returns at once. A round nobody nudged keeps backing off.
+    #[test]
+    fn a_nudge_before_the_park_is_kept_and_a_plain_timeout_keeps_backing_off() {
+        let input_sent = AtomicBool::new(true);
+        std::thread::current().unpark();
+        let mut backoff = ReadBackoff {
+            next: Duration::from_secs(60),
+        };
+        let parked = std::time::Instant::now();
+        backoff.park(&input_sent);
+        assert!(parked.elapsed() < Duration::from_secs(30));
+        assert_eq!(backoff.next, READ_WAIT_MIN);
+
+        let quiet = AtomicBool::new(false);
+        backoff.park(&quiet);
+        assert_eq!(backoff.next, Duration::from_millis(2), "doubled, not reset");
     }
 }

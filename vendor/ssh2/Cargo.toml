@@ -40,6 +40,14 @@ repository = "https://github.com/alexcrichton/ssh2-rs"
 [lib]
 name = "ssh2"
 path = "src/lib.rs"
+# NeoShell: as a workspace member, `cargo test --workspace` would also build
+# upstream's doc examples. `Channel::request_pty`'s example is the only one
+# without `no_run`, so rustdoc links it into an executable, and on
+# windows-msvc that link fails (LNK1120) against the statically vendored
+# OpenSSL. The app links fine because core depends on openssl-sys directly.
+# These are upstream API examples, not NeoShell behaviour; the mkpath unit
+# tests still run on every OS.
+doctest = false
 
 # NeoShell: upstream's `[[test]] all` (tests/all/main.rs, needs a live sshd) and
 # its only dev-dependency, tempfile, are dropped because tests/ is not vendored.

@@ -42,6 +42,12 @@ The patch decodes lossily instead:
   upstream code becomes an error. If a newer stable rustc fails CI with
   `error: ...` in `vendor/ssh2/src/*` and a note pointing at `src/lib.rs`,
   add that lint name under `[lints.rust]` in `vendor/ssh2/Cargo.toml`.
+- `Cargo.toml` `[lib] doctest = false`: as a member, the crate's doc examples
+  would be built too. `Channel::request_pty`'s is the only one without
+  `no_run`, so rustdoc links it, and on windows-msvc that link fails (LNK1120)
+  against the statically vendored OpenSSL. The app itself links fine, because
+  core depends on openssl-sys directly. They are upstream API examples, not
+  NeoShell behaviour.
 - `rustfmt.toml`: `disable_all_formatting = true`, so `cargo fmt --all` never
   rewrites upstream code (0.9.5 is not rustfmt-clean under current rustfmt).
 - `.gitattributes`: `* -text`. Several upstream `src/` files use CRLF; without
@@ -127,9 +133,18 @@ the CRs stripped.
  authors = [
      "Alex Crichton <alex@alexcrichton.com>",
      "Wez Furlong <wez@wezfurlong.org>",
-@@ -38,9 +41,8 @@
+@@ -37,10 +40,17 @@
+ [lib]
  name = "ssh2"
  path = "src/lib.rs"
++# NeoShell: as a workspace member, `cargo test --workspace` would also build
++# upstream's doc examples. `Channel::request_pty`'s example is the only one
++# without `no_run`, so rustdoc links it into an executable, and on
++# windows-msvc that link fails (LNK1120) against the statically vendored
++# OpenSSL. The app links fine because core depends on openssl-sys directly.
++# These are upstream API examples, not NeoShell behaviour; the mkpath unit
++# tests still run on every OS.
++doctest = false
  
 -[[test]]
 -name = "all"
@@ -139,7 +154,7 @@ the CRs stripped.
  
  [dependencies.bitflags]
  version = "2"
-@@ -54,9 +56,18 @@
+@@ -54,9 +64,18 @@
  [dependencies.parking_lot]
  version = "0.12"
  

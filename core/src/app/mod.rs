@@ -32,6 +32,7 @@ mod files;
 mod focus;
 mod forms;
 mod groups;
+mod handlers;
 mod history;
 mod monitor;
 mod palette;
@@ -45,6 +46,7 @@ use files::*;
 use focus::*;
 use forms::*;
 use groups::*;
+use handlers::*;
 use history::*;
 use monitor::*;
 use palette::*;
@@ -1954,47 +1956,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.confirm_input = v;
             Task::none()
         }
-        Message::CreateVault => {
-            if state.password_input.len() < 4 {
-                state.error_message = i18n::t("setup.err_too_short").to_string();
-                return Task::none();
-            }
-            if state.password_input != state.confirm_input {
-                state.error_message = i18n::t("setup.err_mismatch").to_string();
-                return Task::none();
-            }
-            let store = state.store.clone();
-            let pw = state.password_input.clone();
-            Task::perform(
-                async move { store.set_master_password(&pw) },
-                |result| match result {
-                    Ok(()) => Message::VaultCreated,
-                    Err(e) => Message::Error(e),
-                },
-            )
-        }
-        Message::VaultCreated => {
-            state.screen = Screen::Main;
-            state.password_input.clear();
-            state.confirm_input.clear();
-            state.error_message.clear();
-            state.last_activity = std::time::Instant::now();
-            // proxies.json / tunnels.json survive a deleted vault, so a fresh
-            // vault can still inherit cleartext credentials to move.
-            migrate_store_secrets(state);
-            // So does a cleartext history.json, imported the same way.
-            let history = unlock_history(state);
-            // And a cleartext collapsed_groups.json.
-            let groups = unlock_groups(state);
-            // tunnels.json survives a deleted vault, so this path needs the
-            // auto-start too.
-            Task::batch(vec![
-                Task::done(Message::LoadConnections),
-                Task::done(Message::AutoStartTunnels),
-                history,
-                groups,
-            ])
-        }
+        Message::CreateVault => on_create_vault(state),
+        Message::VaultCreated => on_vault_created(state),
         Message::UnlockVault => {
             let store = state.store.clone();
             let pw = state.password_input.clone();
@@ -2007,58 +1970,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
                 },
             )
         }
-        Message::VaultUnlocked => {
-            state.screen = Screen::Main;
-            state.password_input.clear();
-            state.error_message.clear();
-            state.last_activity = std::time::Instant::now();
-            // Synchronous, and before the auto-start below: the migration is
-            // what moves the jump-host credentials out of tunnels.json and
-            // into the vault, and `AutoStartTunnels` needs them resolved.
-            // Doing it as another `Task::done` would leave the ordering to
-            // the runtime.
-            migrate_store_secrets(state);
-            let history = unlock_history(state);
-            // Before `LoadConnections` lands: it prunes this set.
-            let groups = unlock_groups(state);
-            Task::batch(vec![
-                Task::done(Message::LoadConnections),
-                Task::done(Message::CheckForUpdate),
-                Task::done(Message::AutoStartTunnels),
-                history,
-                groups,
-            ])
-        }
-        Message::AutoStartTunnels => {
-            for t in state.tunnel_store.load() {
-                if !t.auto_start {
-                    continue;
-                }
-                let name = t.name.clone();
-                // Re-entrant: an idle re-lock followed by an unlock dispatches
-                // this again, and every already-running tunnel would otherwise
-                // come back as "auto-start failed: tunnel already running".
-                if state.tunnel_manager.is_running(&t.id) {
-                    continue;
-                }
-                log::info!("auto-starting tunnel '{}'", name);
-                // `load()` fills credentials in best-effort and logs at debug
-                // on failure; re-fetch through `get_for_connect` so a locked
-                // vault is a real error instead of a jump-host handshake that
-                // offers an empty password.
-                let cfg = match state.tunnel_store.get_for_connect(&t.id) {
-                    Ok(cfg) => cfg,
-                    Err(e) => {
-                        log::warn!("auto-start skipped for '{}': {}", name, e);
-                        continue;
-                    }
-                };
-                if let Err(e) = state.tunnel_manager.start(cfg) {
-                    log::warn!("auto-start failed for '{}': {}", name, e);
-                }
-            }
-            Task::none()
-        }
+        Message::VaultUnlocked => on_vault_unlocked(state),
+        Message::AutoStartTunnels => on_auto_start_tunnels(state),
 
         // ---- vault re-lock ---------------------------------------------------
         Message::LockNow => {
@@ -2114,72 +2027,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ConnectTo(id) => {
-            if state.connecting_ids.contains(&id) {
-                return Task::none();
-            }
-            state.connecting_ids.insert(id.clone());
-            state.show_connect_dialog = false;
-            // The key that started this — Enter in the palette — is not
-            // typing somewhere else: this connect's sign-in may still take
-            // the keyboard (see `deliver_auth_focus`).
-            state.last_keypress = None;
-
-            // Create a placeholder tab immediately so user sees feedback
-            let tab_id = uuid::Uuid::new_v4().to_string();
-            // The session's id, known before the connect is: its sign-in
-            // challenges carry it, so closing this tab can withdraw them.
-            let session_id = SshManager::new_session_id();
-            let terminal = Arc::new(parking_lot::Mutex::new(TerminalGrid::new(120, 40)));
-            {
-                let mut grid = terminal.lock();
-                let connecting = i18n::t("monitor.connecting");
-                grid.write(format!("\x1b[33m{}\x1b[0m\r\n", connecting).as_bytes());
-            }
-            state.tabs.push(TerminalTab {
-                id: tab_id.clone(),
-                session_id: String::new(), // placeholder
-                connection_id: id.clone(),
-                title: i18n::t("monitor.connecting").to_string(),
-                terminal,
-                custom_title: None,
-                split: None,
-                focus_split: false,
-                bounds: PaneBounds::default(),
-                pending_session_id: session_id.clone(),
-                split_pending: None,
-            });
-            state.active_tab = Some(state.tabs.len() - 1);
-
-            let store = state.store.clone();
-            let ssh = state.ssh_manager.clone();
-            let tab_id2 = tab_id.clone();
-            let conn_id_for_log = id.clone();
-            let conn_id = id.clone();
-            Task::perform(
-                async move {
-                    log::info!("connect_to: attempting connection to id={}", conn_id_for_log);
-                    // Run blocking SSH connect on dedicated thread
-                    tokio::task::spawn_blocking(move || {
-                        let config = store.get_connection(&id)?;
-                        log::info!("connect_to: resolved {}@{}:{} (auth={}, proxy={:?})",
-                            config.username, config.host, config.port,
-                            config.auth_type, config.proxy_id);
-                        let session_id = ssh.connect_config_with_id(&session_id, &config)?;
-                        let title = format!("{}@{}:{}", config.username, config.host, config.port);
-                        Ok((tab_id2, session_id, title, id))
-                    }).await.map_err(|e| format!("Task: {}", e))?
-                },
-                // A failure belongs to this tab alone: it goes, the others
-                // connecting beside it stay (see `ConnectFailed`).
-                move |result: Result<(String, String, String, String), String>| match result {
-                    Ok((tab_id, session_id, title, conn_id)) => {
-                        Message::SshConnected(tab_id, session_id, title, conn_id)
-                    }
-                    Err(e) => Message::ConnectFailed(tab_id.clone(), conn_id.clone(), e),
-                },
-            )
-        }
+        Message::ConnectTo(id) => on_connect_to(state, id),
         Message::ShowConnectDialog => {
             state.show_connect_dialog = true;
             Task::done(Message::LoadConnections)
@@ -2227,55 +2075,10 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.confirm_delete = None;
             Task::none()
         }
-        Message::ExecuteDelete => {
-            if let Some((id, _)) = state.confirm_delete.take() {
-                state.conn_test_results.remove(&id);
-                let store = state.store.clone();
-                return Task::perform(
-                    async move {
-                        store.delete_connection(&id)?;
-                        store.get_connections()
-                    },
-                    |result| match result {
-                        Ok(conns) => Message::ConnectionsLoaded(conns),
-                        Err(e) => Message::Error(e),
-                    },
-                );
-            }
-            Task::none()
-        }
+        Message::ExecuteDelete => on_execute_delete(state),
 
         // ---- form ------------------------------------------------------------
-        Message::ShowForm(maybe_id) => {
-            state.show_form = true;
-            state.show_connect_dialog = false;
-            state.form_test_result = None;
-            state.form_testing = false;
-            if let Some(id) = maybe_id.clone() {
-                state.edit_id = Some(id.clone());
-                if let Some(info) = state.connections.iter().find(|c| c.id == id) {
-                    state.form = ConnectionFormData {
-                        name: info.name.clone(),
-                        host: info.host.clone(),
-                        port: info.port.to_string(),
-                        username: info.username.clone(),
-                        auth_type: info.auth_type.clone(),
-                        group: info.group.clone(),
-                        proxy_id: info.proxy_id.clone().unwrap_or_default(),
-                        ..Default::default()
-                    };
-                }
-            } else {
-                state.edit_id = None;
-                state.form = ConnectionFormData {
-                    port: "22".into(),
-                    auth_type: "password".into(),
-                    ..Default::default()
-                };
-            }
-            state.form_opened = opened_connection_form(&state.form);
-            Task::none()
-        }
+        Message::ShowForm(maybe_id) => on_show_form(state, maybe_id),
         Message::HideForm => {
             state.show_form = false;
             state.edit_id = None;
@@ -2320,253 +2123,27 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.form.group = v;
             Task::none()
         }
-        Message::SaveForm => {
-            // Nothing is saved on a port that does not read as one: the form
-            // stays open under the message.
-            let port = match form_port(&state.form.port, 22) {
-                Ok(port) => port,
-                Err(message) => {
-                    state.show_notice("form.err.title", message);
-                    return Task::none();
-                }
-            };
-            let is_edit = state.edit_id.is_some();
-            let edit_id = state.edit_id.clone();
+        Message::SaveForm => on_save_form(state),
 
-            // When editing, preserve existing secrets if form fields are empty
-            // (ConnectionInfo doesn't expose secrets, so form shows them as empty)
-            let (preserved_pw, preserved_key, preserved_pass) = if let Some(ref id) = edit_id {
-                match state.store.get_connection(id) {
-                    Ok(existing) => (
-                        existing.password.clone(),
-                        existing.private_key.clone(),
-                        existing.passphrase.clone(),
-                    ),
-                    Err(_) => (None, None, None),
-                }
-            } else {
-                (None, None, None)
-            };
-            // The form has no colour field; an edit must not wipe the tag the
-            // sidebar draws from it.
-            let preserved_color = edit_id
-                .as_ref()
-                .and_then(|id| state.connections.iter().find(|c| &c.id == id))
-                .map(|c| c.color.clone())
-                .unwrap_or_default();
-
-            let password = if !state.form.password.is_empty() {
-                Some(state.form.password.clone())
-            } else if is_edit {
-                preserved_pw // keep existing password
-            } else {
-                None
-            };
-
-            let private_key = if !state.form.private_key.is_empty() {
-                Some(state.form.private_key.clone())
-            } else if is_edit {
-                preserved_key
-            } else {
-                None
-            };
-
-            let passphrase = if !state.form.passphrase.is_empty() {
-                Some(state.form.passphrase.clone())
-            } else if is_edit {
-                preserved_pass
-            } else {
-                None
-            };
-
-            let config = ConnectionConfig {
-                id: edit_id.clone().unwrap_or_default(),
-                name: state.form.name.clone(),
-                host: state.form.host.clone(),
-                port,
-                username: state.form.username.clone(),
-                auth_type: state.form.auth_type.clone(),
-                password,
-                private_key,
-                passphrase,
-                // Trimmed: the group is the sidebar's grouping and folding
-                // key, and "生产 " — a stray space an input method left —
-                // would be a second group that reads exactly like "生产".
-                group: state.form.group.trim().to_string(),
-                color: preserved_color,
-                proxy_id: if state.form.proxy_id.is_empty() {
-                    None
-                } else {
-                    Some(state.form.proxy_id.clone())
-                },
-            };
-
-            let store = state.store.clone();
-
-            state.show_form = false;
-            state.edit_id = None;
-            state.form = ConnectionFormData::default();
-
-            Task::perform(
-                async move {
-                    if is_edit {
-                        store.update_connection(config)?;
-                    } else {
-                        store.save_connection(config)?;
-                    }
-                    store.get_connections()
-                },
-                |result| match result {
-                    Ok(conns) => Message::ConnectionsLoaded(conns),
-                    Err(e) => Message::Error(e),
-                },
-            )
-        }
-
-        Message::TestFormConnection => {
-            // Gather form values + preserved secrets (same logic as SaveForm)
-            let port = match form_port(&state.form.port, 22) {
-                Ok(port) => port,
-                Err(message) => {
-                    state.show_notice("form.err.title", message);
-                    return Task::none();
-                }
-            };
-            let is_edit = state.edit_id.is_some();
-            let (preserved_pw, preserved_key, preserved_pass) = if let Some(ref id) = state.edit_id {
-                match state.store.get_connection(id) {
-                    Ok(existing) => (existing.password.clone(), existing.private_key.clone(), existing.passphrase.clone()),
-                    Err(_) => (None, None, None),
-                }
-            } else { (None, None, None) };
-
-            let password = if !state.form.password.is_empty() { Some(state.form.password.clone()) }
-                else if is_edit { preserved_pw } else { None };
-            let private_key = if !state.form.private_key.is_empty() { Some(state.form.private_key.clone()) }
-                else if is_edit { preserved_key } else { None };
-            let passphrase = if !state.form.passphrase.is_empty() { Some(state.form.passphrase.clone()) }
-                else if is_edit { preserved_pass } else { None };
-
-            let host = state.form.host.clone();
-            let username = state.form.username.clone();
-            let auth_type = state.form.auth_type.clone();
-            let proxy_id = if state.form.proxy_id.is_empty() { None } else { Some(state.form.proxy_id.clone()) };
-
-            state.form_testing = true;
-            state.form_test_result = None;
-
-            Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        crate::ssh::SshManager::test_connection(
-                            &host, port, &username, &auth_type,
-                            password.as_deref(), private_key.as_deref(),
-                            passphrase.as_deref(), proxy_id.as_deref(),
-                        )
-                    }).await.unwrap_or(crate::ssh::ConnectionTestResult {
-                        ok: false, latency_ms: 0, stage: "internal".into(),
-                        error: Some("test task failed".into()),
-                    })
-                },
-                Message::TestFormConnectionDone,
-            )
-        }
+        Message::TestFormConnection => on_test_form_connection(state),
         Message::TestFormConnectionDone(result) => {
             state.form_testing = false;
             state.form_test_result = Some(result);
             Task::none()
         }
-        Message::CloneConnection(id) => {
-            if let Ok(src) = state.store.get_connection(&id) {
-                let mut clone = src.clone();
-                clone.id = uuid::Uuid::new_v4().to_string();
-                clone.name = i18n::tf("conn.copy_name", &[("name", &src.name)]);
-                let store = state.store.clone();
-                return Task::perform(
-                    async move {
-                        store.save_connection(clone)?;
-                        store.get_connections()
-                    },
-                    |r| match r {
-                        Ok(conns) => Message::ConnectionsLoaded(conns),
-                        Err(e) => Message::Error(e),
-                    },
-                );
-            }
-            Task::none()
-        }
+        Message::CloneConnection(id) => on_clone_connection(state, id),
         Message::ToggleShortcutsHelp => {
             state.show_shortcuts_help = !state.show_shortcuts_help;
             Task::none()
         }
-        Message::TestConnectionInList(id) => {
-            if let Ok(cfg) = state.store.get_connection(&id) {
-                let host = cfg.host.clone();
-                let port = cfg.port;
-                let username = cfg.username.clone();
-                let auth_type = cfg.auth_type.clone();
-                let password = cfg.password.clone();
-                let private_key = cfg.private_key.clone();
-                let passphrase = cfg.passphrase.clone();
-                let proxy_id = cfg.proxy_id.clone();
-                let id_clone = id.clone();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            crate::ssh::SshManager::test_connection(
-                                &host, port, &username, &auth_type,
-                                password.as_deref(), private_key.as_deref(),
-                                passphrase.as_deref(), proxy_id.as_deref(),
-                            )
-                        }).await.unwrap_or(crate::ssh::ConnectionTestResult {
-                            ok: false, latency_ms: 0, stage: "internal".into(),
-                            error: Some("test task failed".into()),
-                        })
-                    },
-                    move |r| Message::TestConnectionInListDone(id_clone.clone(), r),
-                );
-            }
-            Task::none()
-        }
+        Message::TestConnectionInList(id) => on_test_connection_in_list(state, id),
         Message::TestConnectionInListDone(id, result) => {
             state.conn_test_results.insert(id, result);
             Task::none()
         }
 
         // ---- terminal --------------------------------------------------------
-        Message::SshConnected(tab_id, session_id, title, connection_id) => {
-            // Output held back until this connect landed (see
-            // `next_ssh_event`) is drained in a later update: after the
-            // screen clear below, or dropped if the tab is gone.
-            if state.ssh_held.is_some() {
-                state.ssh_manager.waker().notify_one();
-            }
-            // Update existing placeholder tab (created in ConnectTo)
-            let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) else {
-                // Closed while it connected — `TabClosed` already gave the
-                // connection back. Nothing would ever show or close this
-                // session: close it now.
-                let ssh = state.ssh_manager.clone();
-                return Task::perform(
-                    async move {
-                        let _ = ssh.disconnect(&session_id);
-                    },
-                    |_| Message::None,
-                );
-            };
-            let sid_for_fetch = session_id.clone();
-            tab.session_id = session_id;
-            tab.pending_session_id.clear();
-            tab.connection_id = connection_id.clone();
-            tab.title = title;
-            // Clear the "Connecting..." message
-            tab.terminal.lock().write(b"\x1b[2J\x1b[H"); // Clear screen + home
-            state.connecting_ids.remove(&connection_id);
-            state.show_connect_dialog = false;
-
-            state.current_dir.insert(sid_for_fetch.clone(), "~".to_string());
-            Task::done(Message::ChangeDir(sid_for_fetch, "~".to_string()))
-        }
+        Message::SshConnected(tab_id, session_id, title, connection_id) => on_ssh_connected(state, tab_id, session_id, title, connection_id),
         Message::ConnectFailed(tab_id, connection_id, e) => {
             log::error!("{}", e);
             let Some(idx) = state.tabs.iter().position(|t| t.id == tab_id) else {
@@ -2582,641 +2159,17 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.show_error_dialog = true;
             Task::none()
         }
-        Message::TerminalInput(session_id, data) => {
-            // Track typed commands to capture "sz filename". Scoped so the
-            // cmd_buffer borrow ends before command_was_echoed reads the grid.
-            let submitted: Option<String> = {
-                let buf = state.cmd_buffer.entry(session_id.clone()).or_default();
-                if data == "\r" || data == "\n" {
-                    let cmd = buf.trim().to_string();
-                    buf.clear();
-                    Some(cmd)
-                } else if data == "\x7f" || data == "\x08" {
-                    buf.pop(); // Backspace
-                    None
-                } else if data.chars().all(|c| !c.is_control()) {
-                    buf.push_str(&data);
-                    None
-                } else {
-                    None
-                }
-            };
-            if let Some(cmd) = submitted {
-                // Enter pressed — record to history, but ONLY when the remote
-                // echoed the line. These characters came from the keyboard, so
-                // at a no-echo prompt they are a password, not a command. And
-                // never while locked: the lock wiped the history, and it only
-                // comes back with the key.
-                if !cmd.is_empty()
-                    && state.screen == Screen::Main
-                    && command_was_echoed(state, &session_id, &cmd)
-                {
-                    // Find session title
-                    let title = state.tabs.iter()
-                        .find(|t| t.session_id == session_id)
-                        .map(|t| t.title.clone())
-                        .unwrap_or_default();
-                    let host = state.session_host(&session_id);
-                    // The only producer of history records — and so of
-                    // history.enc, which is written from `cmd_history` alone.
-                    // Keep it inside this gate.
-                    state.cmd_history.push(CmdRecord {
-                        cmd: cmd.clone(),
-                        session_title: title,
-                        host,
-                        timestamp: unix_now(),
-                    });
-                    if state.cmd_history.len() > HISTORY_MAX {
-                        state.cmd_history.drain(..state.cmd_history.len() - HISTORY_MAX);
-                    }
-                    // Written by a paced FlushHistory, not per Enter:
-                    // write_private fsyncs.
-                    state.history_sync.dirty = true;
-                }
-                if cmd.starts_with("sz ") {
-                    let filename = cmd[3..].trim().to_string();
-                    if !filename.is_empty() {
-                        state.sz_filename.insert(session_id.clone(), filename);
-                    }
-                }
-            }
-
-            let ssh = state.ssh_manager.clone();
-            Task::perform(
-                async move {
-                    ssh.send_data(&session_id, data.as_bytes())?;
-                    Ok(())
-                },
-                |result: Result<(), String>| match result {
-                    Ok(()) => Message::None,
-                    Err(e) => Message::Error(e),
-                },
-            )
-        }
-        Message::TabSelected(idx) => {
-            // Double-click (two clicks on the same tab within 400 ms) opens
-            // the rename dialog instead of just re-selecting.
-            let now = std::time::Instant::now();
-            if let Some((last_idx, t)) = state.last_tab_click {
-                if last_idx == idx
-                    && now.duration_since(t) < Duration::from_millis(400)
-                    && idx < state.tabs.len()
-                {
-                    state.last_tab_click = None;
-                    state.tab_rename = Some(idx);
-                    state.tab_rename_input =
-                        state.tabs[idx].display_title().to_string();
-                    return state.focus.focus(text_input::Id::new(TAB_RENAME_INPUT_ID));
-                }
-            }
-            state.last_tab_click = Some((idx, now));
-            if idx < state.tabs.len() {
-                state.active_tab = Some(idx);
-            }
-            Task::none()
-        }
-        Message::TabClosed(idx) => {
-            if idx < state.tabs.len() {
-                let session_id = state.tabs[idx].session_id.clone();
-                // Closing a tab also tears down its split pane's session.
-                let split_sid = state.tabs[idx]
-                    .split
-                    .as_ref()
-                    .map(|s| s.session_id.clone());
-                // Every sign-in the tab is waiting on — its connect, its
-                // split's, a reconnect of either — is withdrawn as a cancel:
-                // the modal goes, and each SSH thread stops waiting for an
-                // answer nobody will give.
-                let asking = tab_auth_sessions(&state.tabs[idx]);
-                let (withdrawn, front) =
-                    take_challenges(&mut state.auth_queue, |c| asking.contains(&c.session_id));
-                for challenge in withdrawn {
-                    challenge.cancel();
-                }
-                // Closed while connecting: the connection can be opened again
-                // at once — the connect's own end no longer finds this tab.
-                if session_id.is_empty() {
-                    state.connecting_ids.remove(&state.tabs[idx].connection_id);
-                }
-                let ssh = state.ssh_manager.clone();
-                state.tabs.remove(idx);
-                // The modal moves on to the next challenge, if the one on it
-                // was this tab's.
-                let auth = if front { state.begin_auth_prompt() } else { Task::none() };
-                // Cleanup monitoring/file data for this session
-                state.server_stats.remove(&session_id);
-                state.top_processes.remove(&session_id);
-                state.monitor_parked.unpark(&session_id);
-                state.file_entries.remove(&session_id);
-                state.current_dir.remove(&session_id);
-                state.prompt_cwd.remove(&session_id);
-                state.alerts_active.remove(&session_id);
-                state.broadcast_selected.remove(&session_id);
-                if let Some(sp) = &split_sid {
-                    state.alerts_active.remove(sp);
-                    state.broadcast_selected.remove(sp);
-                }
-                if state.tabs.is_empty() {
-                    state.active_tab = None;
-                } else {
-                    state.active_tab = Some(idx.min(state.tabs.len() - 1));
-                }
-                let disconnect = Task::perform(
-                    async move {
-                        let _ = ssh.disconnect(&session_id);
-                        if let Some(sp) = split_sid {
-                            let _ = ssh.disconnect(&sp);
-                        }
-                    },
-                    |_| Message::None,
-                );
-                Task::batch([auth, disconnect])
-            } else {
-                Task::none()
-            }
-        }
+        Message::TerminalInput(session_id, data) => on_terminal_input(state, session_id, data),
+        Message::TabSelected(idx) => on_tab_selected(state, idx),
+        Message::TabClosed(idx) => on_tab_closed(state, idx),
 
         // ---- SSH event polling -----------------------------------------------
-        Message::PollSshEvents => {
-            // Keyboard-interactive challenges ride this drain rather than a
-            // timer of their own; a new one comes back as a focus task.
-            let auth = poll_auth_prompts(state);
-            let mut rz_sessions: Vec<String> = Vec::new();
-            let mut sz_sessions: Vec<String> = Vec::new();
-
-            let mut budget = DrainBudget::new(SSH_DRAIN_BYTES, SSH_DRAIN_EVENTS);
-            if let Some(rx) = &state.ssh_event_rx {
-                while let Some(event) =
-                    next_ssh_event(&mut state.ssh_held, rx, &mut budget, &state.tabs)
-                {
-                    match event {
-                        SshEvent::Data { session_id, data } => {
-                            // Skip ZMODEM residual binary data for 2s after detection
-                            if let Some(detected_at) = state.zmodem_active.get(&session_id) {
-                                if detected_at.elapsed() < Duration::from_secs(2) {
-                                    continue;
-                                } else {
-                                    state.zmodem_active.remove(&session_id);
-                                }
-                            }
-
-                            // Detect ZMODEM (both rz and sz send **B0 pattern)
-                            if data.len() >= 4 && detect_zmodem_rz(&data) {
-                                let _ = state.ssh_manager.send_data(&session_id, ZMODEM_CANCEL);
-                                state.zmodem_active.insert(session_id.clone(), std::time::Instant::now());
-
-                                // Extract sz filename from:
-                                // 1. Terminal grid (shell echo already rendered)
-                                // 2. Current data packet echo
-                                // 3. Keyboard buffer fallback
-                                let sz_from_grid = state.tabs.iter()
-                                    .find(|t| t.session_id == session_id)
-                                    .and_then(|tab| {
-                                        let grid = tab.terminal.lock();
-                                        extract_sz_from_grid(&grid)
-                                    });
-
-                                let data_str = String::from_utf8_lossy(&data);
-                                let sz_fname = sz_from_grid
-                                    .or_else(|| extract_sz_filename(&data_str))
-                                    .or_else(|| state.sz_filename.remove(&session_id));
-
-                                if let Some(fname) = sz_fname {
-                                    if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
-                                        tab.terminal.lock().write(
-                                            format!("\r\n\x1b[36m[NeoShell] sz: downloading {} via SFTP...\x1b[0m\r\n", fname).as_bytes(),
-                                        );
-                                    }
-                                    state.sz_filename.insert(session_id.clone(), fname);
-                                    sz_sessions.push(session_id.clone());
-                                } else if data_str.contains("rz waiting") {
-                                    if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
-                                        tab.terminal.lock().write(
-                                            b"\r\n\x1b[36m[NeoShell] rz detected - opening file picker...\x1b[0m\r\n",
-                                        );
-                                    }
-                                    rz_sessions.push(session_id.clone());
-                                } else {
-                                    // Default: rz upload
-                                    if let Some(tab) = state.tabs.iter().find(|t| t.session_id == session_id) {
-                                        tab.terminal.lock().write(
-                                            b"\r\n\x1b[36m[NeoShell] rz detected - opening file picker...\x1b[0m\r\n",
-                                        );
-                                    }
-                                    rz_sessions.push(session_id.clone());
-                                }
-                                continue;
-                            }
-
-                            // Normal data — write to terminal
-                            // Split-aware lookup: data may belong to a main
-                            // pane or a split pane.
-                            if let Some(term) =
-                                state.find_terminal_for_session(&session_id).cloned()
-                            {
-                                let mut grid = term.lock();
-                                grid.write(&data);
-                                grid.scroll_offset = 0; // Auto-scroll to bottom on new data
-                            }
-                        }
-                        SshEvent::Closed { session_id } => {
-                            // What `forget_session` drops; spelled out here,
-                            // where the event receiver holds `state`.
-                            state.zmodem_active.remove(&session_id);
-                            state.broadcast_selected.remove(&session_id);
-                            state.alerts_active.remove(&session_id);
-                            state.server_stats.remove(&session_id);
-                            state.top_processes.remove(&session_id);
-                            state.monitor_parked.unpark(&session_id);
-                            state.file_entries.remove(&session_id);
-                            state.current_dir.remove(&session_id);
-                            state.prompt_cwd.remove(&session_id);
-
-                            // Split pane closed → drop just that pane; main
-                            // pane closed with a live split → promote the
-                            // split to main. Only a tab with no split left
-                            // is removed outright.
-                            let handled = remove_split_pane(&mut state.tabs, &session_id);
-                            if !handled {
-                                if let Some(idx) = state
-                                    .tabs
-                                    .iter()
-                                    .position(|t| t.session_id == session_id)
-                                {
-                                    state.tabs.remove(idx);
-                                    if state.tabs.is_empty() {
-                                        state.active_tab = None;
-                                    } else {
-                                        state.active_tab =
-                                            Some(idx.min(state.tabs.len() - 1));
-                                    }
-                                }
-                            }
-                        }
-                        SshEvent::Error { session_id, error } => {
-                            log::error!("SSH error for {}: {}", session_id, error);
-                        }
-                        SshEvent::Reconnecting { session_id, attempt } => {
-                            if let Some(tab) =
-                                state.tabs.iter_mut().find(|t| t.session_id == session_id)
-                            {
-                                tab.title = reconnecting_title(title_base(&tab.title), attempt);
-                            }
-                        }
-                        SshEvent::Reconnected { session_id } => {
-                            if let Some(tab) =
-                                state.tabs.iter_mut().find(|t| t.session_id == session_id)
-                            {
-                                tab.title = title_base(&tab.title).to_string();
-                            }
-                        }
-                    }
-                }
-            }
-            // Out of budget with output perhaps still queued: the rest comes
-            // in a fresh update, so the window redraws and takes input in
-            // between instead of freezing until a flood is through. A message
-            // rather than a wake, so the wakes' frame pacing (`ssh_wakes`)
-            // does not throttle a backlog. Not while output is held for a
-            // connect: `SshConnected` wakes the drain for that.
-            let auth = if !budget.has_room() && state.ssh_held.is_none() {
-                Task::batch([auth, Task::done(Message::PollSshEvents)])
-            } else {
-                auth
-            };
-
-            // Dispatch ZMODEM messages (only one Task can be returned per update)
-            if let Some(sid) = rz_sessions.into_iter().next() {
-                return Task::batch([auth, Task::done(Message::RzDetected(sid))]);
-            }
-            if let Some(sid) = sz_sessions.into_iter().next() {
-                return Task::batch([auth, Task::done(Message::SzDetected(sid))]);
-            }
-
-            // Check if terminal grid was resized and notify remote PTY
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    if !tab.session_id.is_empty() {
-                        let grid = tab.terminal.lock();
-                        let cur = (grid.cols, grid.rows);
-                        if cur != state.last_term_size && cur.0 > 0 && cur.1 > 0 {
-                            state.last_term_size = cur;
-                            let session_id = tab.session_id.clone();
-                            let ssh = state.ssh_manager.clone();
-                            let cols = cur.0 as u32;
-                            let rows = cur.1 as u32;
-                            drop(grid);
-                            let resize = Task::perform(
-                                async move {
-                                    tokio::task::spawn_blocking(move || {
-                                        ssh.resize(&session_id, cols, rows)
-                                    }).await.ok();
-                                    ()
-                                },
-                                |_| Message::None,
-                            );
-                            return Task::batch([auth, resize]);
-                        }
-                    }
-                }
-            }
-
-            auth
-        }
+        Message::PollSshEvents => on_poll_ssh_events(state),
 
         // ---- keyboard -------------------------------------------------------
-        Message::KeyboardEvent(key, modifiers, text, captured) => {
-            if state.screen != Screen::Main { return Task::none(); }
+        Message::KeyboardEvent(key, modifiers, text, captured) => on_keyboard_event(state, key, modifiers, text, captured),
 
-            // ESC dismisses what is on top: the overlay view_main is drawing
-            // (one z-order, see `Overlay`), then the terminal search bar.
-            // With nothing to dismiss it falls through and reaches the shell
-            // as a plain ESC byte, which vim and friends depend on.
-            if let keyboard::Key::Named(keyboard::key::Named::Escape) = &key {
-                // A text input drops its focus on Esc.
-                state.quick_cmd_focused = false;
-                if state.close_topmost_overlay() {
-                    return Task::none();
-                }
-                if state.term_search_active {
-                    return Task::done(Message::TerminalSearchClose);
-                }
-            }
-
-            // Palette gets first dibs on navigation keys; typed characters
-            // reach the focused text_input through the widget tree, so we
-            // swallow everything else here.
-            if state.show_palette {
-                match &key {
-                    keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
-                        return Task::done(Message::PaletteNavUp);
-                    }
-                    keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
-                        return Task::done(Message::PaletteNavDown);
-                    }
-                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                        return Task::done(Message::PaletteExecute);
-                    }
-                    keyboard::Key::Character(c)
-                        if modifiers.command() && matches!(c.as_str(), "k" | "K") =>
-                    {
-                        state.show_palette = false;
-                        return Task::none();
-                    }
-                    _ => return Task::none(),
-                }
-            }
-
-            // Tab-rename modal: Enter commits (Esc is handled above).
-            if state.tab_rename.is_some() {
-                match &key {
-                    keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                        return Task::done(Message::TabRenameCommit);
-                    }
-                    _ => return Task::none(),
-                }
-            }
-
-            if state.editor_file_path.is_some() {
-                // Allow Cmd+S to save the open editor
-                if modifiers.command() {
-                    if let keyboard::Key::Character(c) = &key {
-                        if c.as_str() == "s" {
-                            return Task::done(Message::SaveEditor);
-                        }
-                    }
-                }
-                return Task::none();
-            }
-            if state.show_form { return Task::none(); }
-            if state.selected_interface.is_some() { return Task::none(); }
-
-            // Cmd/Ctrl+key shortcuts. Note the C/V special case below:
-            //   macOS:        ⌘+C / ⌘+V copy & paste (no shift).
-            //   Win / Linux:  Ctrl+Shift+C / Ctrl+Shift+V copy & paste,
-            //                 so plain Ctrl+C still reaches the terminal as
-            //                 the SIGINT byte 0x03 and Ctrl+V as a literal
-            //                 0x16 (quoted-insert). This matches Windows
-            //                 Terminal / Tabby / Xshell / mintty.
-            if modifiers.command() {
-                let clipboard_mod = if cfg!(target_os = "macos") {
-                    !modifiers.shift()
-                } else {
-                    modifiers.shift()
-                };
-                if let keyboard::Key::Character(c) = &key {
-                    match c.as_str() {
-                        // A focused text input pastes on its own; the terminal
-                        // must not receive the clipboard as well.
-                        "v" | "V" if clipboard_mod => {
-                            if captured {
-                                return Task::none();
-                            }
-                            return Task::done(Message::PasteClipboard);
-                        }
-                        "c" | "C" if clipboard_mod => {
-                            if state.selection_start.is_some() && state.selection_end.is_some() {
-                                return Task::done(Message::CopySelection);
-                            }
-                            return Task::none();
-                        }
-                        // Plain Ctrl+C / Ctrl+V on non-macOS: fall through
-                        // to the terminal byte handler (SIGINT / literal).
-                        "c" | "C" | "v" | "V" if !cfg!(target_os = "macos") => {}
-                        "f" | "F" => return Task::done(Message::ToggleTerminalSearch),
-                        "j" | "J" => return Task::done(Message::ToggleBottomPanel),
-                        "k" | "K" => return Task::done(Message::TogglePalette),
-                        // Cmd+D / Cmd+Shift+D — split the active tab
-                        // (vertical divider / horizontal divider).
-                        "d" | "D" => return Task::done(Message::SplitTab(!modifiers.shift())),
-                        // Cmd+] — toggle pane focus inside a split tab.
-                        "]" => return Task::done(Message::SplitFocusToggle),
-                        "t" | "T" => return Task::done(Message::ShowConnectDialog),
-                        "w" | "W" => {
-                            // Cmd+Shift+W = close focused pane (split-aware);
-                            // Cmd+W = close current tab.
-                            if modifiers.shift() {
-                                return Task::done(Message::CloseFocusedPane);
-                            }
-                            if let Some(idx) = state.active_tab {
-                                return Task::done(Message::TabClosed(idx));
-                            }
-                        }
-                        "1" => return Task::done(Message::SwitchToTab(0)),
-                        "2" => return Task::done(Message::SwitchToTab(1)),
-                        "3" => return Task::done(Message::SwitchToTab(2)),
-                        "4" => return Task::done(Message::SwitchToTab(3)),
-                        "5" => return Task::done(Message::SwitchToTab(4)),
-                        "6" => return Task::done(Message::SwitchToTab(5)),
-                        "7" => return Task::done(Message::SwitchToTab(6)),
-                        "8" => return Task::done(Message::SwitchToTab(7)),
-                        "9" => {
-                            // Cmd+9 = last tab
-                            if !state.tabs.is_empty() {
-                                return Task::done(Message::SwitchToTab(state.tabs.len() - 1));
-                            }
-                        }
-                        "h" | "H" => {
-                            state.show_history = !state.show_history;
-                            state.history_filter.clear();
-                            return Task::none();
-                        }
-                        "/" | "?" => {
-                            state.show_shortcuts_help = !state.show_shortcuts_help;
-                            return Task::none();
-                        }
-                        // Cmd/Ctrl + Shift + L → re-lock the vault now.
-                        // Shift-qualified so it cannot be hit by accident and
-                        // so plain Ctrl+L still clears the remote screen.
-                        "l" | "L" if modifiers.shift() => {
-                            return Task::done(Message::LockNow);
-                        }
-                        // Cmd/Ctrl + Shift + Q → true quit (bypasses close-to-taskbar)
-                        "q" | "Q" if modifiers.shift() => {
-                            return Task::done(Message::QuitApp);
-                        }
-                        "+" | "=" | "-" | "0" => return Task::none(), // Block zoom
-                        _ => {}
-                    }
-                }
-                // macOS: any unmatched ⌘+key is swallowed (GUI convention).
-                // Win/Linux: let unmatched Ctrl+key fall through to the
-                // terminal byte handler so Ctrl+C/V (and Ctrl+A, Ctrl+R,
-                // Ctrl+L, etc.) reach the remote shell.
-                if cfg!(target_os = "macos") {
-                    return Task::none();
-                }
-            }
-
-            // F1 toggles shortcut help (no modifier required)
-            if let keyboard::Key::Named(keyboard::key::Named::F1) = &key {
-                state.show_shortcuts_help = !state.show_shortcuts_help;
-                return Task::none();
-            }
-
-            // Ctrl+Tab / Ctrl+Shift+Tab = switch tabs
-            if modifiers.control() {
-                if let keyboard::Key::Named(keyboard::key::Named::Tab) = &key {
-                    return if modifiers.shift() {
-                        Task::done(Message::SwitchToPrevTab)
-                    } else {
-                        Task::done(Message::SwitchToNextTab)
-                    };
-                }
-            }
-
-            // Overlay guard: when any modal / panel is open, keystrokes are
-            // meant for its inputs — never forward them to the terminal.
-            // (Fixes hex typed in Settings → Appearance echoing in the shell.)
-            if state.any_overlay_open() {
-                return Task::none();
-            }
-
-            // Quick-command autocomplete: Tab / Down take the top suggestion.
-            // A text input lets exactly these keys through uncaptured even
-            // while it has focus, so the focus guess is confirmed against the
-            // widget tree first. If the input turns out not to be focused,
-            // the key still goes to the terminal.
-            if !captured && state.quick_cmd_focused && is_autocomplete_key(&key, &modifiers) {
-                let accept = state.quick_cmd_suggestions().into_iter().next();
-                let fallback: Vec<Message> = state
-                    .focused_session_id()
-                    .zip(key_to_terminal_bytes(&key, &modifiers, text.as_deref()))
-                    .map(|(sid, data)| {
-                        state
-                            .keystroke_targets(sid)
-                            .into_iter()
-                            .map(|target| Message::TerminalInput(target, data.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                return quick_cmd_input_focused().then(move |focused| {
-                    if focused {
-                        accept
-                            .clone()
-                            .map_or_else(Task::none, |s| Task::done(Message::QuickCmdAccept(s)))
-                    } else {
-                        Task::batch(fallback.clone().into_iter().map(Task::done))
-                    }
-                });
-            }
-
-            // A key a focused text input consumed was typed into that input
-            // (quick command box, path fields, search bar). It used to reach
-            // the shell too — every quick command ran twice.
-            if captured {
-                return Task::none();
-            }
-            // A printable key arriving uncaptured proves no text input has focus.
-            if text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control())) {
-                state.quick_cmd_focused = false;
-            }
-
-            if let Some(session_id) = state.focused_session_id() {
-                if let Some(data) = key_to_terminal_bytes(&key, &modifiers, text.as_deref()) {
-                    // Live sync mode fans the keystroke out to every ticked
-                    // session (the focused one included, deduped).
-                    let tasks: Vec<Task<Message>> = state
-                        .keystroke_targets(session_id)
-                        .into_iter()
-                        .map(|sid| Task::done(Message::TerminalInput(sid, data.clone())))
-                        .collect();
-                    return Task::batch(tasks);
-                }
-            }
-            Task::none()
-        }
-
-        Message::PasteClipboard => {
-            // A right-click away from the open file menu just closes it.
-            if state.remote_menu.take().is_some() { return Task::none(); }
-            // Right-click paste is terminal-only. If an overlay is open, a
-            // right-click on the overlay backdrop shouldn't send paste chars
-            // into the hidden terminal.
-            if state.any_overlay_open() { return Task::none(); }
-            if let Some(session_id) = state.focused_session_id() {
-                let ssh = state.ssh_manager.clone();
-                // Sync mode mirrors the paste to every ticked session too.
-                let mut targets: Vec<String> = if state.sync_input_on {
-                    state.broadcast_selected.iter().cloned().collect()
-                } else {
-                    Vec::new()
-                };
-                if !targets.contains(&session_id) {
-                    targets.push(session_id);
-                }
-                // Bracketed paste (DEC 2004) is switched per terminal, so each
-                // target's own flag is read here, while the grids are at hand.
-                // With it on, a multi-line paste into vim or a shell arrives
-                // as text instead of executing line by line.
-                let targets: Vec<(String, bool)> = targets
-                    .into_iter()
-                    .map(|sid| {
-                        let bracketed = state
-                            .find_terminal_for_session(&sid)
-                            .is_some_and(|t| t.lock().bracketed_paste());
-                        (sid, bracketed)
-                    })
-                    .collect();
-                return Task::perform(
-                    async move {
-                        let mut clipboard = arboard::Clipboard::new()
-                            .map_err(|e| format!("Clipboard error: {}", e))?;
-                        let content = clipboard.get_text()
-                            .map_err(|e| format!("Clipboard read error: {}", e))?;
-                        for (sid, bracketed) in &targets {
-                            ssh.send_data(sid, &crate::terminal::encode_paste(&content, *bracketed))?;
-                        }
-                        Ok(())
-                    },
-                    |r: Result<(), String>| match r {
-                        Ok(()) => Message::None,
-                        Err(e) => Message::Error(e),
-                    },
-                );
-            }
-            Task::none()
-        }
+        Message::PasteClipboard => on_paste_clipboard(state),
 
         Message::CancelTransfer => {
             if let Some(ref progress) = state.transfer_progress {
@@ -3246,111 +2199,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- monitor ---------------------------------------------------------
-        Message::FetchMonitorData => {
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let ssh = state.ssh_manager.clone();
-                    let sid = tab.focused_session().to_string();
-                    // The ports tab rides the same tick, at a slower rate.
-                    let ports = state
-                        .ports_due(&sid)
-                        .then(|| Task::done(Message::FetchPorts));
-                    // One fetch per session at a time (see `InFlight`).
-                    if !state.monitor_inflight.start(&sid) {
-                        return ports.unwrap_or_else(Task::none);
-                    }
-                    let fetch = Task::perform(
-                        async move {
-                            let session_id = sid.clone();
-                            let result = tokio::task::spawn_blocking(move || {
-                                let stats = ssh.fetch_server_stats(&session_id)?;
-                                let procs = ssh.fetch_top_processes(&session_id, 15)?;
-                                Ok((stats, procs))
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(format!("{}", e)));
-                            (sid, result)
-                        },
-                        |(sid, result)| match result {
-                            Ok((stats, procs)) => Message::MonitorDataReceived(sid, stats, procs),
-                            Err(e) => Message::MonitorError(sid, e),
-                        },
-                    );
-                    return match ports {
-                        Some(ports) => Task::batch([fetch, ports]),
-                        None => fetch,
-                    };
-                }
-            }
-            Task::none()
-        }
-        Message::MonitorDataReceived(sid, stats, procs) => {
-            state.monitor_inflight.finish(&sid);
-            state.monitor_parked.unpark(&sid);
-            // Calculate network speed
-            let now = std::time::Instant::now();
-            if let Some(prev_time) = state.prev_net_time.get(&sid) {
-                let elapsed = now.duration_since(*prev_time).as_secs_f64();
-                if elapsed > 0.5 {
-                    let prev_rx = state.prev_net_rx.get(&sid).copied().unwrap_or(0);
-                    let prev_tx = state.prev_net_tx.get(&sid).copied().unwrap_or(0);
-                    if prev_rx > 0 && stats.net_rx_bytes >= prev_rx {
-                        state.net_rx_rate.insert(sid.clone(), (stats.net_rx_bytes - prev_rx) as f64 / elapsed);
-                        state.net_tx_rate.insert(sid.clone(), (stats.net_tx_bytes - prev_tx) as f64 / elapsed);
-                    }
-                }
-            }
-            state.prev_net_rx.insert(sid.clone(), stats.net_rx_bytes);
-            state.prev_net_tx.insert(sid.clone(), stats.net_tx_bytes);
-            state.prev_net_time.insert(sid.clone(), now);
-
-            // Threshold alerts: CPU is approximated as load_1m / cores
-            // (matches what the monitor panel shows); mem/disk straight %.
-            if state.alert_cfg.enabled {
-                let mut breaches: Vec<String> = Vec::new();
-                let cpu_pct = if stats.cpu_cores > 0 {
-                    (stats.load_1m / stats.cpu_cores as f64 * 100.0).min(999.0)
-                } else {
-                    0.0
-                };
-                if cpu_pct >= state.alert_cfg.cpu_pct as f64 {
-                    breaches.push(format!("CPU {:.0}%", cpu_pct));
-                }
-                if stats.mem_percent >= state.alert_cfg.mem_pct as f64 {
-                    breaches.push(format!("MEM {:.0}%", stats.mem_percent));
-                }
-                if stats.disk_percent >= state.alert_cfg.disk_pct as f64 {
-                    breaches.push(format!("DISK {:.0}%", stats.disk_percent));
-                }
-                if breaches.is_empty() {
-                    state.alerts_active.remove(&sid);
-                } else {
-                    state.alerts_active.insert(sid.clone(), breaches);
-                }
-            }
-
-            state.server_stats.insert(sid.clone(), stats);
-            state.top_processes.insert(sid.clone(), procs);
-
-            // Sync file browser with shell CWD (extracted from terminal
-            // prompt) — a split pane's too, now that the panel can show it.
-            if let Some(term) = state.find_terminal_for_session(&sid) {
-                let grid = term.lock();
-                if let Some(cwd) = extract_cwd_from_prompt(&grid) {
-                    drop(grid);
-                    if follow_prompt_cwd(
-                        &mut state.prompt_cwd,
-                        &mut state.current_dir,
-                        &state.file_entries,
-                        &sid,
-                        &cwd,
-                    ) {
-                        return Task::done(Message::ChangeDir(sid, cwd));
-                    }
-                }
-            }
-            Task::none()
-        }
+        Message::FetchMonitorData => on_fetch_monitor_data(state),
+        Message::MonitorDataReceived(sid, stats, procs) => on_monitor_data_received(state, sid, stats, procs),
         Message::MonitorError(sid, e) => {
             state.monitor_inflight.finish(&sid);
             if !exec_parked(&e) {
@@ -3362,25 +2212,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ResumeMonitoring(sid) => {
-            // One press, one challenge: nothing more goes out while one is.
-            if !state.monitor_parked.begin_resume(&sid) {
-                return Task::none();
-            }
-            // The user's own action: its challenge may take the keyboard.
-            state.last_keypress = None;
-            let ssh = state.ssh_manager.clone();
-            Task::perform(
-                async move {
-                    let session_id = sid.clone();
-                    let result = tokio::task::spawn_blocking(move || ssh.resume_exec(&session_id))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Task: {}", e)));
-                    (sid, result)
-                },
-                |(sid, result)| Message::ResumeMonitoringDone(sid, result),
-            )
-        }
+        Message::ResumeMonitoring(sid) => on_resume_monitoring(state, sid),
         Message::ExecParked(sid) => {
             if state.monitor_parked.park(&sid) {
                 log::warn!("Exec connection parked for {}: file listing refused", sid);
@@ -3413,23 +2245,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.file_entries.insert(sid, Listing::new(path, entries));
             Task::none()
         }
-        Message::ChangeDir(sid, path) => {
-            let ssh = state.ssh_manager.clone();
-            let sid_for_state = sid.clone();
-            let sid_for_async = sid.clone();
-            let path_async = path.clone();
-            state.current_dir.insert(sid_for_state, path.clone());
-            Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || ssh.list_files(&sid_for_async, &path_async))
-                        .await.map_err(|e| format!("{}", e))?
-                },
-                move |result: Result<(String, Vec<FileEntry>), String>| match result {
-                    Ok((real_path, entries)) => Message::FilesReceived(sid.clone(), real_path, entries),
-                    Err(e) => Message::ListingFailed(sid.clone(), path.clone(), e),
-                },
-            )
-        }
+        Message::ChangeDir(sid, path) => on_change_dir(state, sid, path),
         Message::ListingFailed(sid, requested, error) => {
             note_listing_failed(&mut state.current_dir, &mut state.file_entries, &sid, &requested);
             Task::done(listing_failed(&sid, error))
@@ -3450,79 +2266,9 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- file operations -------------------------------------------------
-        Message::UploadFile => {
-            let Some(sid) = state
-                .active_tab
-                .and_then(|idx| state.tabs.get(idx))
-                .map(|t| t.focused_session().to_string())
-                .filter(|s| !s.is_empty())
-            else {
-                return Task::none();
-            };
-            // Before the picker, not after the user has chosen a file.
-            if state.transfer_refused_busy() {
-                return Task::none();
-            }
-            let dir = state.browser_dir(&sid).unwrap_or_else(|| "~".to_string());
-            // The bar is claimed in `UploadPicked`, once there is a file to
-            // send: a cancelled picker leaves nothing behind.
-            Task::perform(
-                async move {
-                    let file = rfd::AsyncFileDialog::new()
-                        .set_title(i18n::t("filedialog.upload"))
-                        .set_directory(default_download_dir())
-                        .pick_file()
-                        .await
-                        .map(|f| f.path().to_path_buf());
-                    (sid, dir, file)
-                },
-                |(sid, dir, file)| Message::UploadPicked(sid, dir, file),
-            )
-        }
-        Message::DownloadFile(sid, remote_path) => {
-            if state.transfer_refused_busy() {
-                return Task::none();
-            }
-            // Only prefills the save dialog (the user still picks the path),
-            // but the name comes from the remote listing — sanitise it anyway.
-            let filename = safe_local_basename(&remote_path).unwrap_or_else(|| "file".to_string());
-            Task::perform(
-                async move {
-                    let local = rfd::AsyncFileDialog::new()
-                        .set_title(i18n::t("filedialog.save"))
-                        .set_file_name(&filename)
-                        .set_directory(default_download_dir())
-                        .save_file()
-                        .await
-                        .map(|f| f.path().to_path_buf());
-                    (sid, remote_path, local)
-                },
-                |(sid, remote_path, local)| Message::DownloadPicked(sid, remote_path, local),
-            )
-        }
-        Message::DownloadPicked(sid, remote_path, local) => {
-            let Some(local) = local.filter(|p| !p.as_os_str().is_empty()) else {
-                return Task::none();
-            };
-            // Another transfer may have started while the dialog was open.
-            let Some(progress) = state.claim_transfer_bar() else {
-                return Task::none();
-            };
-            let ssh = state.ssh_manager.clone();
-            let local = local.to_string_lossy().to_string();
-            Task::perform(
-                async move {
-                    let bar = progress.clone();
-                    let result = tokio::task::spawn_blocking(move || {
-                        ssh.download_file_with_progress(&sid, &remote_path, &local, progress)
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(format!("Task: {}", e)));
-                    (bar, result)
-                },
-                |(bar, result)| Message::DownloadDone(bar, result),
-            )
-        }
+        Message::UploadFile => on_upload_file(state),
+        Message::DownloadFile(sid, remote_path) => on_download_file(state, sid, remote_path),
+        Message::DownloadPicked(sid, remote_path, local) => on_download_picked(state, sid, remote_path, local),
         Message::DownloadDone(bar, result) => {
             release_bar(&mut state.transfer_progress, &bar);
             report_transfer_error(state, result);
@@ -3560,24 +2306,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::SaveEditor => {
-            if let (Some(sid), Some(path)) = (state.editor_session_id.clone(), state.editor_file_path.clone()) {
-                let ssh = state.ssh_manager.clone();
-                let content = state.editor_content.text();
-                Task::perform(
-                    async move {
-                        ssh.write_file_content(&sid, &path, &content)?;
-                        Ok(())
-                    },
-                    |result: Result<(), String>| match result {
-                        Ok(()) => Message::EditorSaved,
-                        Err(e) => Message::Error(e),
-                    },
-                )
-            } else {
-                Task::none()
-            }
-        }
+        Message::SaveEditor => on_save_editor(state),
         Message::EditorSaved => {
             state.editor_dirty = false;
             Task::none()
@@ -3611,74 +2340,9 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.form.private_key = path;
             Task::none()
         }
-        Message::ImportSshConfig(config) => {
-            state.show_form = true;
-            state.show_connect_dialog = false;
-            state.edit_id = None;
-            state.form = ConnectionFormData {
-                name: config.alias.clone(),
-                host: if config.hostname.is_empty() {
-                    config.alias
-                } else {
-                    config.hostname
-                },
-                port: config.port.to_string(),
-                username: config.user,
-                auth_type: if config.identity_file.is_empty() {
-                    "password".to_string()
-                } else {
-                    "key".to_string()
-                },
-                private_key: config.identity_file,
-                group: "SSH Config".to_string(),
-                ..Default::default()
-            };
-            state.form_opened = opened_connection_form(&state.form);
-            Task::none()
-        }
+        Message::ImportSshConfig(config) => on_import_ssh_config(state, config),
 
-        Message::ImportAllSshConfigs => {
-            // Bulk-import every non-wildcard host from ~/.ssh/config, skipping
-            // entries that already match an existing connection (by user@host:port).
-            let configs = crate::sshconfig::parse_ssh_config();
-            let existing_keys: HashSet<String> = state.connections.iter()
-                .map(|c| format!("{}@{}:{}", c.username, c.host, c.port))
-                .collect();
-            let store = state.store.clone();
-            let mut added = 0usize;
-            for cfg in configs {
-                // Same key the welcome screen counts pending imports with.
-                let Some(key) = ssh_config_key(&cfg) else { continue };
-                if existing_keys.contains(&key) { continue; }
-                let host = if cfg.hostname.is_empty() { cfg.alias.clone() } else { cfg.hostname.clone() };
-                let conn = ConnectionConfig {
-                    id: String::new(),
-                    name: cfg.alias.clone(),
-                    host,
-                    port: cfg.port,
-                    username: cfg.user.clone(),
-                    auth_type: if cfg.identity_file.is_empty() { "password".into() } else { "key".into() },
-                    password: None,
-                    private_key: if cfg.identity_file.is_empty() { None } else { Some(cfg.identity_file.clone()) },
-                    passphrase: None,
-                    group: "SSH Config".into(),
-                    color: String::new(),
-                    proxy_id: None,
-                };
-                if store.save_connection(conn).is_ok() {
-                    added += 1;
-                }
-            }
-            log::info!("Imported {} entries from ~/.ssh/config", added);
-            state.show_connect_dialog = false;
-            return Task::perform(
-                async move { store.get_connections() },
-                |r| match r {
-                    Ok(conns) => Message::ConnectionsLoaded(conns),
-                    Err(e) => Message::Error(e),
-                },
-            );
-        }
+        Message::ImportAllSshConfigs => on_import_all_ssh_configs(state),
 
         // ---- broadcast -------------------------------------------------------
         Message::ShowBroadcastDialog => {
@@ -3764,24 +2428,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
         Message::SnippetFormNameChanged(v) => { state.snippet_form_name = v; Task::none() }
         Message::SnippetFormBodyChanged(v) => { state.snippet_form_body = v; Task::none() }
-        Message::SnippetSave => {
-            let name = state.snippet_form_name.trim().to_string();
-            let body = state.snippet_form_body.trim().to_string();
-            if name.is_empty() || body.is_empty() { return Task::none(); }
-            let id = state.snippet_edit_id.clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            if let Some(existing) = state.snippets.iter_mut().find(|s| s.id == id) {
-                existing.name = name;
-                existing.body = body;
-            } else {
-                state.snippets.push(Snippet { id, name, body });
-            }
-            save_snippets(&state.snippets);
-            state.snippet_edit_id = None;
-            state.snippet_form_name.clear();
-            state.snippet_form_body.clear();
-            Task::none()
-        }
+        Message::SnippetSave => on_snippet_save(state),
         Message::SnippetDelete(id) => {
             state.snippets.retain(|s| s.id != id);
             save_snippets(&state.snippets);
@@ -3789,53 +2436,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- rz/sz ZMODEM handlers -------------------------------------------
-        Message::RzDetected(sid) => {
-            if state.transfer_refused_busy() {
-                return Task::none();
-            }
-            let current_dir = state.current_dir.get(&sid).cloned()
-                .unwrap_or_else(|| "~".to_string());
-            // The bar is claimed in `RzPicked`, once a file is chosen.
-            Task::perform(
-                async move {
-                    let file = rfd::AsyncFileDialog::new()
-                        .set_title(i18n::t("filedialog.rz_upload"))
-                        .set_directory(default_download_dir())
-                        .pick_file()
-                        .await
-                        .map(|f| f.path().to_path_buf());
-                    (sid, current_dir, file)
-                },
-                |(sid, dir, file)| Message::RzPicked(sid, dir, file),
-            )
-        }
-        Message::RzPicked(sid, dir, file) => {
-            let Some((local, name)) = file.and_then(|f| {
-                let name = f.file_name()?.to_string_lossy().to_string();
-                Some((f, name))
-            }) else {
-                return Task::none();
-            };
-            let Some(progress) = state.claim_transfer_bar() else {
-                return Task::none();
-            };
-            let remote_path = join_remote_path(&dir, &name);
-            let local_path = local.to_string_lossy().to_string();
-            let ssh = state.ssh_manager.clone();
-            Task::perform(
-                async move {
-                    let sid2 = sid.clone();
-                    let bar = progress.clone();
-                    let result = tokio::task::spawn_blocking(move || {
-                        ssh.upload_file_with_progress(&sid2, &local_path, &remote_path, progress)
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(format!("Task: {}", e)));
-                    (sid, bar, result)
-                },
-                |(sid, bar, result)| Message::RzUploadDone(sid, bar, result),
-            )
-        }
+        Message::RzDetected(sid) => on_rz_detected(state, sid),
+        Message::RzPicked(sid, dir, file) => on_rz_picked(state, sid, dir, file),
         Message::ToggleBottomPanel => {
             state.bottom_panel_collapsed = !state.bottom_panel_collapsed;
             state.quick_cmd_focused = false;
@@ -4009,27 +2611,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.key_form_comment = s;
             Task::none()
         }
-        Message::KeyGenerate => {
-            let name = state.key_form_name.trim().to_string();
-            let name = if name.is_empty() {
-                "id_ed25519_neoshell".to_string()
-            } else {
-                name
-            };
-            let comment = state.key_form_comment.trim().to_string();
-            match crate::sshkeys::generate_ed25519(&name, &comment) {
-                Ok(_) => {
-                    state.key_form_name.clear();
-                    state.key_form_comment.clear();
-                    state.local_keys = crate::sshkeys::list_keys();
-                    state.key_deploy_status = Some(i18n::t("keys.generated").to_string());
-                }
-                Err(e) => {
-                    state.key_deploy_status = Some(format!("✗ {}", e));
-                }
-            }
-            Task::none()
-        }
+        Message::KeyGenerate => on_key_generate(state),
         Message::KeyCopyPubkey(path) => {
             if let Some(k) = state.local_keys.iter().find(|k| k.path == path) {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -4048,30 +2630,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.key_deploying = None;
             Task::none()
         }
-        Message::KeyDeployTo(path, conn_id) => {
-            let pubkey = state
-                .local_keys
-                .iter()
-                .find(|k| k.path == path)
-                .map(|k| k.pubkey.clone());
-            let Some(pubkey) = pubkey else {
-                return Task::none();
-            };
-            state.key_deploying = None;
-            state.key_deploy_status = Some(i18n::t("keys.deploying").to_string());
-            let store = state.store.clone();
-            Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let config = store.get_connection(&conn_id)?;
-                        crate::ssh::deploy_pubkey(&config, &pubkey)
-                    })
-                    .await
-                    .map_err(|e| format!("Task: {}", e))?
-                },
-                Message::KeyDeployDone,
-            )
-        }
+        Message::KeyDeployTo(path, conn_id) => on_key_deploy_to(state, path, conn_id),
         Message::KeyDeployDone(result) => {
             state.key_deploy_status = Some(match result {
                 Ok(host) => format!("{} {}", i18n::t("keys.deploy_ok"), host),
@@ -4081,84 +2640,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- v0.7.0: split panes ----------------------------------------------
-        Message::SplitTab(vertical) => {
-            let Some(idx) = state.active_tab else {
-                return Task::none();
-            };
-            let Some(tab) = state.tabs.get(idx) else {
-                return Task::none();
-            };
-            // One split per tab, none while one is still connecting; need a
-            // live main session to duplicate.
-            if tab.split.is_some() || tab.split_pending.is_some() || tab.session_id.is_empty() {
-                return Task::none();
-            }
-            let tab_id = tab.id.clone();
-            let conn_id = tab.connection_id.clone();
-            // Known before the connect, like `ConnectTo`'s: closing the tab
-            // withdraws the split's sign-in challenges too.
-            let session_id = SshManager::new_session_id();
-            if let Some(tab) = state.tabs.get_mut(idx) {
-                tab.split_pending = Some(session_id.clone());
-            }
-            // Cmd+D is not typing elsewhere (see `ConnectTo`).
-            state.last_keypress = None;
-            let store = state.store.clone();
-            let ssh = state.ssh_manager.clone();
-            let failed_tab = tab_id.clone();
-            Task::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let config = store.get_connection(&conn_id)?;
-                        let session_id = ssh.connect_config_with_id(&session_id, &config)?;
-                        Ok((tab_id, vertical, session_id))
-                    })
-                    .await
-                    .map_err(|e| format!("Task: {}", e))?
-                },
-                move |result: Result<(String, bool, String), String>| match result {
-                    Ok((tab_id, vertical, session_id)) => {
-                        Message::SplitConnected(tab_id, vertical, session_id)
-                    }
-                    Err(e) => Message::SplitFailed(failed_tab.clone(), e),
-                },
-            )
-        }
-        Message::SplitConnected(tab_id, vertical, session_id) => {
-            // As in `SshConnected`: output held for this split goes next.
-            if state.ssh_held.is_some() {
-                state.ssh_manager.waker().notify_one();
-            }
-            if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
-                // Only the split this tab is still waiting for.
-                if tab.split.is_none() && tab.split_pending.as_deref() == Some(session_id.as_str()) {
-                    tab.split_pending = None;
-                    let terminal =
-                        Arc::new(parking_lot::Mutex::new(TerminalGrid::new(80, 24)));
-                    tab.split = Some(SplitPane {
-                        session_id: session_id.clone(),
-                        terminal,
-                        vertical,
-                        ratio: 0.5,
-                        bounds: PaneBounds::default(),
-                    });
-                    tab.focus_split = true;
-                    // The bottom panel follows the focused pane: it shows
-                    // this session's files now.
-                    state.current_dir.insert(session_id.clone(), "~".to_string());
-                    return Task::done(Message::ChangeDir(session_id, "~".to_string()));
-                }
-            }
-            // Tab vanished (or already split) while we were connecting —
-            // don't leak the session.
-            let ssh = state.ssh_manager.clone();
-            Task::perform(
-                async move {
-                    let _ = ssh.disconnect(&session_id);
-                },
-                |_| Message::None,
-            )
-        }
+        Message::SplitTab(vertical) => on_split_tab(state, vertical),
+        Message::SplitConnected(tab_id, vertical, session_id) => on_split_connected(state, tab_id, vertical, session_id),
         Message::SplitFailed(tab_id, e) => {
             log::error!("{}", e);
             let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) else {
@@ -4192,47 +2675,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::CloseFocusedPane => {
-            let Some(idx) = state.active_tab else {
-                return Task::none();
-            };
-            let Some(tab) = state.tabs.get(idx) else {
-                return Task::none();
-            };
-            if tab.split.is_none() {
-                return Task::done(Message::TabClosed(idx));
-            }
-            let sid = tab.focused_session().to_string();
-            // Taken out here and now, the survivor promoted as the Closed
-            // handler would. No `SshEvent::Closed` comes for it: the
-            // disconnect's stop flag ends the reader without a word, and a
-            // dead pane left holding the focus turned every key into a
-            // "Session not found" error. A Closed that does arrive finds
-            // nothing left to do.
-            if !remove_split_pane(&mut state.tabs, &sid) {
-                return Task::none();
-            }
-            state.forget_session(&sid);
-            // The selection was in the pane that is gone.
-            state.selection_start = None;
-            state.selection_end = None;
-            state.selecting = false;
-            // Its sign-in challenges go with it, as a closed tab's do.
-            let (withdrawn, front) =
-                take_challenges(&mut state.auth_queue, |c| c.session_id == sid);
-            for challenge in withdrawn {
-                challenge.cancel();
-            }
-            let auth = if front { state.begin_auth_prompt() } else { Task::none() };
-            let ssh = state.ssh_manager.clone();
-            let disconnect = Task::perform(
-                async move {
-                    let _ = ssh.disconnect(&sid);
-                },
-                |_| Message::None,
-            );
-            Task::batch([auth, disconnect])
-        }
+        Message::CloseFocusedPane => on_close_focused_pane(state),
 
         Message::RzUploadDone(sid, bar, result) => {
             release_bar(&mut state.transfer_progress, &bar);
@@ -4295,87 +2738,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             scroll_to_current_match(state);
             Task::none()
         }
-        Message::SzDetected(sid) => {
-            // Prevent duplicate: skip if already downloading
-            if state.transfer_progress.is_some() {
-                return Task::none();
-            }
-
-            let filename = state.sz_filename.remove(&sid);
-            let current_dir = state.current_dir.get(&sid).cloned().unwrap_or("~".to_string());
-
-            if let Some(fname) = filename {
-                // The name was scraped from terminal output — the remote host
-                // controls it. Reduce it to a bare file name before it touches
-                // the local filesystem; refuse rather than guess.
-                let base = match safe_local_basename(&fname) {
-                    Some(b) => b,
-                    None => {
-                        if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
-                            // `{:?}` escapes what the server put in the name:
-                            // it reaches the terminal as text, never as a
-                            // control sequence.
-                            let notice = i18n::tf(
-                                "term.sz_refused",
-                                &[("name", &format!("{:?}", fname))],
-                            );
-                            tab.terminal.lock().write(
-                                format!("\r\n\x1b[31m{}\x1b[0m\r\n", notice).as_bytes(),
-                            );
-                        }
-                        return Task::none();
-                    }
-                };
-
-                let Some(progress) = state.claim_transfer_bar() else {
-                    return Task::none();
-                };
-                let ssh = state.ssh_manager.clone();
-
-                // Download directly to ~/Downloads
-                let default_dir = dirs::download_dir()
-                    .or_else(|| dirs::desktop_dir())
-                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
-                let local_path = default_dir.join(&base).to_string_lossy().to_string();
-
-                if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
-                    tab.terminal.lock().write(
-                        format!("\r\n\x1b[32m[NeoShell] sz: {} → {}\x1b[0m\r\n", fname, local_path).as_bytes(),
-                    );
-                }
-
-                let bar = progress.clone();
-                Task::perform(
-                    async move {
-                        let result = tokio::task::spawn_blocking(move || {
-                            // Resolve absolute path on remote (shell CWD may differ from file browser)
-                            let remote_path = if fname.starts_with('/') {
-                                fname.clone()
-                            } else {
-                                let pwd = ssh.exec_command(&sid, "pwd")
-                                    .unwrap_or_else(|_| "~".to_string());
-                                let cwd = pwd.trim();
-                                format!("{}/{}", cwd.trim_end_matches('/'), fname)
-                            };
-
-                            ssh.download_file_with_progress(&sid, &remote_path, &local_path, progress)
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(format!("{}", e)));
-                        (bar, result)
-                    },
-                    |(bar, result)| Message::DownloadDone(bar, result),
-                )
-            } else {
-                // No filename captured — refresh file browser
-                if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
-                    tab.terminal.lock().write(
-                        b"\r\n\x1b[33m[NeoShell] sz: no filename captured. Use file browser to download.\x1b[0m\r\n",
-                    );
-                }
-                Task::done(Message::ChangeDir(sid, current_dir))
-            }
-        }
+        Message::SzDetected(sid) => on_sz_detected(state, sid),
 
         // ---- terminal scrollback & selection ------------------------------------
         Message::TerminalScrollUp(lines) => {
@@ -4397,243 +2760,11 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::TerminalMouseDown(MouseButton::Left) => {
-            // Passthrough guard: clicks inside an open overlay don't reach here
-            // when they hit a widget; this guards the "click outside the modal
-            // card but inside the page" case from triggering terminal actions.
-            if state.any_overlay_open() { return Task::none(); }
-            state.context_menu = None;
-            state.remote_menu = None;
-            // A click outside every widget takes focus off any text input.
-            state.quick_cmd_focused = false;
-
-            // Check if click is on the splitter zone
-            // Layout from top: toolbar(30) + tabbar(34) + terminal(Fill) + splitter(4) + bottom(H) + status(24)
-            // Splitter center Y ≈ window_height - bottom_panel_height - 24 - 2
-            let splitter_y = state.window_height - state.bottom_panel_height - 24.0 - 2.0;
-            let hit = !state.bottom_panel_collapsed
-                && (state.cursor_y - splitter_y).abs() < 8.0;
-
-            if hit && !state.dragging_splitter {
-                state.dragging_splitter = true;
-                state.drag_start_y = state.cursor_y;
-                state.drag_start_height = state.bottom_panel_height;
-                return Task::none();
-            }
-
-            // Normal terminal click — don't start selection if dragging
-            if state.dragging_splitter {
-                return Task::none();
-            }
-            // The application asked for the mouse (vim `mouse=a`, htop, tmux):
-            // the press is reported to it instead of starting a selection.
-            // Shift keeps it local (see `mouse_report_target`).
-            if let Some((session_id, term)) = state.mouse_report_target() {
-                if let Some((col, row)) =
-                    state.focused_pane_cell(state.cursor_x, state.cursor_y, false)
-                {
-                    let report = term.lock().encode_mouse(MouseButton::Left, col, row, true);
-                    if let Some(bytes) = report {
-                        send_mouse_report(&state.ssh_manager, &session_id, &bytes);
-                        state.mouse_report = Some(MouseReport {
-                            session_id,
-                            button: MouseButton::Left,
-                            cell: (col, row),
-                        });
-                        return Task::none();
-                    }
-                }
-            }
-            state.selecting = true;
-            state.selection_start = None;
-            state.selection_end = None;
-            // Invalidate canvas cache so old selection is cleared
-            if let Some(term) = state.focused_terminal() {
-                let mut grid = term.lock();
-                grid.generation = grid.generation.wrapping_add(1);
-            }
-            Task::none()
-        }
-        Message::TerminalMouseDown(button) => {
-            // Right or middle. A right-click away from the open file menu
-            // just closes it.
-            if state.remote_menu.take().is_some() {
-                return Task::none();
-            }
-            if state.any_overlay_open() {
-                return Task::none();
-            }
-            let target = state.mouse_report_target();
-            match secondary_click(button, target.is_some()) {
-                SecondaryClick::Report => {
-                    // Over the pane only, and one reported press at a time:
-                    // `mouse_report` holds the one whose release is owed.
-                    let cell = state.focused_pane_cell(state.cursor_x, state.cursor_y, false);
-                    let free = state.mouse_report.is_none();
-                    if let (Some((session_id, term)), Some((col, row)), true) = (target, cell, free)
-                    {
-                        if let Some(bytes) = term.lock().encode_mouse(button, col, row, true) {
-                            send_mouse_report(&state.ssh_manager, &session_id, &bytes);
-                            state.mouse_report = Some(MouseReport {
-                                session_id,
-                                button,
-                                cell: (col, row),
-                            });
-                        }
-                    }
-                    Task::none()
-                }
-                SecondaryClick::Paste => Task::done(Message::PasteClipboard),
-                SecondaryClick::Ignore => Task::none(),
-            }
-        }
-        Message::TerminalMouseMove(x, y) => {
-            state.cursor_x = x;
-            state.cursor_y = y;
-            // Handle splitter drag
-            if state.dragging_splitter {
-                let delta = state.drag_start_y - y;
-                state.bottom_panel_height = (state.drag_start_height + delta).clamp(80.0, 600.0);
-                return Task::none();
-            }
-            // Split-divider drag: move the ratio by the pointer's travel
-            // along the split axis, relative to where the press landed.
-            if let Some((start_pos, start_ratio)) = state.split_drag {
-                let vertical = state
-                    .active_tab
-                    .and_then(|i| state.tabs.get(i))
-                    .and_then(|t| t.split.as_ref())
-                    .map(|sp| sp.vertical);
-                if let Some(vertical) = vertical {
-                    let extent = state.split_extent(vertical);
-                    let pos = if vertical { x } else { y };
-                    if let Some(sp) = state
-                        .active_tab
-                        .and_then(|i| state.tabs.get_mut(i))
-                        .and_then(|t| t.split.as_mut())
-                    {
-                        if extent > 0.0 {
-                            sp.ratio = (start_ratio + (pos - start_pos) / extent)
-                                .clamp(SPLIT_MIN, SPLIT_MAX);
-                        }
-                    }
-                }
-                return Task::none();
-            }
-            // A reported press: its drag goes to the same application (DEC
-            // 1002 / 1003), pinned to the pane's edge if the pointer leaves
-            // it, and only when the cell actually changes.
-            if let Some(report) = state.mouse_report.clone() {
-                // The cell math measures from the focused pane; if focus moved
-                // mid-drag there is nothing sensible to report.
-                if state.focused_session_id().as_deref() == Some(report.session_id.as_str()) {
-                    if let Some(cell) = state.focused_pane_cell(x, y, true) {
-                        if cell != report.cell {
-                            if let Some(r) = state.mouse_report.as_mut() {
-                                r.cell = cell;
-                            }
-                            let bytes = state
-                                .find_terminal_for_session(&report.session_id)
-                                .and_then(|t| {
-                                    t.lock().encode_mouse_motion(Some(report.button), cell.0, cell.1)
-                                });
-                            if let Some(bytes) = bytes {
-                                send_mouse_report(&state.ssh_manager, &report.session_id, &bytes);
-                            }
-                        }
-                    }
-                }
-                return Task::none();
-            }
-            // DEC 1003 also wants motion with no button held: over the pane
-            // only, and again only when the cell changes.
-            if !state.selecting && !state.any_overlay_open() {
-                if let Some((session_id, term)) = state.mouse_report_target() {
-                    let cell = state.focused_pane_cell(x, y, false);
-                    if cell != state.mouse_motion_cell {
-                        state.mouse_motion_cell = cell;
-                        if let Some((col, row)) = cell {
-                            let bytes = term.lock().encode_mouse_motion(None, col, row);
-                            if let Some(bytes) = bytes {
-                                send_mouse_report(&state.ssh_manager, &session_id, &bytes);
-                            }
-                        }
-                    }
-                }
-            }
-            if state.selecting {
-                // Split-aware: measured from the focused pane (8b17f55).
-                let (x_off, y_off) = state.focused_pane_origin();
-                // Same font source as the canvas (see TerminalView construction),
-                // otherwise the hit-test and the renderer disagree.
-                if let Some(pos) =
-                    pixel_to_grid_with(x, y, x_off, y_off, state.theme_cfg.terminal_font_size)
-                {
-                    if state.selection_start.is_none() {
-                        state.selection_start = Some(pos);
-                    }
-                    state.selection_end = Some(pos);
-                    // Invalidate canvas cache to update selection highlight
-                    if let Some(term) = state.focused_terminal() {
-                        let mut grid = term.lock();
-                        grid.generation = grid.generation.wrapping_add(1);
-                    }
-                }
-            }
-            Task::none()
-        }
-        Message::TerminalMouseUp(button) => {
-            let left = button == MouseButton::Left;
-            if left {
-                // Always reset splitter drag
-                state.dragging_splitter = false;
-                state.split_drag = None;
-                state.selecting = false;
-            }
-            // The release of a reported press goes to the application that
-            // saw the press, wherever the pointer is now.
-            if let Some(report) = state.mouse_report.take_if(|r| r.button == button) {
-                let cell = if state.focused_session_id().as_deref() == Some(report.session_id.as_str()) {
-                    state
-                        .focused_pane_cell(state.cursor_x, state.cursor_y, true)
-                        .unwrap_or(report.cell)
-                } else {
-                    report.cell
-                };
-                let bytes = state
-                    .find_terminal_for_session(&report.session_id)
-                    .and_then(|t| t.lock().encode_mouse(report.button, cell.0, cell.1, false));
-                if let Some(bytes) = bytes {
-                    send_mouse_report(&state.ssh_manager, &report.session_id, &bytes);
-                }
-                return Task::none();
-            }
-            if left && state.selection_start.is_some() && state.selection_end.is_some() {
-                return Task::done(Message::CopySelection);
-            }
-            Task::none()
-        }
-        Message::CopySelection => {
-            if let (Some(start), Some(end)) = (state.selection_start, state.selection_end) {
-                if let Some(term) = state.focused_terminal() {
-                    let grid = term.lock();
-                    let text = extract_selection(&grid, start, end);
-                    if !text.is_empty() {
-                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                            let _ = clipboard.set_text(&text);
-                        }
-                    }
-                }
-            }
-            state.selection_start = None;
-            state.selection_end = None;
-            // Invalidate canvas cache to clear selection highlight
-            if let Some(term) = state.focused_terminal() {
-                let mut grid = term.lock();
-                grid.generation = grid.generation.wrapping_add(1);
-            }
-            Task::none()
-        }
+        Message::TerminalMouseDown(MouseButton::Left) => on_terminal_mouse_down(state),
+        Message::TerminalMouseDown(button) => on_terminal_mouse_down_2(state, button),
+        Message::TerminalMouseMove(x, y) => on_terminal_mouse_move(state, x, y),
+        Message::TerminalMouseUp(button) => on_terminal_mouse_up(state, button),
+        Message::CopySelection => on_copy_selection(state),
 
         // ---- update ----------------------------------------------------------
         Message::CheckForUpdate => {
@@ -4667,50 +2798,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.path_input = v;
             Task::none()
         }
-        Message::InspectProcess(pid) => {
-            // Get session for exec
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let session_id = tab.focused_session().to_string();
-                    let ssh = state.ssh_manager.clone();
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || {
-                                // Comprehensive /proc-based process inspection
-                                let cmd = format!(
-                                    concat!(
-                                        "echo '___STATUS___' && cat /proc/{pid}/status 2>/dev/null; ",
-                                        "echo '___CMDLINE___' && tr '\\0' ' ' < /proc/{pid}/cmdline 2>/dev/null; echo; ",
-                                        "echo '___IO___' && cat /proc/{pid}/io 2>/dev/null; ",
-                                        "echo '___CWD___' && readlink /proc/{pid}/cwd 2>/dev/null; ",
-                                        "echo '___EXE___' && readlink /proc/{pid}/exe 2>/dev/null; ",
-                                        "echo '___FD_COUNT___' && ls /proc/{pid}/fd 2>/dev/null | wc -l; ",
-                                        "echo '___PS___' && ps -p {pid} -o pid,ppid,user,nice,vsz,rss,etime,stat,args --no-headers 2>/dev/null; ",
-                                        "echo '___CHILDREN___' && ps --ppid {pid} -o pid,pcpu,pmem,comm --no-headers 2>/dev/null; ",
-                                        "echo '___THREADS___' && ls /proc/{pid}/task 2>/dev/null | head -50; ",
-                                        "echo '___NET___' && ss -tnp 2>/dev/null | grep 'pid={pid},' | head -20; ",
-                                        "echo '___LISTEN___' && ss -tlnp 2>/dev/null | grep 'pid={pid},' | head -10; ",
-                                        "echo '___LIMITS___' && cat /proc/{pid}/limits 2>/dev/null | grep -E 'open files|processes|memory' ; ",
-                                        "echo '___OOM___' && cat /proc/{pid}/oom_score 2>/dev/null; ",
-                                        "echo '___FDS___' && ls -la /proc/{pid}/fd 2>/dev/null | tail -15; ",
-                                    ),
-                                    pid = pid
-                                );
-                                let output = ssh.exec_command(&session_id, &cmd)?;
-                                let mut detail = parse_process_detail(pid, &output);
-                                detail.session_id = session_id;
-                                Ok(detail)
-                            }).await.map_err(|e| format!("{}", e))?
-                        },
-                        |result: Result<ProcessDetailInfo, String>| match result {
-                            Ok(detail) => Message::ProcessDetailReceived(detail),
-                            Err(e) => Message::Error(e),
-                        },
-                    );
-                }
-            }
-            Task::none()
-        }
+        Message::InspectProcess(pid) => on_inspect_process(state, pid),
         Message::ProcessDetailReceived(detail) => {
             state.process_detail = Some(detail);
             Task::none()
@@ -4782,28 +2870,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.history_filter = v;
             Task::none()
         }
-        Message::ReplayCommand(cmd) => {
-            state.show_history = false;
-            state.history_filter.clear();
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let session_id = tab.session_id.clone();
-                    let ssh = state.ssh_manager.clone();
-                    let full_cmd = format!("{}\n", cmd);
-                    return Task::perform(
-                        async move {
-                            ssh.send_data(&session_id, full_cmd.as_bytes())?;
-                            Ok(())
-                        },
-                        |result: Result<(), String>| match result {
-                            Ok(()) => Message::None,
-                            Err(e) => Message::Error(e),
-                        },
-                    );
-                }
-            }
-            Task::none()
-        }
+        Message::ReplayCommand(cmd) => on_replay_command(state, cmd),
         Message::ClearHistory => {
             clear_history(&mut state.cmd_history, &mut state.history_sync);
             // On disk at once, and over the old bytes: clearing is how a user
@@ -4860,26 +2927,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::UploadLocalFile => {
-            // Upload selected local file to remote current dir
-            if let Some(local_file) = state.selected_local_file.clone() {
-                if let Some(idx) = state.active_tab {
-                    if let Some(tab) = state.tabs.get(idx) {
-                        let sid = tab.focused_session().to_string();
-                        if state.transfer_refused_busy() {
-                            return Task::none();
-                        }
-                        let remote_dir = state.browser_dir(&sid).unwrap_or_else(|| "~".into());
-                        state.selected_local_file = None;
-                        // The shared upload path: one bar, queued drops wait
-                        // for it, and the listing refreshes when it ends.
-                        let local = std::path::PathBuf::from(local_file);
-                        return start_upload(state, sid, local, remote_dir);
-                    }
-                }
-            }
-            Task::none()
-        }
+        Message::UploadLocalFile => on_upload_local_file(state),
         Message::SendQuickCmd => {
             let cmd = state.quick_cmd_input.trim().to_string();
             if !cmd.is_empty() {
@@ -4942,56 +2990,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::SaveProxy => {
-            let ptype = match state.proxy_form.proxy_type.as_str() {
-                "http" => crate::proxy::ProxyType::Http,
-                "bastion" => crate::proxy::ProxyType::SshBastion,
-                _ => crate::proxy::ProxyType::Socks5h,
-            };
-            let default_port: u16 = match ptype {
-                crate::proxy::ProxyType::Http => 8080,
-                crate::proxy::ProxyType::SshBastion => 22,
-                _ => 1080,
-            };
-            let port = match form_port(&state.proxy_form.port, default_port) {
-                Ok(port) => port,
-                Err(message) => {
-                    state.show_notice("form.err.title", message);
-                    return Task::none();
-                }
-            };
-            let is_bastion = matches!(ptype, crate::proxy::ProxyType::SshBastion);
-            let proxy = crate::proxy::ProxyConfig {
-                id: state.proxy_edit_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                name: state.proxy_form.name.clone(),
-                proxy_type: ptype,
-                host: state.proxy_form.host.clone(),
-                port,
-                username: if state.proxy_form.username.is_empty() { None } else { Some(state.proxy_form.username.clone()) },
-                password: if state.proxy_form.password.is_empty() { None } else { Some(state.proxy_form.password.clone()) },
-                auth_type: if is_bastion { Some(state.proxy_form.auth_type.clone()) } else { None },
-                private_key: if is_bastion && !state.proxy_form.private_key.is_empty() { Some(state.proxy_form.private_key.clone()) } else { None },
-                passphrase: if is_bastion && !state.proxy_form.passphrase.is_empty() { Some(state.proxy_form.passphrase.clone()) } else { None },
-            };
-            // `try_*`, not the ()-returning shims: with the secret now in
-            // the vault, a locked vault means the save did not happen, and
-            // silently logging that loses the user's edit.
-            let saved = if state.proxy_edit_id.is_some() {
-                state.proxy_store.try_update(&proxy)
-            } else {
-                state.proxy_store.try_add(proxy)
-            };
-            if let Err(e) = saved {
-                state.error_message = e;
-                state.show_error_dialog = true;
-                return Task::none();
-            }
-            state.proxies = state.proxy_store.load();
-            state.show_proxy_form = false;
-            state.proxy_edit_id = None;
-            state.proxy_form = ProxyFormData::default();
-            Task::none()
-        }
+        Message::SaveProxy => on_save_proxy(state),
         Message::DeleteProxy(id) => {
             if let Err(e) = state.proxy_store.try_delete(&id) {
                 state.error_message = e;
@@ -5001,23 +3000,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.proxies = state.proxy_store.load();
             Task::none()
         }
-        Message::TestProxy(id) => {
-            if let Some(proxy) = state.proxies.iter().find(|p| p.id == id).cloned() {
-                let pid = id.clone();
-                return Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            crate::proxy::test_proxy(&proxy)
-                        }).await.unwrap_or(crate::proxy::ProxyTestResult {
-                            reachable: false, latency_ms: 0,
-                            error: Some("Task failed".into()),
-                        })
-                    },
-                    move |result| Message::ProxyTestDone(pid.clone(), result),
-                );
-            }
-            Task::none()
-        }
+        Message::TestProxy(id) => on_test_proxy(state, id),
         Message::ProxyTestDone(id, result) => {
             state.proxy_test_results.insert(id, result);
             Task::none()
@@ -5077,56 +3060,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::SaveTunnel => {
-            let forwards: Result<Vec<_>, String> = state.tunnel_form.forwards_text
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .map(crate::tunnel::ForwardRule::parse)
-                .collect();
-            let forwards = match forwards {
-                Ok(f) if !f.is_empty() => f,
-                Ok(_) => {
-                    state.show_notice("form.err.title", i18n::t("tunnel.err.no_forwards").to_string());
-                    return Task::none();
-                }
-                Err(e) => {
-                    let message = i18n::tf("tunnel.err.forward_parse", &[("err", &e)]);
-                    state.show_notice("form.err.title", message);
-                    return Task::none();
-                }
-            };
-            let port = match form_port(&state.tunnel_form.ssh_port, 22) {
-                Ok(port) => port,
-                Err(message) => {
-                    state.show_notice("form.err.title", message);
-                    return Task::none();
-                }
-            };
-            let cfg = crate::tunnel::TunnelConfig {
-                id: state.tunnel_edit_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                name: state.tunnel_form.name.clone(),
-                ssh_host: state.tunnel_form.ssh_host.clone(),
-                ssh_port: port,
-                username: state.tunnel_form.username.clone(),
-                auth_type: state.tunnel_form.auth_type.clone(),
-                password: if state.tunnel_form.password.is_empty() { None } else { Some(state.tunnel_form.password.clone()) },
-                private_key: if state.tunnel_form.private_key.is_empty() { None } else { Some(state.tunnel_form.private_key.clone()) },
-                passphrase: if state.tunnel_form.passphrase.is_empty() { None } else { Some(state.tunnel_form.passphrase.clone()) },
-                forwards,
-                auto_start: state.tunnel_form.auto_start,
-            };
-            if let Err(e) = state.tunnel_store.try_upsert(cfg) {
-                state.error_message = e;
-                state.show_error_dialog = true;
-                return Task::none();
-            }
-            state.tunnels = state.tunnel_store.load();
-            state.show_tunnel_form = false;
-            state.tunnel_edit_id = None;
-            state.tunnel_form = TunnelFormData::default();
-            Task::none()
-        }
+        Message::SaveTunnel => on_save_tunnel(state),
         Message::DeleteTunnel(id) => {
             state.tunnel_manager.stop(&id);
             if let Err(e) = state.tunnel_store.try_delete(&id) {
@@ -5137,23 +3071,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.tunnels = state.tunnel_store.load();
             Task::none()
         }
-        Message::StartTunnel(id) => {
-            // `get_for_connect`, so a locked vault says so instead of dialling
-            // the jump host with an empty password.
-            match state.tunnel_store.get_for_connect(&id) {
-                Ok(cfg) => {
-                    if let Err(e) = state.tunnel_manager.start(cfg) {
-                        state.error_message = i18n::tf("tunnel.err.start", &[("err", &e)]);
-                        state.show_error_dialog = true;
-                    }
-                }
-                Err(e) => {
-                    state.error_message = i18n::tf("tunnel.err.start", &[("err", &e)]);
-                    state.show_error_dialog = true;
-                }
-            }
-            Task::none()
-        }
+        Message::StartTunnel(id) => on_start_tunnel(state, id),
         Message::StopTunnel(id) => {
             state.tunnel_manager.stop(&id);
             Task::none()
@@ -5196,23 +3114,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ThemeHexChanged(hex) => {
-            if let Some(z) = state.theme_editing_zone {
-                let s = hex.trim().trim_start_matches('#');
-                if s.len() == 6 {
-                    if let Ok(n) = u32::from_str_radix(s, 16) {
-                        let rgb = crate::ui::theme_config::Rgb::new(
-                            ((n >> 16) & 0xFF) as u8,
-                            ((n >> 8) & 0xFF) as u8,
-                            (n & 0xFF) as u8,
-                        );
-                        z.set(&mut state.theme_cfg, rgb);
-                        apply_theme(state);
-                    }
-                }
-            }
-            Task::none()
-        }
+        Message::ThemeHexChanged(hex) => on_theme_hex_changed(state, hex),
         Message::ThemeTerminalFontSize(s) => {
             state.theme_cfg.terminal_font_size = s.clamp(8.0, 28.0);
             state.font_size = state.theme_cfg.terminal_font_size;
@@ -5275,73 +3177,9 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             });
             state.focus.focus(text_input::Id::new(SFTP_INPUT_ID))
         }
-        Message::SftpRename => {
-            let Some(RemoteFileMenu { session_id, dir, entry: Some(entry), .. }) =
-                state.remote_menu.take()
-            else {
-                return Task::none();
-            };
-            state.sftp_input = Some(SftpInputDialog {
-                session_id,
-                dir,
-                value: entry.name.clone(),
-                kind: SftpInputKind::Rename {
-                    confirmed: ConfirmedEntry::from(&entry),
-                    kind: entry.kind(),
-                    from: entry.name,
-                },
-                error: None,
-            });
-            Task::batch([
-                state.focus.focus(text_input::Id::new(SFTP_INPUT_ID)),
-                text_input::select_all(text_input::Id::new(SFTP_INPUT_ID)),
-            ])
-        }
-        Message::SftpChmod => {
-            let Some(RemoteFileMenu { session_id, dir, entry: Some(entry), .. }) =
-                state.remote_menu.take()
-            else {
-                return Task::none();
-            };
-            let value = mode_from_permissions(&entry.permissions)
-                .map(|m| format!("{:o}", m))
-                .unwrap_or_default();
-            state.sftp_input = Some(SftpInputDialog {
-                session_id,
-                dir,
-                kind: SftpInputKind::Chmod {
-                    confirmed: ConfirmedEntry::from(&entry),
-                    kind: entry.kind(),
-                    name: entry.name,
-                },
-                value,
-                error: None,
-            });
-            Task::batch([
-                state.focus.focus(text_input::Id::new(SFTP_INPUT_ID)),
-                text_input::select_all(text_input::Id::new(SFTP_INPUT_ID)),
-            ])
-        }
-        Message::SftpDelete => {
-            let Some(RemoteFileMenu { session_id, dir, entry: Some(entry), .. }) =
-                state.remote_menu.take()
-            else {
-                return Task::none();
-            };
-            // Destructive: held for the confirmation, which quotes the exact
-            // name and says what it is — the kind the row showed, which is
-            // also what the SSH layer checks the entry against.
-            let path = join_remote_path(&dir, &entry.name);
-            state.confirm_action = Some(ConfirmAction::SftpDelete {
-                session_id,
-                dir,
-                path,
-                confirmed: ConfirmedEntry::from(&entry),
-                kind: entry.kind(),
-                name: entry.name,
-            });
-            Task::none()
-        }
+        Message::SftpRename => on_sftp_rename(state),
+        Message::SftpChmod => on_sftp_chmod(state),
+        Message::SftpDelete => on_sftp_delete(state),
         Message::SftpInputChanged(value) => {
             if let Some(dialog) = state.sftp_input.as_mut() {
                 dialog.value = value;
@@ -5353,59 +3191,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.sftp_input = None;
             Task::none()
         }
-        Message::SftpInputSubmit => {
-            let Some(dialog) = state.sftp_input.clone() else {
-                return Task::none();
-            };
-            let SftpInputDialog { session_id, dir, kind, value, .. } = dialog;
-            let ssh = state.ssh_manager.clone();
-            match kind {
-                SftpInputKind::NewFolder => {
-                    let Some(name) = valid_remote_name(&value) else {
-                        if let Some(d) = state.sftp_input.as_mut() {
-                            d.error = Some("sftp.err_name");
-                        }
-                        return Task::none();
-                    };
-                    state.sftp_input = None;
-                    let path = join_remote_path(&dir, &name);
-                    sftp_op_task(ssh, session_id, dir, move |ssh, sid| ssh.sftp_mkdir(sid, &path))
-                }
-                SftpInputKind::Rename { from, confirmed, .. } => {
-                    let target = rename_target(&from, &value);
-                    let Ok(target) = target else {
-                        if let Some(d) = state.sftp_input.as_mut() {
-                            d.error = Some("sftp.err_name");
-                        }
-                        return Task::none();
-                    };
-                    state.sftp_input = None;
-                    // Submitted as it opened: nothing to rename.
-                    let Some(name) = target else {
-                        return Task::none();
-                    };
-                    let (src, dst) = (join_remote_path(&dir, &from), join_remote_path(&dir, &name));
-                    sftp_op_task(ssh, session_id, dir, move |ssh, sid| {
-                        ssh.sftp_rename_confirmed(sid, &src, &dst, confirmed)
-                    })
-                }
-                SftpInputKind::Chmod { name, kind, confirmed } => {
-                    let Some(mode) = parse_octal_mode(&value) else {
-                        if let Some(d) = state.sftp_input.as_mut() {
-                            d.error = Some("sftp.err_mode");
-                        }
-                        return Task::none();
-                    };
-                    state.sftp_input = None;
-                    // Destructive too: confirmed with the exact name, its
-                    // kind, the path and the mode.
-                    let path = join_remote_path(&dir, &name);
-                    state.confirm_action =
-                        Some(ConfirmAction::SftpChmod { session_id, dir, path, name, kind, confirmed, mode });
-                    Task::none()
-                }
-            }
-        }
+        Message::SftpInputSubmit => on_sftp_input_submit(state),
         Message::SftpOpDone(session_id, dir, result) => {
             // Set directly rather than through Message::Error, which would
             // also drop a transfer's progress bar and placeholder tabs. A
@@ -5419,79 +3205,10 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.confirm_action = None;
             Task::none()
         }
-        Message::ConfirmActionExecute => {
-            let Some(action) = state.confirm_action.take() else {
-                return Task::none();
-            };
-            let ssh = state.ssh_manager.clone();
-            match action {
-                // The row the user confirmed goes along: the SSH layer
-                // refuses an entry that is no longer the kind shown, and a
-                // row whose listing could not be verified; it addresses the
-                // entry by the name the server sent, not the text shown. Only
-                // a confirmed folder is deleted with what is inside it.
-                ConfirmAction::SftpDelete { session_id, dir, path, confirmed, .. } => {
-                    sftp_op_task(ssh, session_id, dir, move |ssh, sid| {
-                        ssh.sftp_remove_confirmed(sid, &path, confirmed)
-                    })
-                }
-                ConfirmAction::SftpChmod { session_id, dir, path, confirmed, mode, .. } => {
-                    sftp_op_task(ssh, session_id, dir, move |ssh, sid| {
-                        ssh.sftp_chmod_confirmed(sid, &path, mode, confirmed)
-                    })
-                }
-                ConfirmAction::Kill { session_id, pid, signal, identity, .. } => Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            // Still the process the user confirmed? A pid that
-                            // changed hands while the dialog was up would take
-                            // the signal meant for another.
-                            match read_proc_identity(&ssh, &session_id, pid)? {
-                                Some(now) if same_process(&identity, &now) => {
-                                    ssh.kill_process(&session_id, pid, signal)
-                                }
-                                Some(_) => Err(i18n::tf(
-                                    "process.err.changed",
-                                    &[("pid", &pid.to_string())],
-                                )),
-                                None => Err(i18n::tf("process.err.gone", &[("pid", &pid.to_string())])),
-                            }
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Task: {}", e)))
-                    },
-                    Message::KillProcessDone,
-                ),
-            }
-        }
+        Message::ConfirmActionExecute => on_confirm_action_execute(state),
 
         // ---- recursive transfer / drag-and-drop -------------------------------
-        Message::UploadDir => {
-            let Some(session_id) = state
-                .active_tab
-                .and_then(|i| state.tabs.get(i))
-                .map(|t| t.focused_session().to_string())
-                .filter(|s| !s.is_empty())
-            else {
-                return Task::none();
-            };
-            if state.transfer_refused_busy() {
-                return Task::none();
-            }
-            let dir = state.browser_dir(&session_id).unwrap_or_else(|| "~".to_string());
-            Task::perform(
-                async move {
-                    let folder = rfd::AsyncFileDialog::new()
-                        .set_title(i18n::t("filedialog.upload_dir"))
-                        .set_directory(dirs::home_dir().unwrap_or_default())
-                        .pick_folder()
-                        .await
-                        .map(|f| f.path().to_path_buf());
-                    (session_id, dir, folder)
-                },
-                |(session_id, dir, folder)| Message::UploadPicked(session_id, dir, folder),
-            )
-        }
+        Message::UploadDir => on_upload_dir(state),
         Message::UploadPicked(session_id, dir, picked) => {
             let Some(local) = picked else {
                 return Task::none();
@@ -5502,50 +3219,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             start_upload(state, session_id, local, dir)
         }
-        Message::DownloadDir(session_id, remote) => {
-            if state.transfer_refused_busy() {
-                return Task::none();
-            }
-            Task::perform(
-                async move {
-                    let parent = rfd::AsyncFileDialog::new()
-                        .set_title(i18n::t("filedialog.download_dir"))
-                        .set_directory(default_download_dir())
-                        .pick_folder()
-                        .await
-                        .map(|f| f.path().to_path_buf());
-                    (session_id, remote, parent)
-                },
-                |(session_id, remote, parent)| {
-                    Message::DownloadDirPicked(session_id, remote, parent)
-                },
-            )
-        }
-        Message::DownloadDirPicked(session_id, remote, parent) => {
-            let Some(parent) = parent else {
-                return Task::none();
-            };
-            let Some(progress) = state.claim_transfer_bar() else {
-                return Task::none();
-            };
-            // The folder name comes from the remote listing: it must not get
-            // to choose where on the local disk the tree lands.
-            let name = safe_local_basename(&remote).unwrap_or_else(|| "download".to_string());
-            let local = parent.join(name).to_string_lossy().to_string();
-            let ssh = state.ssh_manager.clone();
-            Task::perform(
-                async move {
-                    let bar = progress.clone();
-                    let result = tokio::task::spawn_blocking(move || {
-                        ssh.download_dir_with_progress(&session_id, &remote, &local, progress)
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(format!("Task: {}", e)));
-                    (bar, result)
-                },
-                |(bar, result)| Message::DownloadDirDone(bar, result),
-            )
-        }
+        Message::DownloadDir(session_id, remote) => on_download_dir(state, session_id, remote),
+        Message::DownloadDirPicked(session_id, remote, parent) => on_download_dir_picked(state, session_id, remote, parent),
         Message::DownloadDirDone(bar, result) => {
             release_bar(&mut state.transfer_progress, &bar);
             report_transfer_error(state, result);
@@ -5567,32 +3242,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
                 None => next,
             }
         }
-        Message::FileDropped(path) => {
-            // Main screen, nothing modal in the way: a drop under the
-            // connection form must not start an upload behind it.
-            if state.screen != Screen::Main || state.any_overlay_open() {
-                return Task::none();
-            }
-            let Some((session_id, remote_dir)) = state.drop_target() else {
-                state.error_message = i18n::t("drop.no_target").to_string();
-                state.show_error_dialog = true;
-                return Task::none();
-            };
-            // Someone else's transfer holds the bar and would not start the
-            // queue when it ends.
-            if state.transfer_busy() && !state.upload_job_running {
-                state.error_message = i18n::t("transfer.busy").to_string();
-                state.show_error_dialog = true;
-                return Task::none();
-            }
-            log::info!("drop: {} -> {}", path.display(), remote_dir);
-            state.drop_queue.push_back(DropJob {
-                session_id,
-                local: path,
-                remote_dir,
-            });
-            start_next_drop(state)
-        }
+        Message::FileDropped(path) => on_file_dropped(state, path),
 
         // ---- command history / quick-command autocomplete --------------------
         Message::FlushHistory => {
@@ -5616,23 +3266,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::HistoryLoaded(seq, load) => {
-            let Some(landed) =
-                land_history_load(&mut state.cmd_history, &mut state.history_sync, seq, load)
-            else {
-                return Task::none();
-            };
-            // Said, not only logged: otherwise the user finds out when the
-            // commands are gone.
-            if let Some(key) = landed.warning {
-                state.show_notice("history.warn.title", i18n::t(key).to_string());
-            }
-            if landed.import_legacy {
-                persist_history(state, false, true)
-            } else {
-                Task::none()
-            }
-        }
+        Message::HistoryLoaded(seq, load) => on_history_loaded(state, seq, load),
         Message::QuickCmdAccept(cmd) => {
             state.quick_cmd_input = cmd;
             state.quick_cmd_focused = true;
@@ -5683,59 +3317,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- process kill ------------------------------------------------------
-        Message::KillProcessRequest(signal) => {
-            let Some(detail) = &state.process_detail else {
-                return Task::none();
-            };
-            if detail.pid <= 1 || detail.session_id.is_empty() {
-                return Task::none();
-            }
-            // The confirmation names the process as /proc has it now — not as
-            // the popup read it, maybe minutes ago, nor as `ss` named it: the
-            // pid may have changed hands since.
-            let (session_id, pid) = (detail.session_id.clone(), detail.pid);
-            let ssh = state.ssh_manager.clone();
-            Task::perform(
-                async move {
-                    let sid = session_id.clone();
-                    let read = tokio::task::spawn_blocking(move || read_proc_identity(&ssh, &sid, pid))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Task: {}", e)));
-                    (session_id, read)
-                },
-                move |(session_id, read)| Message::KillIdentityRead(session_id, pid, signal, read),
-            )
-        }
-        Message::KillIdentityRead(session_id, pid, signal, read) => {
-            // Only for the popup that asked, if it is still up.
-            let asked = state
-                .process_detail
-                .as_ref()
-                .is_some_and(|d| d.pid == pid && d.session_id == session_id);
-            if !asked {
-                return Task::none();
-            }
-            match read {
-                Ok(Some(identity)) => {
-                    state.confirm_action = Some(ConfirmAction::Kill {
-                        session_id,
-                        pid,
-                        command: kill_command_label(&identity),
-                        signal,
-                        identity,
-                    });
-                }
-                Ok(None) => {
-                    state.error_message = i18n::tf("process.err.gone", &[("pid", &pid.to_string())]);
-                    state.show_error_dialog = true;
-                }
-                Err(e) => {
-                    state.error_message = e;
-                    state.show_error_dialog = true;
-                }
-            }
-            Task::none()
-        }
+        Message::KillProcessRequest(signal) => on_kill_process_request(state, signal),
+        Message::KillIdentityRead(session_id, pid, signal, read) => on_kill_identity_read(state, session_id, pid, signal, read),
         Message::KillProcessDone(result) => match result {
             Ok(()) => {
                 // The process is gone or going; show the list without it.
@@ -5755,58 +3338,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         },
 
         // ---- listening ports ---------------------------------------------------
-        Message::FetchPorts => {
-            let Some(session_id) = state
-                .active_tab
-                .and_then(|i| state.tabs.get(i))
-                .map(|t| t.focused_session().to_string())
-                .filter(|s| !s.is_empty())
-            else {
-                return Task::none();
-            };
-            if !state.ports_inflight.start(&session_id) {
-                return Task::none();
-            }
-            let ssh = state.ssh_manager.clone();
-            Task::perform(
-                async move {
-                    let sid = session_id.clone();
-                    let result = tokio::task::spawn_blocking(move || ssh.fetch_listening_ports(&sid))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Task: {}", e)));
-                    (session_id, result)
-                },
-                |(session_id, result)| Message::PortsReceived(session_id, result),
-            )
-        }
-        Message::PortsReceived(session_id, result) => {
-            state.ports_inflight.finish(&session_id);
-            // Fetches for different sessions now overlap: a late answer for
-            // a tab the user has left must not replace the one on screen.
-            if state
-                .active_tab
-                .and_then(|i| state.tabs.get(i))
-                .map(|t| t.focused_session())
-                != Some(session_id.as_str())
-            {
-                return Task::none();
-            }
-            state.ports_fetched_at = Some(std::time::Instant::now());
-            state.ports_session = session_id;
-            match result {
-                Ok(mut ports) => {
-                    // Sorted here, once per answer, not in the view.
-                    sort_ports(&mut ports, state.ports_sort, state.ports_sort_desc);
-                    state.ports = ports;
-                    state.ports_error = None;
-                }
-                Err(e) => {
-                    state.ports.clear();
-                    state.ports_error = Some(e);
-                }
-            }
-            Task::none()
-        }
+        Message::FetchPorts => on_fetch_ports(state),
+        Message::PortsReceived(session_id, result) => on_ports_received(state, session_id, result),
         Message::PortsSortBy(key) => {
             resort_ports(
                 &mut state.ports,
@@ -5859,42 +3392,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ShowLogViewer => {
-            // Toggle: second click closes.
-            if state.show_log_viewer {
-                state.show_log_viewer = false;
-                state.log_viewer_content.clear();
-                return Task::none();
-            }
-            let path = crate::log_file_path();
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => {
-                    const MAX: usize = 200 * 1024;
-                    if c.len() > MAX {
-                        // Snap the raw byte offset forward to a char boundary
-                        // before slicing — the log holds translated CJK, and
-                        // both this slice and the unwrap_or(start) fallback
-                        // below would otherwise land mid-character.
-                        let mut start = c.len() - MAX;
-                        while start < c.len() && !c.is_char_boundary(start) {
-                            start += 1;
-                        }
-                        let aligned = c[start..].find('\n').map(|i| start + i + 1).unwrap_or(start);
-                        let kb = ((c.len() - aligned) / 1024).to_string();
-                        format!("{}\n{}", i18n::tf("log.truncated", &[("kb", &kb)]), &c[aligned..])
-                    } else {
-                        c
-                    }
-                }
-                Err(e) => i18n::tf(
-                    "log.err.read",
-                    &[("path", &path.display().to_string()), ("err", &e.to_string())],
-                ),
-            };
-            state.log_viewer_content = content;
-            state.show_log_viewer = true;
-            Task::none()
-        }
+        Message::ShowLogViewer => on_show_log_viewer(state),
         Message::HideLogViewer => {
             state.show_log_viewer = false;
             state.log_viewer_content.clear();
@@ -5921,43 +3419,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             let t: Task<Message> = iced::window::minimize(id, true);
             t
         }
-        Message::QuitApp => {
-            log::info!("User requested quit — closing all SSH sessions and tunnels");
-            // Here and now, after the writes already sent off: nothing waits
-            // for a background task once the window is gone.
-            if !state.history_file.wait_settled(HISTORY_SETTLE_WAIT) {
-                log::warn!("command history: an earlier write is still running at quit");
-            }
-            if state.history_sync.dirty && state.history_sync.loaded {
-                let saved = HistoryFile::snapshot(
-                    &state.history_file,
-                    &state.store,
-                    &state.cmd_history,
-                    false,
-                    false,
-                )
-                .and_then(|job| job.run().map_err(|e| e.to_string()));
-                if let Err(e) = saved {
-                    log::warn!("command history not saved: {}", e);
-                }
-            }
-            if state.groups_dirty {
-                let saved = state
-                    .groups_file
-                    .snapshot(&state.store, &state.collapsed_groups, false)
-                    .and_then(|job| state.groups_file.write(job).map_err(|e| e.to_string()));
-                if let Err(e) = saved {
-                    log::warn!("folded groups not saved: {}", e);
-                }
-            }
-            for sid in state.ssh_manager.active_sessions() {
-                let _ = state.ssh_manager.disconnect(&sid);
-            }
-            state.tunnel_manager.stop_all();
-            let t: Task<Message> = iced::window::get_latest()
-                .and_then(|id| iced::window::close(id));
-            t
-        }
+        Message::QuitApp => on_quit_app(state),
     }
 }
 

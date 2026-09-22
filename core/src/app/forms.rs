@@ -335,3 +335,296 @@ pub(crate) fn form_port(input: &str, default: u16) -> Result<u16, String> {
         Err(()) => Err(i18n::tf("form.err.port", &[("port", input.trim())])),
     }
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::ConnectTo`, moved out of `handle_message`.
+pub(crate) fn on_connect_to(state: &mut NeoShell, id: String) -> Task<Message> {
+    if state.connecting_ids.contains(&id) {
+        return Task::none();
+    }
+    state.connecting_ids.insert(id.clone());
+    state.show_connect_dialog = false;
+    // The key that started this — Enter in the palette — is not
+    // typing somewhere else: this connect's sign-in may still take
+    // the keyboard (see `deliver_auth_focus`).
+    state.last_keypress = None;
+
+    // Create a placeholder tab immediately so user sees feedback
+    let tab_id = uuid::Uuid::new_v4().to_string();
+    // The session's id, known before the connect is: its sign-in
+    // challenges carry it, so closing this tab can withdraw them.
+    let session_id = SshManager::new_session_id();
+    let terminal = Arc::new(parking_lot::Mutex::new(TerminalGrid::new(120, 40)));
+    {
+        let mut grid = terminal.lock();
+        let connecting = i18n::t("monitor.connecting");
+        grid.write(format!("\x1b[33m{}\x1b[0m\r\n", connecting).as_bytes());
+    }
+    state.tabs.push(TerminalTab {
+        id: tab_id.clone(),
+        session_id: String::new(), // placeholder
+        connection_id: id.clone(),
+        title: i18n::t("monitor.connecting").to_string(),
+        terminal,
+        custom_title: None,
+        split: None,
+        focus_split: false,
+        bounds: PaneBounds::default(),
+        pending_session_id: session_id.clone(),
+        split_pending: None,
+    });
+    state.active_tab = Some(state.tabs.len() - 1);
+
+    let store = state.store.clone();
+    let ssh = state.ssh_manager.clone();
+    let tab_id2 = tab_id.clone();
+    let conn_id_for_log = id.clone();
+    let conn_id = id.clone();
+    Task::perform(
+        async move {
+            log::info!("connect_to: attempting connection to id={}", conn_id_for_log);
+            // Run blocking SSH connect on dedicated thread
+            tokio::task::spawn_blocking(move || {
+                let config = store.get_connection(&id)?;
+                log::info!("connect_to: resolved {}@{}:{} (auth={}, proxy={:?})",
+                    config.username, config.host, config.port,
+                    config.auth_type, config.proxy_id);
+                let session_id = ssh.connect_config_with_id(&session_id, &config)?;
+                let title = format!("{}@{}:{}", config.username, config.host, config.port);
+                Ok((tab_id2, session_id, title, id))
+            }).await.map_err(|e| format!("Task: {}", e))?
+        },
+        // A failure belongs to this tab alone: it goes, the others
+        // connecting beside it stay (see `ConnectFailed`).
+        move |result: Result<(String, String, String, String), String>| match result {
+            Ok((tab_id, session_id, title, conn_id)) => {
+                Message::SshConnected(tab_id, session_id, title, conn_id)
+            }
+            Err(e) => Message::ConnectFailed(tab_id.clone(), conn_id.clone(), e),
+        },
+    )
+}
+
+/// `Message::SaveForm`, moved out of `handle_message`.
+pub(crate) fn on_save_form(state: &mut NeoShell) -> Task<Message> {
+    // Nothing is saved on a port that does not read as one: the form
+    // stays open under the message.
+    let port = match form_port(&state.form.port, 22) {
+        Ok(port) => port,
+        Err(message) => {
+            state.show_notice("form.err.title", message);
+            return Task::none();
+        }
+    };
+    let is_edit = state.edit_id.is_some();
+    let edit_id = state.edit_id.clone();
+
+    // When editing, preserve existing secrets if form fields are empty
+    // (ConnectionInfo doesn't expose secrets, so form shows them as empty)
+    let (preserved_pw, preserved_key, preserved_pass) = if let Some(ref id) = edit_id {
+        match state.store.get_connection(id) {
+            Ok(existing) => (
+                existing.password.clone(),
+                existing.private_key.clone(),
+                existing.passphrase.clone(),
+            ),
+            Err(_) => (None, None, None),
+        }
+    } else {
+        (None, None, None)
+    };
+    // The form has no colour field; an edit must not wipe the tag the
+    // sidebar draws from it.
+    let preserved_color = edit_id
+        .as_ref()
+        .and_then(|id| state.connections.iter().find(|c| &c.id == id))
+        .map(|c| c.color.clone())
+        .unwrap_or_default();
+
+    let password = if !state.form.password.is_empty() {
+        Some(state.form.password.clone())
+    } else if is_edit {
+        preserved_pw // keep existing password
+    } else {
+        None
+    };
+
+    let private_key = if !state.form.private_key.is_empty() {
+        Some(state.form.private_key.clone())
+    } else if is_edit {
+        preserved_key
+    } else {
+        None
+    };
+
+    let passphrase = if !state.form.passphrase.is_empty() {
+        Some(state.form.passphrase.clone())
+    } else if is_edit {
+        preserved_pass
+    } else {
+        None
+    };
+
+    let config = ConnectionConfig {
+        id: edit_id.clone().unwrap_or_default(),
+        name: state.form.name.clone(),
+        host: state.form.host.clone(),
+        port,
+        username: state.form.username.clone(),
+        auth_type: state.form.auth_type.clone(),
+        password,
+        private_key,
+        passphrase,
+        // Trimmed: the group is the sidebar's grouping and folding
+        // key, and "生产 " — a stray space an input method left —
+        // would be a second group that reads exactly like "生产".
+        group: state.form.group.trim().to_string(),
+        color: preserved_color,
+        proxy_id: if state.form.proxy_id.is_empty() {
+            None
+        } else {
+            Some(state.form.proxy_id.clone())
+        },
+    };
+
+    let store = state.store.clone();
+
+    state.show_form = false;
+    state.edit_id = None;
+    state.form = ConnectionFormData::default();
+
+    Task::perform(
+        async move {
+            if is_edit {
+                store.update_connection(config)?;
+            } else {
+                store.save_connection(config)?;
+            }
+            store.get_connections()
+        },
+        |result| match result {
+            Ok(conns) => Message::ConnectionsLoaded(conns),
+            Err(e) => Message::Error(e),
+        },
+    )
+}
+
+/// `Message::TestFormConnection`, moved out of `handle_message`.
+pub(crate) fn on_test_form_connection(state: &mut NeoShell) -> Task<Message> {
+    // Gather form values + preserved secrets (same logic as SaveForm)
+    let port = match form_port(&state.form.port, 22) {
+        Ok(port) => port,
+        Err(message) => {
+            state.show_notice("form.err.title", message);
+            return Task::none();
+        }
+    };
+    let is_edit = state.edit_id.is_some();
+    let (preserved_pw, preserved_key, preserved_pass) = if let Some(ref id) = state.edit_id {
+        match state.store.get_connection(id) {
+            Ok(existing) => (existing.password.clone(), existing.private_key.clone(), existing.passphrase.clone()),
+            Err(_) => (None, None, None),
+        }
+    } else { (None, None, None) };
+
+    let password = if !state.form.password.is_empty() { Some(state.form.password.clone()) }
+        else if is_edit { preserved_pw } else { None };
+    let private_key = if !state.form.private_key.is_empty() { Some(state.form.private_key.clone()) }
+        else if is_edit { preserved_key } else { None };
+    let passphrase = if !state.form.passphrase.is_empty() { Some(state.form.passphrase.clone()) }
+        else if is_edit { preserved_pass } else { None };
+
+    let host = state.form.host.clone();
+    let username = state.form.username.clone();
+    let auth_type = state.form.auth_type.clone();
+    let proxy_id = if state.form.proxy_id.is_empty() { None } else { Some(state.form.proxy_id.clone()) };
+
+    state.form_testing = true;
+    state.form_test_result = None;
+
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                crate::ssh::SshManager::test_connection(
+                    &host, port, &username, &auth_type,
+                    password.as_deref(), private_key.as_deref(),
+                    passphrase.as_deref(), proxy_id.as_deref(),
+                )
+            }).await.unwrap_or(crate::ssh::ConnectionTestResult {
+                ok: false, latency_ms: 0, stage: "internal".into(),
+                error: Some("test task failed".into()),
+            })
+        },
+        Message::TestFormConnectionDone,
+    )
+}
+
+/// `Message::SnippetSave`, moved out of `handle_message`.
+pub(crate) fn on_snippet_save(state: &mut NeoShell) -> Task<Message> {
+    let name = state.snippet_form_name.trim().to_string();
+    let body = state.snippet_form_body.trim().to_string();
+    if name.is_empty() || body.is_empty() { return Task::none(); }
+    let id = state.snippet_edit_id.clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Some(existing) = state.snippets.iter_mut().find(|s| s.id == id) {
+        existing.name = name;
+        existing.body = body;
+    } else {
+        state.snippets.push(Snippet { id, name, body });
+    }
+    save_snippets(&state.snippets);
+    state.snippet_edit_id = None;
+    state.snippet_form_name.clear();
+    state.snippet_form_body.clear();
+    Task::none()
+}
+
+/// `Message::KeyGenerate`, moved out of `handle_message`.
+pub(crate) fn on_key_generate(state: &mut NeoShell) -> Task<Message> {
+    let name = state.key_form_name.trim().to_string();
+    let name = if name.is_empty() {
+        "id_ed25519_neoshell".to_string()
+    } else {
+        name
+    };
+    let comment = state.key_form_comment.trim().to_string();
+    match crate::sshkeys::generate_ed25519(&name, &comment) {
+        Ok(_) => {
+            state.key_form_name.clear();
+            state.key_form_comment.clear();
+            state.local_keys = crate::sshkeys::list_keys();
+            state.key_deploy_status = Some(i18n::t("keys.generated").to_string());
+        }
+        Err(e) => {
+            state.key_deploy_status = Some(format!("✗ {}", e));
+        }
+    }
+    Task::none()
+}
+
+/// `Message::KeyDeployTo`, moved out of `handle_message`.
+pub(crate) fn on_key_deploy_to(state: &mut NeoShell, path: String, conn_id: String) -> Task<Message> {
+    let pubkey = state
+        .local_keys
+        .iter()
+        .find(|k| k.path == path)
+        .map(|k| k.pubkey.clone());
+    let Some(pubkey) = pubkey else {
+        return Task::none();
+    };
+    state.key_deploying = None;
+    state.key_deploy_status = Some(i18n::t("keys.deploying").to_string());
+    let store = state.store.clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let config = store.get_connection(&conn_id)?;
+                crate::ssh::deploy_pubkey(&config, &pubkey)
+            })
+            .await
+            .map_err(|e| format!("Task: {}", e))?
+        },
+        Message::KeyDeployDone,
+    )
+}

@@ -438,3 +438,273 @@ pub(crate) fn signal_name(signal: i32) -> String {
         n => i18n::tf("process.signal_n", &[("n", &n.to_string())]),
     }
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::FetchMonitorData`, moved out of `handle_message`.
+pub(crate) fn on_fetch_monitor_data(state: &mut NeoShell) -> Task<Message> {
+    if let Some(idx) = state.active_tab {
+        if let Some(tab) = state.tabs.get(idx) {
+            let ssh = state.ssh_manager.clone();
+            let sid = tab.focused_session().to_string();
+            // The ports tab rides the same tick, at a slower rate.
+            let ports = state
+                .ports_due(&sid)
+                .then(|| Task::done(Message::FetchPorts));
+            // One fetch per session at a time (see `InFlight`).
+            if !state.monitor_inflight.start(&sid) {
+                return ports.unwrap_or_else(Task::none);
+            }
+            let fetch = Task::perform(
+                async move {
+                    let session_id = sid.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let stats = ssh.fetch_server_stats(&session_id)?;
+                        let procs = ssh.fetch_top_processes(&session_id, 15)?;
+                        Ok((stats, procs))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("{}", e)));
+                    (sid, result)
+                },
+                |(sid, result)| match result {
+                    Ok((stats, procs)) => Message::MonitorDataReceived(sid, stats, procs),
+                    Err(e) => Message::MonitorError(sid, e),
+                },
+            );
+            return match ports {
+                Some(ports) => Task::batch([fetch, ports]),
+                None => fetch,
+            };
+        }
+    }
+    Task::none()
+}
+
+/// `Message::MonitorDataReceived`, moved out of `handle_message`.
+pub(crate) fn on_monitor_data_received(state: &mut NeoShell, sid: String, stats: ServerStats, procs: Vec<ProcessInfo>) -> Task<Message> {
+    state.monitor_inflight.finish(&sid);
+    state.monitor_parked.unpark(&sid);
+    // Calculate network speed
+    let now = std::time::Instant::now();
+    if let Some(prev_time) = state.prev_net_time.get(&sid) {
+        let elapsed = now.duration_since(*prev_time).as_secs_f64();
+        if elapsed > 0.5 {
+            let prev_rx = state.prev_net_rx.get(&sid).copied().unwrap_or(0);
+            let prev_tx = state.prev_net_tx.get(&sid).copied().unwrap_or(0);
+            if prev_rx > 0 && stats.net_rx_bytes >= prev_rx {
+                state.net_rx_rate.insert(sid.clone(), (stats.net_rx_bytes - prev_rx) as f64 / elapsed);
+                state.net_tx_rate.insert(sid.clone(), (stats.net_tx_bytes - prev_tx) as f64 / elapsed);
+            }
+        }
+    }
+    state.prev_net_rx.insert(sid.clone(), stats.net_rx_bytes);
+    state.prev_net_tx.insert(sid.clone(), stats.net_tx_bytes);
+    state.prev_net_time.insert(sid.clone(), now);
+
+    // Threshold alerts: CPU is approximated as load_1m / cores
+    // (matches what the monitor panel shows); mem/disk straight %.
+    if state.alert_cfg.enabled {
+        let mut breaches: Vec<String> = Vec::new();
+        let cpu_pct = if stats.cpu_cores > 0 {
+            (stats.load_1m / stats.cpu_cores as f64 * 100.0).min(999.0)
+        } else {
+            0.0
+        };
+        if cpu_pct >= state.alert_cfg.cpu_pct as f64 {
+            breaches.push(format!("CPU {:.0}%", cpu_pct));
+        }
+        if stats.mem_percent >= state.alert_cfg.mem_pct as f64 {
+            breaches.push(format!("MEM {:.0}%", stats.mem_percent));
+        }
+        if stats.disk_percent >= state.alert_cfg.disk_pct as f64 {
+            breaches.push(format!("DISK {:.0}%", stats.disk_percent));
+        }
+        if breaches.is_empty() {
+            state.alerts_active.remove(&sid);
+        } else {
+            state.alerts_active.insert(sid.clone(), breaches);
+        }
+    }
+
+    state.server_stats.insert(sid.clone(), stats);
+    state.top_processes.insert(sid.clone(), procs);
+
+    // Sync file browser with shell CWD (extracted from terminal
+    // prompt) — a split pane's too, now that the panel can show it.
+    if let Some(term) = state.find_terminal_for_session(&sid) {
+        let grid = term.lock();
+        if let Some(cwd) = extract_cwd_from_prompt(&grid) {
+            drop(grid);
+            if follow_prompt_cwd(
+                &mut state.prompt_cwd,
+                &mut state.current_dir,
+                &state.file_entries,
+                &sid,
+                &cwd,
+            ) {
+                return Task::done(Message::ChangeDir(sid, cwd));
+            }
+        }
+    }
+    Task::none()
+}
+
+/// `Message::InspectProcess`, moved out of `handle_message`.
+pub(crate) fn on_inspect_process(state: &mut NeoShell, pid: u32) -> Task<Message> {
+    // Get session for exec
+    if let Some(idx) = state.active_tab {
+        if let Some(tab) = state.tabs.get(idx) {
+            let session_id = tab.focused_session().to_string();
+            let ssh = state.ssh_manager.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        // Comprehensive /proc-based process inspection
+                        let cmd = format!(
+                            concat!(
+                                "echo '___STATUS___' && cat /proc/{pid}/status 2>/dev/null; ",
+                                "echo '___CMDLINE___' && tr '\\0' ' ' < /proc/{pid}/cmdline 2>/dev/null; echo; ",
+                                "echo '___IO___' && cat /proc/{pid}/io 2>/dev/null; ",
+                                "echo '___CWD___' && readlink /proc/{pid}/cwd 2>/dev/null; ",
+                                "echo '___EXE___' && readlink /proc/{pid}/exe 2>/dev/null; ",
+                                "echo '___FD_COUNT___' && ls /proc/{pid}/fd 2>/dev/null | wc -l; ",
+                                "echo '___PS___' && ps -p {pid} -o pid,ppid,user,nice,vsz,rss,etime,stat,args --no-headers 2>/dev/null; ",
+                                "echo '___CHILDREN___' && ps --ppid {pid} -o pid,pcpu,pmem,comm --no-headers 2>/dev/null; ",
+                                "echo '___THREADS___' && ls /proc/{pid}/task 2>/dev/null | head -50; ",
+                                "echo '___NET___' && ss -tnp 2>/dev/null | grep 'pid={pid},' | head -20; ",
+                                "echo '___LISTEN___' && ss -tlnp 2>/dev/null | grep 'pid={pid},' | head -10; ",
+                                "echo '___LIMITS___' && cat /proc/{pid}/limits 2>/dev/null | grep -E 'open files|processes|memory' ; ",
+                                "echo '___OOM___' && cat /proc/{pid}/oom_score 2>/dev/null; ",
+                                "echo '___FDS___' && ls -la /proc/{pid}/fd 2>/dev/null | tail -15; ",
+                            ),
+                            pid = pid
+                        );
+                        let output = ssh.exec_command(&session_id, &cmd)?;
+                        let mut detail = parse_process_detail(pid, &output);
+                        detail.session_id = session_id;
+                        Ok(detail)
+                    }).await.map_err(|e| format!("{}", e))?
+                },
+                |result: Result<ProcessDetailInfo, String>| match result {
+                    Ok(detail) => Message::ProcessDetailReceived(detail),
+                    Err(e) => Message::Error(e),
+                },
+            );
+        }
+    }
+    Task::none()
+}
+
+/// `Message::KillProcessRequest`, moved out of `handle_message`.
+pub(crate) fn on_kill_process_request(state: &mut NeoShell, signal: i32) -> Task<Message> {
+    let Some(detail) = &state.process_detail else {
+        return Task::none();
+    };
+    if detail.pid <= 1 || detail.session_id.is_empty() {
+        return Task::none();
+    }
+    // The confirmation names the process as /proc has it now — not as
+    // the popup read it, maybe minutes ago, nor as `ss` named it: the
+    // pid may have changed hands since.
+    let (session_id, pid) = (detail.session_id.clone(), detail.pid);
+    let ssh = state.ssh_manager.clone();
+    Task::perform(
+        async move {
+            let sid = session_id.clone();
+            let read = tokio::task::spawn_blocking(move || read_proc_identity(&ssh, &sid, pid))
+                .await
+                .unwrap_or_else(|e| Err(format!("Task: {}", e)));
+            (session_id, read)
+        },
+        move |(session_id, read)| Message::KillIdentityRead(session_id, pid, signal, read),
+    )
+}
+
+/// `Message::KillIdentityRead`, moved out of `handle_message`.
+pub(crate) fn on_kill_identity_read(state: &mut NeoShell, session_id: String, pid: u32, signal: i32, read: Result<Option<ProcIdentity>, String>) -> Task<Message> {
+    // Only for the popup that asked, if it is still up.
+    let asked = state
+        .process_detail
+        .as_ref()
+        .is_some_and(|d| d.pid == pid && d.session_id == session_id);
+    if !asked {
+        return Task::none();
+    }
+    match read {
+        Ok(Some(identity)) => {
+            state.confirm_action = Some(ConfirmAction::Kill {
+                session_id,
+                pid,
+                command: kill_command_label(&identity),
+                signal,
+                identity,
+            });
+        }
+        Ok(None) => {
+            state.error_message = i18n::tf("process.err.gone", &[("pid", &pid.to_string())]);
+            state.show_error_dialog = true;
+        }
+        Err(e) => {
+            state.error_message = e;
+            state.show_error_dialog = true;
+        }
+    }
+    Task::none()
+}
+
+/// `Message::FetchPorts`, moved out of `handle_message`.
+pub(crate) fn on_fetch_ports(state: &mut NeoShell) -> Task<Message> {
+    let Some(session_id) = state
+        .active_tab
+        .and_then(|i| state.tabs.get(i))
+        .map(|t| t.focused_session().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return Task::none();
+    };
+    if !state.ports_inflight.start(&session_id) {
+        return Task::none();
+    }
+    let ssh = state.ssh_manager.clone();
+    Task::perform(
+        async move {
+            let sid = session_id.clone();
+            let result = tokio::task::spawn_blocking(move || ssh.fetch_listening_ports(&sid))
+                .await
+                .unwrap_or_else(|e| Err(format!("Task: {}", e)));
+            (session_id, result)
+        },
+        |(session_id, result)| Message::PortsReceived(session_id, result),
+    )
+}
+
+/// `Message::PortsReceived`, moved out of `handle_message`.
+pub(crate) fn on_ports_received(state: &mut NeoShell, session_id: String, result: Result<Vec<crate::ssh::PortInfo>, String>) -> Task<Message> {
+    state.ports_inflight.finish(&session_id);
+    // Fetches for different sessions now overlap: a late answer for
+    // a tab the user has left must not replace the one on screen.
+    if state
+        .active_tab
+        .and_then(|i| state.tabs.get(i))
+        .map(|t| t.focused_session())
+        != Some(session_id.as_str())
+    {
+        return Task::none();
+    }
+    state.ports_fetched_at = Some(std::time::Instant::now());
+    state.ports_session = session_id;
+    match result {
+        Ok(mut ports) => {
+            // Sorted here, once per answer, not in the view.
+            sort_ports(&mut ports, state.ports_sort, state.ports_sort_desc);
+            state.ports = ports;
+            state.ports_error = None;
+        }
+        Err(e) => {
+            state.ports.clear();
+            state.ports_error = Some(e);
+        }
+    }
+    Task::none()
+}

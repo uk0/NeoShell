@@ -776,3 +776,745 @@ pub(crate) fn report_wheel(state: &NeoShell, button: MouseButton) -> bool {
         None => false,
     }
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::TerminalInput`, moved out of `handle_message`.
+pub(crate) fn on_terminal_input(state: &mut NeoShell, session_id: String, data: String) -> Task<Message> {
+    // Track typed commands to capture "sz filename". Scoped so the
+    // cmd_buffer borrow ends before command_was_echoed reads the grid.
+    let submitted: Option<String> = {
+        let buf = state.cmd_buffer.entry(session_id.clone()).or_default();
+        if data == "\r" || data == "\n" {
+            let cmd = buf.trim().to_string();
+            buf.clear();
+            Some(cmd)
+        } else if data == "\x7f" || data == "\x08" {
+            buf.pop(); // Backspace
+            None
+        } else if data.chars().all(|c| !c.is_control()) {
+            buf.push_str(&data);
+            None
+        } else {
+            None
+        }
+    };
+    if let Some(cmd) = submitted {
+        // Enter pressed — record to history, but ONLY when the remote
+        // echoed the line. These characters came from the keyboard, so
+        // at a no-echo prompt they are a password, not a command. And
+        // never while locked: the lock wiped the history, and it only
+        // comes back with the key.
+        if !cmd.is_empty()
+            && state.screen == Screen::Main
+            && command_was_echoed(state, &session_id, &cmd)
+        {
+            // Find session title
+            let title = state.tabs.iter()
+                .find(|t| t.session_id == session_id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default();
+            let host = state.session_host(&session_id);
+            // The only producer of history records — and so of
+            // history.enc, which is written from `cmd_history` alone.
+            // Keep it inside this gate.
+            state.cmd_history.push(CmdRecord {
+                cmd: cmd.clone(),
+                session_title: title,
+                host,
+                timestamp: unix_now(),
+            });
+            if state.cmd_history.len() > HISTORY_MAX {
+                state.cmd_history.drain(..state.cmd_history.len() - HISTORY_MAX);
+            }
+            // Written by a paced FlushHistory, not per Enter:
+            // write_private fsyncs.
+            state.history_sync.dirty = true;
+        }
+        if cmd.starts_with("sz ") {
+            let filename = cmd[3..].trim().to_string();
+            if !filename.is_empty() {
+                state.sz_filename.insert(session_id.clone(), filename);
+            }
+        }
+    }
+
+    let ssh = state.ssh_manager.clone();
+    Task::perform(
+        async move {
+            ssh.send_data(&session_id, data.as_bytes())?;
+            Ok(())
+        },
+        |result: Result<(), String>| match result {
+            Ok(()) => Message::None,
+            Err(e) => Message::Error(e),
+        },
+    )
+}
+
+/// `Message::KeyboardEvent`, moved out of `handle_message`.
+pub(crate) fn on_keyboard_event(state: &mut NeoShell, key: keyboard::Key, modifiers: keyboard::Modifiers, text: Option<String>, captured: bool) -> Task<Message> {
+    if state.screen != Screen::Main { return Task::none(); }
+
+    // ESC dismisses what is on top: the overlay view_main is drawing
+    // (one z-order, see `Overlay`), then the terminal search bar.
+    // With nothing to dismiss it falls through and reaches the shell
+    // as a plain ESC byte, which vim and friends depend on.
+    if let keyboard::Key::Named(keyboard::key::Named::Escape) = &key {
+        // A text input drops its focus on Esc.
+        state.quick_cmd_focused = false;
+        if state.close_topmost_overlay() {
+            return Task::none();
+        }
+        if state.term_search_active {
+            return Task::done(Message::TerminalSearchClose);
+        }
+    }
+
+    // Palette gets first dibs on navigation keys; typed characters
+    // reach the focused text_input through the widget tree, so we
+    // swallow everything else here.
+    if state.show_palette {
+        match &key {
+            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                return Task::done(Message::PaletteNavUp);
+            }
+            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                return Task::done(Message::PaletteNavDown);
+            }
+            keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                return Task::done(Message::PaletteExecute);
+            }
+            keyboard::Key::Character(c)
+                if modifiers.command() && matches!(c.as_str(), "k" | "K") =>
+            {
+                state.show_palette = false;
+                return Task::none();
+            }
+            _ => return Task::none(),
+        }
+    }
+
+    // Tab-rename modal: Enter commits (Esc is handled above).
+    if state.tab_rename.is_some() {
+        match &key {
+            keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                return Task::done(Message::TabRenameCommit);
+            }
+            _ => return Task::none(),
+        }
+    }
+
+    if state.editor_file_path.is_some() {
+        // Allow Cmd+S to save the open editor
+        if modifiers.command() {
+            if let keyboard::Key::Character(c) = &key {
+                if c.as_str() == "s" {
+                    return Task::done(Message::SaveEditor);
+                }
+            }
+        }
+        return Task::none();
+    }
+    if state.show_form { return Task::none(); }
+    if state.selected_interface.is_some() { return Task::none(); }
+
+    // Cmd/Ctrl+key shortcuts. Note the C/V special case below:
+    //   macOS:        ⌘+C / ⌘+V copy & paste (no shift).
+    //   Win / Linux:  Ctrl+Shift+C / Ctrl+Shift+V copy & paste,
+    //                 so plain Ctrl+C still reaches the terminal as
+    //                 the SIGINT byte 0x03 and Ctrl+V as a literal
+    //                 0x16 (quoted-insert). This matches Windows
+    //                 Terminal / Tabby / Xshell / mintty.
+    if modifiers.command() {
+        let clipboard_mod = if cfg!(target_os = "macos") {
+            !modifiers.shift()
+        } else {
+            modifiers.shift()
+        };
+        if let keyboard::Key::Character(c) = &key {
+            match c.as_str() {
+                // A focused text input pastes on its own; the terminal
+                // must not receive the clipboard as well.
+                "v" | "V" if clipboard_mod => {
+                    if captured {
+                        return Task::none();
+                    }
+                    return Task::done(Message::PasteClipboard);
+                }
+                "c" | "C" if clipboard_mod => {
+                    if state.selection_start.is_some() && state.selection_end.is_some() {
+                        return Task::done(Message::CopySelection);
+                    }
+                    return Task::none();
+                }
+                // Plain Ctrl+C / Ctrl+V on non-macOS: fall through
+                // to the terminal byte handler (SIGINT / literal).
+                "c" | "C" | "v" | "V" if !cfg!(target_os = "macos") => {}
+                "f" | "F" => return Task::done(Message::ToggleTerminalSearch),
+                "j" | "J" => return Task::done(Message::ToggleBottomPanel),
+                "k" | "K" => return Task::done(Message::TogglePalette),
+                // Cmd+D / Cmd+Shift+D — split the active tab
+                // (vertical divider / horizontal divider).
+                "d" | "D" => return Task::done(Message::SplitTab(!modifiers.shift())),
+                // Cmd+] — toggle pane focus inside a split tab.
+                "]" => return Task::done(Message::SplitFocusToggle),
+                "t" | "T" => return Task::done(Message::ShowConnectDialog),
+                "w" | "W" => {
+                    // Cmd+Shift+W = close focused pane (split-aware);
+                    // Cmd+W = close current tab.
+                    if modifiers.shift() {
+                        return Task::done(Message::CloseFocusedPane);
+                    }
+                    if let Some(idx) = state.active_tab {
+                        return Task::done(Message::TabClosed(idx));
+                    }
+                }
+                "1" => return Task::done(Message::SwitchToTab(0)),
+                "2" => return Task::done(Message::SwitchToTab(1)),
+                "3" => return Task::done(Message::SwitchToTab(2)),
+                "4" => return Task::done(Message::SwitchToTab(3)),
+                "5" => return Task::done(Message::SwitchToTab(4)),
+                "6" => return Task::done(Message::SwitchToTab(5)),
+                "7" => return Task::done(Message::SwitchToTab(6)),
+                "8" => return Task::done(Message::SwitchToTab(7)),
+                "9" => {
+                    // Cmd+9 = last tab
+                    if !state.tabs.is_empty() {
+                        return Task::done(Message::SwitchToTab(state.tabs.len() - 1));
+                    }
+                }
+                "h" | "H" => {
+                    state.show_history = !state.show_history;
+                    state.history_filter.clear();
+                    return Task::none();
+                }
+                "/" | "?" => {
+                    state.show_shortcuts_help = !state.show_shortcuts_help;
+                    return Task::none();
+                }
+                // Cmd/Ctrl + Shift + L → re-lock the vault now.
+                // Shift-qualified so it cannot be hit by accident and
+                // so plain Ctrl+L still clears the remote screen.
+                "l" | "L" if modifiers.shift() => {
+                    return Task::done(Message::LockNow);
+                }
+                // Cmd/Ctrl + Shift + Q → true quit (bypasses close-to-taskbar)
+                "q" | "Q" if modifiers.shift() => {
+                    return Task::done(Message::QuitApp);
+                }
+                "+" | "=" | "-" | "0" => return Task::none(), // Block zoom
+                _ => {}
+            }
+        }
+        // macOS: any unmatched ⌘+key is swallowed (GUI convention).
+        // Win/Linux: let unmatched Ctrl+key fall through to the
+        // terminal byte handler so Ctrl+C/V (and Ctrl+A, Ctrl+R,
+        // Ctrl+L, etc.) reach the remote shell.
+        if cfg!(target_os = "macos") {
+            return Task::none();
+        }
+    }
+
+    // F1 toggles shortcut help (no modifier required)
+    if let keyboard::Key::Named(keyboard::key::Named::F1) = &key {
+        state.show_shortcuts_help = !state.show_shortcuts_help;
+        return Task::none();
+    }
+
+    // Ctrl+Tab / Ctrl+Shift+Tab = switch tabs
+    if modifiers.control() {
+        if let keyboard::Key::Named(keyboard::key::Named::Tab) = &key {
+            return if modifiers.shift() {
+                Task::done(Message::SwitchToPrevTab)
+            } else {
+                Task::done(Message::SwitchToNextTab)
+            };
+        }
+    }
+
+    // Overlay guard: when any modal / panel is open, keystrokes are
+    // meant for its inputs — never forward them to the terminal.
+    // (Fixes hex typed in Settings → Appearance echoing in the shell.)
+    if state.any_overlay_open() {
+        return Task::none();
+    }
+
+    // Quick-command autocomplete: Tab / Down take the top suggestion.
+    // A text input lets exactly these keys through uncaptured even
+    // while it has focus, so the focus guess is confirmed against the
+    // widget tree first. If the input turns out not to be focused,
+    // the key still goes to the terminal.
+    if !captured && state.quick_cmd_focused && is_autocomplete_key(&key, &modifiers) {
+        let accept = state.quick_cmd_suggestions().into_iter().next();
+        let fallback: Vec<Message> = state
+            .focused_session_id()
+            .zip(key_to_terminal_bytes(&key, &modifiers, text.as_deref()))
+            .map(|(sid, data)| {
+                state
+                    .keystroke_targets(sid)
+                    .into_iter()
+                    .map(|target| Message::TerminalInput(target, data.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        return quick_cmd_input_focused().then(move |focused| {
+            if focused {
+                accept
+                    .clone()
+                    .map_or_else(Task::none, |s| Task::done(Message::QuickCmdAccept(s)))
+            } else {
+                Task::batch(fallback.clone().into_iter().map(Task::done))
+            }
+        });
+    }
+
+    // A key a focused text input consumed was typed into that input
+    // (quick command box, path fields, search bar). It used to reach
+    // the shell too — every quick command ran twice.
+    if captured {
+        return Task::none();
+    }
+    // A printable key arriving uncaptured proves no text input has focus.
+    if text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control())) {
+        state.quick_cmd_focused = false;
+    }
+
+    if let Some(session_id) = state.focused_session_id() {
+        if let Some(data) = key_to_terminal_bytes(&key, &modifiers, text.as_deref()) {
+            // Live sync mode fans the keystroke out to every ticked
+            // session (the focused one included, deduped).
+            let tasks: Vec<Task<Message>> = state
+                .keystroke_targets(session_id)
+                .into_iter()
+                .map(|sid| Task::done(Message::TerminalInput(sid, data.clone())))
+                .collect();
+            return Task::batch(tasks);
+        }
+    }
+    Task::none()
+}
+
+/// `Message::PasteClipboard`, moved out of `handle_message`.
+pub(crate) fn on_paste_clipboard(state: &mut NeoShell) -> Task<Message> {
+    // A right-click away from the open file menu just closes it.
+    if state.remote_menu.take().is_some() { return Task::none(); }
+    // Right-click paste is terminal-only. If an overlay is open, a
+    // right-click on the overlay backdrop shouldn't send paste chars
+    // into the hidden terminal.
+    if state.any_overlay_open() { return Task::none(); }
+    if let Some(session_id) = state.focused_session_id() {
+        let ssh = state.ssh_manager.clone();
+        // Sync mode mirrors the paste to every ticked session too.
+        let mut targets: Vec<String> = if state.sync_input_on {
+            state.broadcast_selected.iter().cloned().collect()
+        } else {
+            Vec::new()
+        };
+        if !targets.contains(&session_id) {
+            targets.push(session_id);
+        }
+        // Bracketed paste (DEC 2004) is switched per terminal, so each
+        // target's own flag is read here, while the grids are at hand.
+        // With it on, a multi-line paste into vim or a shell arrives
+        // as text instead of executing line by line.
+        let targets: Vec<(String, bool)> = targets
+            .into_iter()
+            .map(|sid| {
+                let bracketed = state
+                    .find_terminal_for_session(&sid)
+                    .is_some_and(|t| t.lock().bracketed_paste());
+                (sid, bracketed)
+            })
+            .collect();
+        return Task::perform(
+            async move {
+                let mut clipboard = arboard::Clipboard::new()
+                    .map_err(|e| format!("Clipboard error: {}", e))?;
+                let content = clipboard.get_text()
+                    .map_err(|e| format!("Clipboard read error: {}", e))?;
+                for (sid, bracketed) in &targets {
+                    ssh.send_data(sid, &crate::terminal::encode_paste(&content, *bracketed))?;
+                }
+                Ok(())
+            },
+            |r: Result<(), String>| match r {
+                Ok(()) => Message::None,
+                Err(e) => Message::Error(e),
+            },
+        );
+    }
+    Task::none()
+}
+
+/// `Message::SplitTab`, moved out of `handle_message`.
+pub(crate) fn on_split_tab(state: &mut NeoShell, vertical: bool) -> Task<Message> {
+    let Some(idx) = state.active_tab else {
+        return Task::none();
+    };
+    let Some(tab) = state.tabs.get(idx) else {
+        return Task::none();
+    };
+    // One split per tab, none while one is still connecting; need a
+    // live main session to duplicate.
+    if tab.split.is_some() || tab.split_pending.is_some() || tab.session_id.is_empty() {
+        return Task::none();
+    }
+    let tab_id = tab.id.clone();
+    let conn_id = tab.connection_id.clone();
+    // Known before the connect, like `ConnectTo`'s: closing the tab
+    // withdraws the split's sign-in challenges too.
+    let session_id = SshManager::new_session_id();
+    if let Some(tab) = state.tabs.get_mut(idx) {
+        tab.split_pending = Some(session_id.clone());
+    }
+    // Cmd+D is not typing elsewhere (see `ConnectTo`).
+    state.last_keypress = None;
+    let store = state.store.clone();
+    let ssh = state.ssh_manager.clone();
+    let failed_tab = tab_id.clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let config = store.get_connection(&conn_id)?;
+                let session_id = ssh.connect_config_with_id(&session_id, &config)?;
+                Ok((tab_id, vertical, session_id))
+            })
+            .await
+            .map_err(|e| format!("Task: {}", e))?
+        },
+        move |result: Result<(String, bool, String), String>| match result {
+            Ok((tab_id, vertical, session_id)) => {
+                Message::SplitConnected(tab_id, vertical, session_id)
+            }
+            Err(e) => Message::SplitFailed(failed_tab.clone(), e),
+        },
+    )
+}
+
+/// `Message::SplitConnected`, moved out of `handle_message`.
+pub(crate) fn on_split_connected(state: &mut NeoShell, tab_id: String, vertical: bool, session_id: String) -> Task<Message> {
+    // As in `SshConnected`: output held for this split goes next.
+    if state.ssh_held.is_some() {
+        state.ssh_manager.waker().notify_one();
+    }
+    if let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) {
+        // Only the split this tab is still waiting for.
+        if tab.split.is_none() && tab.split_pending.as_deref() == Some(session_id.as_str()) {
+            tab.split_pending = None;
+            let terminal =
+                Arc::new(parking_lot::Mutex::new(TerminalGrid::new(80, 24)));
+            tab.split = Some(SplitPane {
+                session_id: session_id.clone(),
+                terminal,
+                vertical,
+                ratio: 0.5,
+                bounds: PaneBounds::default(),
+            });
+            tab.focus_split = true;
+            // The bottom panel follows the focused pane: it shows
+            // this session's files now.
+            state.current_dir.insert(session_id.clone(), "~".to_string());
+            return Task::done(Message::ChangeDir(session_id, "~".to_string()));
+        }
+    }
+    // Tab vanished (or already split) while we were connecting —
+    // don't leak the session.
+    let ssh = state.ssh_manager.clone();
+    Task::perform(
+        async move {
+            let _ = ssh.disconnect(&session_id);
+        },
+        |_| Message::None,
+    )
+}
+
+/// `Message::CloseFocusedPane`, moved out of `handle_message`.
+pub(crate) fn on_close_focused_pane(state: &mut NeoShell) -> Task<Message> {
+    let Some(idx) = state.active_tab else {
+        return Task::none();
+    };
+    let Some(tab) = state.tabs.get(idx) else {
+        return Task::none();
+    };
+    if tab.split.is_none() {
+        return Task::done(Message::TabClosed(idx));
+    }
+    let sid = tab.focused_session().to_string();
+    // Taken out here and now, the survivor promoted as the Closed
+    // handler would. No `SshEvent::Closed` comes for it: the
+    // disconnect's stop flag ends the reader without a word, and a
+    // dead pane left holding the focus turned every key into a
+    // "Session not found" error. A Closed that does arrive finds
+    // nothing left to do.
+    if !remove_split_pane(&mut state.tabs, &sid) {
+        return Task::none();
+    }
+    state.forget_session(&sid);
+    // The selection was in the pane that is gone.
+    state.selection_start = None;
+    state.selection_end = None;
+    state.selecting = false;
+    // Its sign-in challenges go with it, as a closed tab's do.
+    let (withdrawn, front) =
+        take_challenges(&mut state.auth_queue, |c| c.session_id == sid);
+    for challenge in withdrawn {
+        challenge.cancel();
+    }
+    let auth = if front { state.begin_auth_prompt() } else { Task::none() };
+    let ssh = state.ssh_manager.clone();
+    let disconnect = Task::perform(
+        async move {
+            let _ = ssh.disconnect(&sid);
+        },
+        |_| Message::None,
+    );
+    Task::batch([auth, disconnect])
+}
+
+/// `Message::TerminalMouseDown`, moved out of `handle_message`.
+pub(crate) fn on_terminal_mouse_down(state: &mut NeoShell) -> Task<Message> {
+    // Passthrough guard: clicks inside an open overlay don't reach here
+    // when they hit a widget; this guards the "click outside the modal
+    // card but inside the page" case from triggering terminal actions.
+    if state.any_overlay_open() { return Task::none(); }
+    state.context_menu = None;
+    state.remote_menu = None;
+    // A click outside every widget takes focus off any text input.
+    state.quick_cmd_focused = false;
+
+    // Check if click is on the splitter zone
+    // Layout from top: toolbar(30) + tabbar(34) + terminal(Fill) + splitter(4) + bottom(H) + status(24)
+    // Splitter center Y ≈ window_height - bottom_panel_height - 24 - 2
+    let splitter_y = state.window_height - state.bottom_panel_height - 24.0 - 2.0;
+    let hit = !state.bottom_panel_collapsed
+        && (state.cursor_y - splitter_y).abs() < 8.0;
+
+    if hit && !state.dragging_splitter {
+        state.dragging_splitter = true;
+        state.drag_start_y = state.cursor_y;
+        state.drag_start_height = state.bottom_panel_height;
+        return Task::none();
+    }
+
+    // Normal terminal click — don't start selection if dragging
+    if state.dragging_splitter {
+        return Task::none();
+    }
+    // The application asked for the mouse (vim `mouse=a`, htop, tmux):
+    // the press is reported to it instead of starting a selection.
+    // Shift keeps it local (see `mouse_report_target`).
+    if let Some((session_id, term)) = state.mouse_report_target() {
+        if let Some((col, row)) =
+            state.focused_pane_cell(state.cursor_x, state.cursor_y, false)
+        {
+            let report = term.lock().encode_mouse(MouseButton::Left, col, row, true);
+            if let Some(bytes) = report {
+                send_mouse_report(&state.ssh_manager, &session_id, &bytes);
+                state.mouse_report = Some(MouseReport {
+                    session_id,
+                    button: MouseButton::Left,
+                    cell: (col, row),
+                });
+                return Task::none();
+            }
+        }
+    }
+    state.selecting = true;
+    state.selection_start = None;
+    state.selection_end = None;
+    // Invalidate canvas cache so old selection is cleared
+    if let Some(term) = state.focused_terminal() {
+        let mut grid = term.lock();
+        grid.generation = grid.generation.wrapping_add(1);
+    }
+    Task::none()
+}
+
+/// `Message::TerminalMouseDown`, moved out of `handle_message`.
+pub(crate) fn on_terminal_mouse_down_2(state: &mut NeoShell, button: MouseButton) -> Task<Message> {
+    // Right or middle. A right-click away from the open file menu
+    // just closes it.
+    if state.remote_menu.take().is_some() {
+        return Task::none();
+    }
+    if state.any_overlay_open() {
+        return Task::none();
+    }
+    let target = state.mouse_report_target();
+    match secondary_click(button, target.is_some()) {
+        SecondaryClick::Report => {
+            // Over the pane only, and one reported press at a time:
+            // `mouse_report` holds the one whose release is owed.
+            let cell = state.focused_pane_cell(state.cursor_x, state.cursor_y, false);
+            let free = state.mouse_report.is_none();
+            if let (Some((session_id, term)), Some((col, row)), true) = (target, cell, free)
+            {
+                if let Some(bytes) = term.lock().encode_mouse(button, col, row, true) {
+                    send_mouse_report(&state.ssh_manager, &session_id, &bytes);
+                    state.mouse_report = Some(MouseReport {
+                        session_id,
+                        button,
+                        cell: (col, row),
+                    });
+                }
+            }
+            Task::none()
+        }
+        SecondaryClick::Paste => Task::done(Message::PasteClipboard),
+        SecondaryClick::Ignore => Task::none(),
+    }
+}
+
+/// `Message::TerminalMouseMove`, moved out of `handle_message`.
+pub(crate) fn on_terminal_mouse_move(state: &mut NeoShell, x: f32, y: f32) -> Task<Message> {
+    state.cursor_x = x;
+    state.cursor_y = y;
+    // Handle splitter drag
+    if state.dragging_splitter {
+        let delta = state.drag_start_y - y;
+        state.bottom_panel_height = (state.drag_start_height + delta).clamp(80.0, 600.0);
+        return Task::none();
+    }
+    // Split-divider drag: move the ratio by the pointer's travel
+    // along the split axis, relative to where the press landed.
+    if let Some((start_pos, start_ratio)) = state.split_drag {
+        let vertical = state
+            .active_tab
+            .and_then(|i| state.tabs.get(i))
+            .and_then(|t| t.split.as_ref())
+            .map(|sp| sp.vertical);
+        if let Some(vertical) = vertical {
+            let extent = state.split_extent(vertical);
+            let pos = if vertical { x } else { y };
+            if let Some(sp) = state
+                .active_tab
+                .and_then(|i| state.tabs.get_mut(i))
+                .and_then(|t| t.split.as_mut())
+            {
+                if extent > 0.0 {
+                    sp.ratio = (start_ratio + (pos - start_pos) / extent)
+                        .clamp(SPLIT_MIN, SPLIT_MAX);
+                }
+            }
+        }
+        return Task::none();
+    }
+    // A reported press: its drag goes to the same application (DEC
+    // 1002 / 1003), pinned to the pane's edge if the pointer leaves
+    // it, and only when the cell actually changes.
+    if let Some(report) = state.mouse_report.clone() {
+        // The cell math measures from the focused pane; if focus moved
+        // mid-drag there is nothing sensible to report.
+        if state.focused_session_id().as_deref() == Some(report.session_id.as_str()) {
+            if let Some(cell) = state.focused_pane_cell(x, y, true) {
+                if cell != report.cell {
+                    if let Some(r) = state.mouse_report.as_mut() {
+                        r.cell = cell;
+                    }
+                    let bytes = state
+                        .find_terminal_for_session(&report.session_id)
+                        .and_then(|t| {
+                            t.lock().encode_mouse_motion(Some(report.button), cell.0, cell.1)
+                        });
+                    if let Some(bytes) = bytes {
+                        send_mouse_report(&state.ssh_manager, &report.session_id, &bytes);
+                    }
+                }
+            }
+        }
+        return Task::none();
+    }
+    // DEC 1003 also wants motion with no button held: over the pane
+    // only, and again only when the cell changes.
+    if !state.selecting && !state.any_overlay_open() {
+        if let Some((session_id, term)) = state.mouse_report_target() {
+            let cell = state.focused_pane_cell(x, y, false);
+            if cell != state.mouse_motion_cell {
+                state.mouse_motion_cell = cell;
+                if let Some((col, row)) = cell {
+                    let bytes = term.lock().encode_mouse_motion(None, col, row);
+                    if let Some(bytes) = bytes {
+                        send_mouse_report(&state.ssh_manager, &session_id, &bytes);
+                    }
+                }
+            }
+        }
+    }
+    if state.selecting {
+        // Split-aware: measured from the focused pane (8b17f55).
+        let (x_off, y_off) = state.focused_pane_origin();
+        // Same font source as the canvas (see TerminalView construction),
+        // otherwise the hit-test and the renderer disagree.
+        if let Some(pos) =
+            pixel_to_grid_with(x, y, x_off, y_off, state.theme_cfg.terminal_font_size)
+        {
+            if state.selection_start.is_none() {
+                state.selection_start = Some(pos);
+            }
+            state.selection_end = Some(pos);
+            // Invalidate canvas cache to update selection highlight
+            if let Some(term) = state.focused_terminal() {
+                let mut grid = term.lock();
+                grid.generation = grid.generation.wrapping_add(1);
+            }
+        }
+    }
+    Task::none()
+}
+
+/// `Message::TerminalMouseUp`, moved out of `handle_message`.
+pub(crate) fn on_terminal_mouse_up(state: &mut NeoShell, button: MouseButton) -> Task<Message> {
+    let left = button == MouseButton::Left;
+    if left {
+        // Always reset splitter drag
+        state.dragging_splitter = false;
+        state.split_drag = None;
+        state.selecting = false;
+    }
+    // The release of a reported press goes to the application that
+    // saw the press, wherever the pointer is now.
+    if let Some(report) = state.mouse_report.take_if(|r| r.button == button) {
+        let cell = if state.focused_session_id().as_deref() == Some(report.session_id.as_str()) {
+            state
+                .focused_pane_cell(state.cursor_x, state.cursor_y, true)
+                .unwrap_or(report.cell)
+        } else {
+            report.cell
+        };
+        let bytes = state
+            .find_terminal_for_session(&report.session_id)
+            .and_then(|t| t.lock().encode_mouse(report.button, cell.0, cell.1, false));
+        if let Some(bytes) = bytes {
+            send_mouse_report(&state.ssh_manager, &report.session_id, &bytes);
+        }
+        return Task::none();
+    }
+    if left && state.selection_start.is_some() && state.selection_end.is_some() {
+        return Task::done(Message::CopySelection);
+    }
+    Task::none()
+}
+
+/// `Message::CopySelection`, moved out of `handle_message`.
+pub(crate) fn on_copy_selection(state: &mut NeoShell) -> Task<Message> {
+    if let (Some(start), Some(end)) = (state.selection_start, state.selection_end) {
+        if let Some(term) = state.focused_terminal() {
+            let grid = term.lock();
+            let text = extract_selection(&grid, start, end);
+            if !text.is_empty() {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(&text);
+                }
+            }
+        }
+    }
+    state.selection_start = None;
+    state.selection_end = None;
+    // Invalidate canvas cache to clear selection highlight
+    if let Some(term) = state.focused_terminal() {
+        let mut grid = term.lock();
+        grid.generation = grid.generation.wrapping_add(1);
+    }
+    Task::none()
+}

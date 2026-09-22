@@ -725,3 +725,24 @@ pub(crate) fn quick_cmd_input_focused() -> Task<bool> {
         .collect()
         .map(|ids: Vec<Id>| ids.iter().any(|id| *id == Id::new(QUICK_CMD_INPUT_ID)))
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::HistoryLoaded`, moved out of `handle_message`.
+pub(crate) fn on_history_loaded(state: &mut NeoShell, seq: u64, load: HistoryLoad) -> Task<Message> {
+    let Some(landed) =
+        land_history_load(&mut state.cmd_history, &mut state.history_sync, seq, load)
+    else {
+        return Task::none();
+    };
+    // Said, not only logged: otherwise the user finds out when the
+    // commands are gone.
+    if let Some(key) = landed.warning {
+        state.show_notice("history.warn.title", i18n::t(key).to_string());
+    }
+    if landed.import_legacy {
+        persist_history(state, false, true)
+    } else {
+        Task::none()
+    }
+}

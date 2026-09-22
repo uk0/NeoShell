@@ -51,6 +51,7 @@ core/
       view/             #   every view_* function, grouped by area (sidebar, panels, forms, overlays, …)
       terminal_view.rs  #   the terminal Canvas program, key/mouse encoding
       files.rs          #   file browser listing, remote paths, transfers, ZMODEM
+      handlers.rs       #   message handlers for sessions, tabs, the vault and the window
       history.rs  groups.rs  settings.rs  focus.rs  auth.rs  events.rs
       palette.rs  forms.rs  monitor.rs  style.rs
       tests.rs          #   the app's unit tests
@@ -74,8 +75,10 @@ Build produces: `neoshell` (launcher binary) + `libneoshell_core.dylib` (cdylib 
 
 Two things a newcomer needs up front:
 - **`core/src/app/` holds the entire UI state machine.** `mod.rs` has the `NeoShell`
-  struct, every `Message` variant and `handle_message` (still ~4k lines: one
-  match over every message). Everything else is in a module per concern; each
+  struct, every `Message` variant and `handle_message`, a ~1.5k-line match that
+  dispatches every message: short arms stay inline, and any arm of 15 lines or
+  more calls an `on_<message>` function in the module it belongs to. Everything
+  else is in a module per concern; each
   child module starts with `use super::*;`, so items move between them freely.
   A child that uses `column!` must `use iced::widget::column;` explicitly —
   through the glob it is ambiguous with std's `column!`.

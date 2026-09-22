@@ -593,3 +593,511 @@ pub(crate) fn default_download_dir() -> std::path::PathBuf {
         .or_else(dirs::desktop_dir)
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::ChangeDir`, moved out of `handle_message`.
+pub(crate) fn on_change_dir(state: &mut NeoShell, sid: String, path: String) -> Task<Message> {
+    let ssh = state.ssh_manager.clone();
+    let sid_for_state = sid.clone();
+    let sid_for_async = sid.clone();
+    let path_async = path.clone();
+    state.current_dir.insert(sid_for_state, path.clone());
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || ssh.list_files(&sid_for_async, &path_async))
+                .await.map_err(|e| format!("{}", e))?
+        },
+        move |result: Result<(String, Vec<FileEntry>), String>| match result {
+            Ok((real_path, entries)) => Message::FilesReceived(sid.clone(), real_path, entries),
+            Err(e) => Message::ListingFailed(sid.clone(), path.clone(), e),
+        },
+    )
+}
+
+/// `Message::UploadFile`, moved out of `handle_message`.
+pub(crate) fn on_upload_file(state: &mut NeoShell) -> Task<Message> {
+    let Some(sid) = state
+        .active_tab
+        .and_then(|idx| state.tabs.get(idx))
+        .map(|t| t.focused_session().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return Task::none();
+    };
+    // Before the picker, not after the user has chosen a file.
+    if state.transfer_refused_busy() {
+        return Task::none();
+    }
+    let dir = state.browser_dir(&sid).unwrap_or_else(|| "~".to_string());
+    // The bar is claimed in `UploadPicked`, once there is a file to
+    // send: a cancelled picker leaves nothing behind.
+    Task::perform(
+        async move {
+            let file = rfd::AsyncFileDialog::new()
+                .set_title(i18n::t("filedialog.upload"))
+                .set_directory(default_download_dir())
+                .pick_file()
+                .await
+                .map(|f| f.path().to_path_buf());
+            (sid, dir, file)
+        },
+        |(sid, dir, file)| Message::UploadPicked(sid, dir, file),
+    )
+}
+
+/// `Message::DownloadFile`, moved out of `handle_message`.
+pub(crate) fn on_download_file(state: &mut NeoShell, sid: String, remote_path: String) -> Task<Message> {
+    if state.transfer_refused_busy() {
+        return Task::none();
+    }
+    // Only prefills the save dialog (the user still picks the path),
+    // but the name comes from the remote listing — sanitise it anyway.
+    let filename = safe_local_basename(&remote_path).unwrap_or_else(|| "file".to_string());
+    Task::perform(
+        async move {
+            let local = rfd::AsyncFileDialog::new()
+                .set_title(i18n::t("filedialog.save"))
+                .set_file_name(&filename)
+                .set_directory(default_download_dir())
+                .save_file()
+                .await
+                .map(|f| f.path().to_path_buf());
+            (sid, remote_path, local)
+        },
+        |(sid, remote_path, local)| Message::DownloadPicked(sid, remote_path, local),
+    )
+}
+
+/// `Message::DownloadPicked`, moved out of `handle_message`.
+pub(crate) fn on_download_picked(state: &mut NeoShell, sid: String, remote_path: String, local: Option<std::path::PathBuf>) -> Task<Message> {
+    let Some(local) = local.filter(|p| !p.as_os_str().is_empty()) else {
+        return Task::none();
+    };
+    // Another transfer may have started while the dialog was open.
+    let Some(progress) = state.claim_transfer_bar() else {
+        return Task::none();
+    };
+    let ssh = state.ssh_manager.clone();
+    let local = local.to_string_lossy().to_string();
+    Task::perform(
+        async move {
+            let bar = progress.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                ssh.download_file_with_progress(&sid, &remote_path, &local, progress)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("Task: {}", e)));
+            (bar, result)
+        },
+        |(bar, result)| Message::DownloadDone(bar, result),
+    )
+}
+
+/// `Message::SaveEditor`, moved out of `handle_message`.
+pub(crate) fn on_save_editor(state: &mut NeoShell) -> Task<Message> {
+    if let (Some(sid), Some(path)) = (state.editor_session_id.clone(), state.editor_file_path.clone()) {
+        let ssh = state.ssh_manager.clone();
+        let content = state.editor_content.text();
+        Task::perform(
+            async move {
+                ssh.write_file_content(&sid, &path, &content)?;
+                Ok(())
+            },
+            |result: Result<(), String>| match result {
+                Ok(()) => Message::EditorSaved,
+                Err(e) => Message::Error(e),
+            },
+        )
+    } else {
+        Task::none()
+    }
+}
+
+/// `Message::RzDetected`, moved out of `handle_message`.
+pub(crate) fn on_rz_detected(state: &mut NeoShell, sid: String) -> Task<Message> {
+    if state.transfer_refused_busy() {
+        return Task::none();
+    }
+    let current_dir = state.current_dir.get(&sid).cloned()
+        .unwrap_or_else(|| "~".to_string());
+    // The bar is claimed in `RzPicked`, once a file is chosen.
+    Task::perform(
+        async move {
+            let file = rfd::AsyncFileDialog::new()
+                .set_title(i18n::t("filedialog.rz_upload"))
+                .set_directory(default_download_dir())
+                .pick_file()
+                .await
+                .map(|f| f.path().to_path_buf());
+            (sid, current_dir, file)
+        },
+        |(sid, dir, file)| Message::RzPicked(sid, dir, file),
+    )
+}
+
+/// `Message::RzPicked`, moved out of `handle_message`.
+pub(crate) fn on_rz_picked(state: &mut NeoShell, sid: String, dir: String, file: Option<std::path::PathBuf>) -> Task<Message> {
+    let Some((local, name)) = file.and_then(|f| {
+        let name = f.file_name()?.to_string_lossy().to_string();
+        Some((f, name))
+    }) else {
+        return Task::none();
+    };
+    let Some(progress) = state.claim_transfer_bar() else {
+        return Task::none();
+    };
+    let remote_path = join_remote_path(&dir, &name);
+    let local_path = local.to_string_lossy().to_string();
+    let ssh = state.ssh_manager.clone();
+    Task::perform(
+        async move {
+            let sid2 = sid.clone();
+            let bar = progress.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                ssh.upload_file_with_progress(&sid2, &local_path, &remote_path, progress)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("Task: {}", e)));
+            (sid, bar, result)
+        },
+        |(sid, bar, result)| Message::RzUploadDone(sid, bar, result),
+    )
+}
+
+/// `Message::SzDetected`, moved out of `handle_message`.
+pub(crate) fn on_sz_detected(state: &mut NeoShell, sid: String) -> Task<Message> {
+    // Prevent duplicate: skip if already downloading
+    if state.transfer_progress.is_some() {
+        return Task::none();
+    }
+
+    let filename = state.sz_filename.remove(&sid);
+    let current_dir = state.current_dir.get(&sid).cloned().unwrap_or("~".to_string());
+
+    if let Some(fname) = filename {
+        // The name was scraped from terminal output — the remote host
+        // controls it. Reduce it to a bare file name before it touches
+        // the local filesystem; refuse rather than guess.
+        let base = match safe_local_basename(&fname) {
+            Some(b) => b,
+            None => {
+                if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
+                    // `{:?}` escapes what the server put in the name:
+                    // it reaches the terminal as text, never as a
+                    // control sequence.
+                    let notice = i18n::tf(
+                        "term.sz_refused",
+                        &[("name", &format!("{:?}", fname))],
+                    );
+                    tab.terminal.lock().write(
+                        format!("\r\n\x1b[31m{}\x1b[0m\r\n", notice).as_bytes(),
+                    );
+                }
+                return Task::none();
+            }
+        };
+
+        let Some(progress) = state.claim_transfer_bar() else {
+            return Task::none();
+        };
+        let ssh = state.ssh_manager.clone();
+
+        // Download directly to ~/Downloads
+        let default_dir = dirs::download_dir()
+            .or_else(|| dirs::desktop_dir())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
+        let local_path = default_dir.join(&base).to_string_lossy().to_string();
+
+        if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
+            tab.terminal.lock().write(
+                format!("\r\n\x1b[32m[NeoShell] sz: {} → {}\x1b[0m\r\n", fname, local_path).as_bytes(),
+            );
+        }
+
+        let bar = progress.clone();
+        Task::perform(
+            async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    // Resolve absolute path on remote (shell CWD may differ from file browser)
+                    let remote_path = if fname.starts_with('/') {
+                        fname.clone()
+                    } else {
+                        let pwd = ssh.exec_command(&sid, "pwd")
+                            .unwrap_or_else(|_| "~".to_string());
+                        let cwd = pwd.trim();
+                        format!("{}/{}", cwd.trim_end_matches('/'), fname)
+                    };
+
+                    ssh.download_file_with_progress(&sid, &remote_path, &local_path, progress)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("{}", e)));
+                (bar, result)
+            },
+            |(bar, result)| Message::DownloadDone(bar, result),
+        )
+    } else {
+        // No filename captured — refresh file browser
+        if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
+            tab.terminal.lock().write(
+                b"\r\n\x1b[33m[NeoShell] sz: no filename captured. Use file browser to download.\x1b[0m\r\n",
+            );
+        }
+        Task::done(Message::ChangeDir(sid, current_dir))
+    }
+}
+
+/// `Message::UploadLocalFile`, moved out of `handle_message`.
+pub(crate) fn on_upload_local_file(state: &mut NeoShell) -> Task<Message> {
+    // Upload selected local file to remote current dir
+    if let Some(local_file) = state.selected_local_file.clone() {
+        if let Some(idx) = state.active_tab {
+            if let Some(tab) = state.tabs.get(idx) {
+                let sid = tab.focused_session().to_string();
+                if state.transfer_refused_busy() {
+                    return Task::none();
+                }
+                let remote_dir = state.browser_dir(&sid).unwrap_or_else(|| "~".into());
+                state.selected_local_file = None;
+                // The shared upload path: one bar, queued drops wait
+                // for it, and the listing refreshes when it ends.
+                let local = std::path::PathBuf::from(local_file);
+                return start_upload(state, sid, local, remote_dir);
+            }
+        }
+    }
+    Task::none()
+}
+
+/// `Message::SftpRename`, moved out of `handle_message`.
+pub(crate) fn on_sftp_rename(state: &mut NeoShell) -> Task<Message> {
+    let Some(RemoteFileMenu { session_id, dir, entry: Some(entry), .. }) =
+        state.remote_menu.take()
+    else {
+        return Task::none();
+    };
+    state.sftp_input = Some(SftpInputDialog {
+        session_id,
+        dir,
+        value: entry.name.clone(),
+        kind: SftpInputKind::Rename {
+            confirmed: ConfirmedEntry::from(&entry),
+            kind: entry.kind(),
+            from: entry.name,
+        },
+        error: None,
+    });
+    Task::batch([
+        state.focus.focus(text_input::Id::new(SFTP_INPUT_ID)),
+        text_input::select_all(text_input::Id::new(SFTP_INPUT_ID)),
+    ])
+}
+
+/// `Message::SftpChmod`, moved out of `handle_message`.
+pub(crate) fn on_sftp_chmod(state: &mut NeoShell) -> Task<Message> {
+    let Some(RemoteFileMenu { session_id, dir, entry: Some(entry), .. }) =
+        state.remote_menu.take()
+    else {
+        return Task::none();
+    };
+    let value = mode_from_permissions(&entry.permissions)
+        .map(|m| format!("{:o}", m))
+        .unwrap_or_default();
+    state.sftp_input = Some(SftpInputDialog {
+        session_id,
+        dir,
+        kind: SftpInputKind::Chmod {
+            confirmed: ConfirmedEntry::from(&entry),
+            kind: entry.kind(),
+            name: entry.name,
+        },
+        value,
+        error: None,
+    });
+    Task::batch([
+        state.focus.focus(text_input::Id::new(SFTP_INPUT_ID)),
+        text_input::select_all(text_input::Id::new(SFTP_INPUT_ID)),
+    ])
+}
+
+/// `Message::SftpDelete`, moved out of `handle_message`.
+pub(crate) fn on_sftp_delete(state: &mut NeoShell) -> Task<Message> {
+    let Some(RemoteFileMenu { session_id, dir, entry: Some(entry), .. }) =
+        state.remote_menu.take()
+    else {
+        return Task::none();
+    };
+    // Destructive: held for the confirmation, which quotes the exact
+    // name and says what it is — the kind the row showed, which is
+    // also what the SSH layer checks the entry against.
+    let path = join_remote_path(&dir, &entry.name);
+    state.confirm_action = Some(ConfirmAction::SftpDelete {
+        session_id,
+        dir,
+        path,
+        confirmed: ConfirmedEntry::from(&entry),
+        kind: entry.kind(),
+        name: entry.name,
+    });
+    Task::none()
+}
+
+/// `Message::SftpInputSubmit`, moved out of `handle_message`.
+pub(crate) fn on_sftp_input_submit(state: &mut NeoShell) -> Task<Message> {
+    let Some(dialog) = state.sftp_input.clone() else {
+        return Task::none();
+    };
+    let SftpInputDialog { session_id, dir, kind, value, .. } = dialog;
+    let ssh = state.ssh_manager.clone();
+    match kind {
+        SftpInputKind::NewFolder => {
+            let Some(name) = valid_remote_name(&value) else {
+                if let Some(d) = state.sftp_input.as_mut() {
+                    d.error = Some("sftp.err_name");
+                }
+                return Task::none();
+            };
+            state.sftp_input = None;
+            let path = join_remote_path(&dir, &name);
+            sftp_op_task(ssh, session_id, dir, move |ssh, sid| ssh.sftp_mkdir(sid, &path))
+        }
+        SftpInputKind::Rename { from, confirmed, .. } => {
+            let target = rename_target(&from, &value);
+            let Ok(target) = target else {
+                if let Some(d) = state.sftp_input.as_mut() {
+                    d.error = Some("sftp.err_name");
+                }
+                return Task::none();
+            };
+            state.sftp_input = None;
+            // Submitted as it opened: nothing to rename.
+            let Some(name) = target else {
+                return Task::none();
+            };
+            let (src, dst) = (join_remote_path(&dir, &from), join_remote_path(&dir, &name));
+            sftp_op_task(ssh, session_id, dir, move |ssh, sid| {
+                ssh.sftp_rename_confirmed(sid, &src, &dst, confirmed)
+            })
+        }
+        SftpInputKind::Chmod { name, kind, confirmed } => {
+            let Some(mode) = parse_octal_mode(&value) else {
+                if let Some(d) = state.sftp_input.as_mut() {
+                    d.error = Some("sftp.err_mode");
+                }
+                return Task::none();
+            };
+            state.sftp_input = None;
+            // Destructive too: confirmed with the exact name, its
+            // kind, the path and the mode.
+            let path = join_remote_path(&dir, &name);
+            state.confirm_action =
+                Some(ConfirmAction::SftpChmod { session_id, dir, path, name, kind, confirmed, mode });
+            Task::none()
+        }
+    }
+}
+
+/// `Message::UploadDir`, moved out of `handle_message`.
+pub(crate) fn on_upload_dir(state: &mut NeoShell) -> Task<Message> {
+    let Some(session_id) = state
+        .active_tab
+        .and_then(|i| state.tabs.get(i))
+        .map(|t| t.focused_session().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return Task::none();
+    };
+    if state.transfer_refused_busy() {
+        return Task::none();
+    }
+    let dir = state.browser_dir(&session_id).unwrap_or_else(|| "~".to_string());
+    Task::perform(
+        async move {
+            let folder = rfd::AsyncFileDialog::new()
+                .set_title(i18n::t("filedialog.upload_dir"))
+                .set_directory(dirs::home_dir().unwrap_or_default())
+                .pick_folder()
+                .await
+                .map(|f| f.path().to_path_buf());
+            (session_id, dir, folder)
+        },
+        |(session_id, dir, folder)| Message::UploadPicked(session_id, dir, folder),
+    )
+}
+
+/// `Message::DownloadDir`, moved out of `handle_message`.
+pub(crate) fn on_download_dir(state: &mut NeoShell, session_id: String, remote: String) -> Task<Message> {
+    if state.transfer_refused_busy() {
+        return Task::none();
+    }
+    Task::perform(
+        async move {
+            let parent = rfd::AsyncFileDialog::new()
+                .set_title(i18n::t("filedialog.download_dir"))
+                .set_directory(default_download_dir())
+                .pick_folder()
+                .await
+                .map(|f| f.path().to_path_buf());
+            (session_id, remote, parent)
+        },
+        |(session_id, remote, parent)| {
+            Message::DownloadDirPicked(session_id, remote, parent)
+        },
+    )
+}
+
+/// `Message::DownloadDirPicked`, moved out of `handle_message`.
+pub(crate) fn on_download_dir_picked(state: &mut NeoShell, session_id: String, remote: String, parent: Option<std::path::PathBuf>) -> Task<Message> {
+    let Some(parent) = parent else {
+        return Task::none();
+    };
+    let Some(progress) = state.claim_transfer_bar() else {
+        return Task::none();
+    };
+    // The folder name comes from the remote listing: it must not get
+    // to choose where on the local disk the tree lands.
+    let name = safe_local_basename(&remote).unwrap_or_else(|| "download".to_string());
+    let local = parent.join(name).to_string_lossy().to_string();
+    let ssh = state.ssh_manager.clone();
+    Task::perform(
+        async move {
+            let bar = progress.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                ssh.download_dir_with_progress(&session_id, &remote, &local, progress)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("Task: {}", e)));
+            (bar, result)
+        },
+        |(bar, result)| Message::DownloadDirDone(bar, result),
+    )
+}
+
+/// `Message::FileDropped`, moved out of `handle_message`.
+pub(crate) fn on_file_dropped(state: &mut NeoShell, path: std::path::PathBuf) -> Task<Message> {
+    // Main screen, nothing modal in the way: a drop under the
+    // connection form must not start an upload behind it.
+    if state.screen != Screen::Main || state.any_overlay_open() {
+        return Task::none();
+    }
+    let Some((session_id, remote_dir)) = state.drop_target() else {
+        state.error_message = i18n::t("drop.no_target").to_string();
+        state.show_error_dialog = true;
+        return Task::none();
+    };
+    // Someone else's transfer holds the bar and would not start the
+    // queue when it ends.
+    if state.transfer_busy() && !state.upload_job_running {
+        state.error_message = i18n::t("transfer.busy").to_string();
+        state.show_error_dialog = true;
+        return Task::none();
+    }
+    log::info!("drop: {} -> {}", path.display(), remote_dir);
+    state.drop_queue.push_back(DropJob {
+        session_id,
+        local: path,
+        remote_dir,
+    });
+    start_next_drop(state)
+}

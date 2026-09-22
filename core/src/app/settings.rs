@@ -284,3 +284,24 @@ pub(crate) fn preset_keeping_fonts(
     preset.ui_font_size = current.ui_font_size;
     preset
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::ThemeHexChanged`, moved out of `handle_message`.
+pub(crate) fn on_theme_hex_changed(state: &mut NeoShell, hex: String) -> Task<Message> {
+    if let Some(z) = state.theme_editing_zone {
+        let s = hex.trim().trim_start_matches('#');
+        if s.len() == 6 {
+            if let Ok(n) = u32::from_str_radix(s, 16) {
+                let rgb = crate::ui::theme_config::Rgb::new(
+                    ((n >> 16) & 0xFF) as u8,
+                    ((n >> 8) & 0xFF) as u8,
+                    (n & 0xFF) as u8,
+                );
+                z.set(&mut state.theme_cfg, rgb);
+                apply_theme(state);
+            }
+        }
+    }
+    Task::none()
+}

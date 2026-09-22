@@ -2111,8 +2111,10 @@ mod tests {
     fn user_facing_tunnel_errors_are_translated_in_both_tables() {
         const SRC: &str = include_str!("tunnel.rs");
         const I18N: &str = include_str!("i18n.rs");
+        // CI checks Windows out with CRLF line endings; match on LF.
+        let src = SRC.replace("\r\n", "\n");
         // This file's code, without the tests.
-        let code = &SRC[..SRC.find("#[cfg(test)]\nmod tests").expect("test module")];
+        let code = &src[..src.find("#[cfg(test)]\nmod tests").expect("test module")];
 
         let mut used = Vec::new();
         for call in ["i18n::t(", "i18n::tf("] {

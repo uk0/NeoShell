@@ -8754,8 +8754,17 @@ mod confirmed_entry_tests {
         // b"a\xff" is shown as "a\u{FFFD}"; sent back as that text it named the
         // entry literally called "a\u{FFFD}", or none.
         let shown = "/srv/a\u{FFFD}";
-        assert_eq!(entry_path(shown, b"a\xff", false).unwrap(), b"/srv/a\xff");
-        assert_eq!(entry_path("/a\u{FFFD}", b"a\xff", false).unwrap(), b"/a\xff");
+        // Where names go out raw (unix), those bytes are what is addressed.
+        // Off unix ssh2 cannot put non-UTF-8 bytes on the wire at all, so the
+        // name is refused on this branch too (deletable_entry_name) — in
+        // production that platform takes the lossy branch below anyway.
+        if cfg!(unix) {
+            assert_eq!(entry_path(shown, b"a\xff", false).unwrap(), b"/srv/a\xff");
+            assert_eq!(entry_path("/a\u{FFFD}", b"a\xff", false).unwrap(), b"/a\xff");
+        } else {
+            assert!(entry_path(shown, b"a\xff", false).is_err());
+            assert!(entry_path("/a\u{FFFD}", b"a\xff", false).is_err());
+        }
         // Where names go out raw, a server's own U+FFFD is a name like any.
         assert_eq!(
             entry_path(shown, "a\u{FFFD}".as_bytes(), false).unwrap(),

@@ -244,3 +244,50 @@ pub(crate) fn auth_purpose_label(purpose: &str) -> String {
     };
     i18n::t(key).to_string()
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::AuthAnswerChanged`, moved out of `handle_message`.
+pub(crate) fn on_auth_answer_changed(state: &mut NeoShell, i: usize, mut value: String) -> Task<Message> {
+    // Keys in the modal's first moments were typed before anyone
+    // could see it, for something else: they are no answer.
+    if !auth_armed(state.auth_shown_at, std::time::Instant::now()) {
+        value.zeroize();
+        return Task::none();
+    }
+    if let Some(slot) = state.auth_answers.get_mut(i) {
+        let mut old = std::mem::replace(slot, value);
+        old.zeroize();
+    }
+    Task::none()
+}
+
+/// `Message::AuthFocus`, moved out of `handle_message`.
+pub(crate) fn on_auth_focus(state: &mut NeoShell, i: usize) -> Task<Message> {
+    // Enter in an answer field moves on — not an Enter that arrived
+    // with the modal.
+    if !auth_armed(state.auth_shown_at, std::time::Instant::now()) {
+        return Task::none();
+    }
+    state.focus.focus(auth_input_id(i))
+}
+
+/// `Message::AuthEnter`, moved out of `handle_message`.
+pub(crate) fn on_auth_enter(state: &mut NeoShell) -> Task<Message> {
+    // Never an Enter typed before the modal appeared: that one ended
+    // whatever the user was typing elsewhere, a sudo password say.
+    if !auth_armed(state.auth_shown_at, std::time::Instant::now()) {
+        return Task::none();
+    }
+    submit_auth_answers(state)
+}
+
+/// `Message::AuthCancel`, moved out of `handle_message`.
+pub(crate) fn on_auth_cancel(state: &mut NeoShell) -> Task<Message> {
+    // The user declining to answer: a cancel, which the SSH thread
+    // tells apart from a modal retired unanswered.
+    if let Some((challenge, _)) = state.auth_queue.pop_front() {
+        challenge.cancel();
+    }
+    state.begin_auth_prompt()
+}

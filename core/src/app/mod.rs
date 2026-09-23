@@ -1958,18 +1958,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
         Message::CreateVault => on_create_vault(state),
         Message::VaultCreated => on_vault_created(state),
-        Message::UnlockVault => {
-            let store = state.store.clone();
-            let pw = state.password_input.clone();
-            Task::perform(
-                async move { store.unlock(&pw) },
-                |result| match result {
-                    Ok(true) => Message::VaultUnlocked,
-                    Ok(false) => Message::Error(i18n::t("unlock.err_invalid").to_string()),
-                    Err(e) => Message::Error(e),
-                },
-            )
-        }
+        Message::UnlockVault => on_unlock_vault(state),
         Message::VaultUnlocked => on_vault_unlocked(state),
         Message::AutoStartTunnels => on_auto_start_tunnels(state),
 
@@ -1980,18 +1969,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             lock_vault(state)
         }
-        Message::IdleCheck => {
-            if state.screen == Screen::Main
-                && idle_lock_due(state.lock_timeout_mins, state.last_activity.elapsed())
-            {
-                log::info!(
-                    "vault re-locked after {} idle minutes",
-                    state.lock_timeout_mins
-                );
-                return lock_vault(state);
-            }
-            Task::none()
-        }
+        Message::IdleCheck => on_idle_check(state),
         Message::SetLockTimeout(mins) => {
             let mins = clamp_lock_timeout(mins);
             state.lock_timeout_mins = mins;
@@ -2001,32 +1979,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- connections -----------------------------------------------------
-        Message::LoadConnections => {
-            let store = state.store.clone();
-            Task::perform(
-                async move { store.get_connections() },
-                |result| match result {
-                    Ok(conns) => Message::ConnectionsLoaded(conns),
-                    Err(e) => Message::Error(e),
-                },
-            )
-        }
-        Message::ConnectionsLoaded(mut conns) => {
-            // In the order every list shows them: the vault is a map.
-            conns.sort_by(connection_order);
-            state.connections = conns;
-            // Re-read ~/.ssh/config alongside the list it is compared with:
-            // the connect dialog and the welcome screen's importer render
-            // from this copy instead of parsing the file on every frame.
-            // Opening the connect dialog lands here via LoadConnections.
-            state.ssh_config_hosts = crate::sshconfig::parse_ssh_config();
-            // A group whose last connection was deleted or moved away is not
-            // folded any more: were it to come back, it would come back open.
-            if prune_collapsed_groups(&mut state.collapsed_groups, &state.connections) {
-                return schedule_groups_save(state);
-            }
-            Task::none()
-        }
+        Message::LoadConnections => on_load_connections(state),
+        Message::ConnectionsLoaded(conns) => on_connections_loaded(state, conns),
         Message::ConnectTo(id) => on_connect_to(state, id),
         Message::ShowConnectDialog => {
             state.show_connect_dialog = true;
@@ -2036,41 +1990,15 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.show_connect_dialog = false;
             Task::none()
         }
-        Message::SwitchToNextTab => {
-            if !state.tabs.is_empty() {
-                let next = match state.active_tab {
-                    Some(idx) => (idx + 1) % state.tabs.len(),
-                    None => 0,
-                };
-                state.active_tab = Some(next);
-            }
-            Task::none()
-        }
-        Message::SwitchToPrevTab => {
-            if !state.tabs.is_empty() {
-                let prev = match state.active_tab {
-                    Some(0) | None => state.tabs.len() - 1,
-                    Some(idx) => idx - 1,
-                };
-                state.active_tab = Some(prev);
-            }
-            Task::none()
-        }
+        Message::SwitchToNextTab => on_switch_to_next_tab(state),
+        Message::SwitchToPrevTab => on_switch_to_prev_tab(state),
         Message::SwitchToTab(idx) => {
             if idx < state.tabs.len() {
                 state.active_tab = Some(idx);
             }
             Task::none()
         }
-        Message::DeleteConnection(id) => {
-            // Find name for confirm dialog
-            let name = state.connections.iter()
-                .find(|c| c.id == id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| id.clone());
-            state.confirm_delete = Some((id, name));
-            Task::none()
-        }
+        Message::DeleteConnection(id) => on_delete_connection(state, id),
         Message::CancelDelete => {
             state.confirm_delete = None;
             Task::none()
@@ -2079,14 +2007,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
 
         // ---- form ------------------------------------------------------------
         Message::ShowForm(maybe_id) => on_show_form(state, maybe_id),
-        Message::HideForm => {
-            state.show_form = false;
-            state.edit_id = None;
-            state.form = ConnectionFormData::default();
-            state.form_test_result = None;
-            state.form_testing = false;
-            Task::none()
-        }
+        Message::HideForm => on_hide_form(state),
         Message::FormNameChanged(v) => {
             state.form.name = v;
             Task::none()
@@ -2144,21 +2065,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
 
         // ---- terminal --------------------------------------------------------
         Message::SshConnected(tab_id, session_id, title, connection_id) => on_ssh_connected(state, tab_id, session_id, title, connection_id),
-        Message::ConnectFailed(tab_id, connection_id, e) => {
-            log::error!("{}", e);
-            let Some(idx) = state.tabs.iter().position(|t| t.id == tab_id) else {
-                // The tab was closed while it connected — a sign-in withdrawn
-                // by that close ends here too. Nobody is waiting for this.
-                return Task::none();
-            };
-            state.tabs.remove(idx);
-            state.active_tab = active_after_removal(state.active_tab, idx, state.tabs.len());
-            // Allow a manual retry.
-            state.connecting_ids.remove(&connection_id);
-            state.error_message = e;
-            state.show_error_dialog = true;
-            Task::none()
-        }
+        Message::ConnectFailed(tab_id, connection_id, e) => on_connect_failed(state, tab_id, connection_id, e),
         Message::TerminalInput(session_id, data) => on_terminal_input(state, session_id, data),
         Message::TabSelected(idx) => on_tab_selected(state, idx),
         Message::TabClosed(idx) => on_tab_closed(state, idx),
@@ -2171,15 +2078,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
 
         Message::PasteClipboard => on_paste_clipboard(state),
 
-        Message::CancelTransfer => {
-            if let Some(ref progress) = state.transfer_progress {
-                progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            state.transfer_progress = None;
-            // Cancel means the whole drop, not just the file in flight.
-            state.drop_queue.clear();
-            Task::none()
-        }
+        Message::CancelTransfer => on_cancel_transfer(state),
 
         Message::ModifiersChanged(modifiers) => {
             state.modifiers = modifiers;
@@ -2201,17 +2100,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         // ---- monitor ---------------------------------------------------------
         Message::FetchMonitorData => on_fetch_monitor_data(state),
         Message::MonitorDataReceived(sid, stats, procs) => on_monitor_data_received(state, sid, stats, procs),
-        Message::MonitorError(sid, e) => {
-            state.monitor_inflight.finish(&sid);
-            if !exec_parked(&e) {
-                log::warn!("Monitor fetch error: {}", e);
-            } else if state.monitor_parked.park(&sid) {
-                // Every tick fails this way until the user reconnects: the
-                // panel says so from now on, the log says it once.
-                log::warn!("Monitoring parked for {}: {}", sid, e);
-            }
-            Task::none()
-        }
+        Message::MonitorError(sid, e) => on_monitor_error(state, sid, e),
         Message::ResumeMonitoring(sid) => on_resume_monitoring(state, sid),
         Message::ExecParked(sid) => {
             if state.monitor_parked.park(&sid) {
@@ -2219,16 +2108,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ResumeMonitoringDone(sid, result) => {
-            if let Err(e) = &result {
-                log::warn!("Monitoring reconnect for {} failed: {}", sid, e);
-            }
-            if state.monitor_parked.finish_resume(&sid, result) {
-                // Fill the panel now rather than on the next tick.
-                return Task::done(Message::FetchMonitorData);
-            }
-            Task::none()
-        }
+        Message::ResumeMonitoringDone(sid, result) => on_resume_monitoring_done(state, sid, result),
         Message::ShowNetworkDetail(iface) => {
             state.selected_interface = Some(iface);
             Task::none()
@@ -2250,20 +2130,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             note_listing_failed(&mut state.current_dir, &mut state.file_entries, &sid, &requested);
             Task::done(listing_failed(&sid, error))
         }
-        Message::FileClicked(sid, dir, entry) => {
-            // `dir` is the listing the row was on, which the view handed over
-            // with it — not `current_dir`, which may name another directory
-            // by now.
-            if entry.is_dir || entry.name == ".." {
-                let new_path = if entry.name == ".." {
-                    remote_parent(&dir)
-                } else {
-                    join_remote_path(&dir, &entry.name)
-                };
-                return Task::done(Message::ChangeDir(sid, new_path));
-            }
-            Task::none()
-        }
+        Message::FileClicked(sid, dir, entry) => on_file_clicked(sid, dir, entry),
 
         // ---- file operations -------------------------------------------------
         Message::UploadFile => on_upload_file(state),
@@ -2276,21 +2143,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- editor ----------------------------------------------------------
-        Message::OpenEditor(sid, path) => {
-            let ssh = state.ssh_manager.clone();
-            let sid2 = sid.clone();
-            let path2 = path.clone();
-            Task::perform(
-                async move {
-                    let content = ssh.read_file_content(&sid2, &path2)?;
-                    Ok((sid2, path2, content))
-                },
-                |result: Result<(String, String, String), String>| match result {
-                    Ok((sid, path, content)) => Message::EditorContentLoaded(sid, path, content),
-                    Err(e) => Message::Error(e),
-                },
-            )
-        }
+        Message::OpenEditor(sid, path) => on_open_editor(state, sid, path),
         Message::EditorContentLoaded(sid, path, content) => {
             state.editor_content = text_editor::Content::with_text(&content);
             state.editor_file_path = Some(path);
@@ -2298,14 +2151,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.editor_dirty = false;
             Task::none()
         }
-        Message::EditorAction(action) => {
-            let is_edit = action.is_edit();
-            state.editor_content.perform(action);
-            if is_edit {
-                state.editor_dirty = true;
-            }
-            Task::none()
-        }
+        Message::EditorAction(action) => on_editor_action(state, action),
         Message::SaveEditor => on_save_editor(state),
         Message::EditorSaved => {
             state.editor_dirty = false;
@@ -2320,22 +2166,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- SSH config / key file picker --------------------------------------
-        Message::BrowseKeyFile => {
-            Task::perform(
-                async {
-                    let file = rfd::AsyncFileDialog::new()
-                        .set_title(i18n::t("filedialog.select_key"))
-                        .set_directory(dirs::home_dir().unwrap_or_default().join(".ssh"))
-                        .pick_file()
-                        .await;
-                    file.map(|f| f.path().to_string_lossy().to_string())
-                },
-                |path| match path {
-                    Some(p) => Message::KeyFileSelected(p),
-                    None => Message::None,
-                },
-            )
-        }
+        Message::BrowseKeyFile => on_browse_key_file(),
         Message::KeyFileSelected(path) => {
             state.form.private_key = path;
             Task::none()
@@ -2345,87 +2176,23 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::ImportAllSshConfigs => on_import_all_ssh_configs(state),
 
         // ---- broadcast -------------------------------------------------------
-        Message::ShowBroadcastDialog => {
-            state.show_broadcast_dialog = !state.show_broadcast_dialog;
-            if state.show_broadcast_dialog {
-                // Pre-select all currently-active sessions
-                state.broadcast_selected.clear();
-                for tab in &state.tabs {
-                    if !tab.session_id.is_empty() {
-                        state.broadcast_selected.insert(tab.session_id.clone());
-                    }
-                }
-            }
-            Task::none()
-        }
+        Message::ShowBroadcastDialog => on_show_broadcast_dialog(state),
         Message::HideBroadcastDialog => {
             state.show_broadcast_dialog = false;
             Task::none()
         }
         Message::BroadcastTextChanged(v) => { state.broadcast_text = v; Task::none() }
-        Message::BroadcastToggleSession(sid) => {
-            if state.broadcast_selected.contains(&sid) {
-                state.broadcast_selected.remove(&sid);
-            } else {
-                state.broadcast_selected.insert(sid);
-            }
-            Task::none()
-        }
-        Message::BroadcastSendNow => {
-            let cmd = state.broadcast_text.clone();
-            if cmd.is_empty() { return Task::none(); }
-            // Append newline if the user didn't so the server actually runs it
-            let payload = if cmd.ends_with('\n') { cmd } else { format!("{}\n", cmd) };
-            let ssh = state.ssh_manager.clone();
-            let ids: Vec<String> = state.broadcast_selected.iter().cloned().collect();
-            log::info!("Broadcast: sending {} bytes to {} sessions", payload.len(), ids.len());
-            for sid in ids {
-                let _ = ssh.send_data(&sid, payload.as_bytes());
-            }
-            state.broadcast_text.clear();
-            state.show_broadcast_dialog = false;
-            Task::none()
-        }
+        Message::BroadcastToggleSession(sid) => on_broadcast_toggle_session(state, sid),
+        Message::BroadcastSendNow => on_broadcast_send_now(state),
 
         // ---- snippets --------------------------------------------------------
-        Message::ShowSnippetsPanel => {
-            state.show_snippets_panel = !state.show_snippets_panel;
-            if state.show_snippets_panel {
-                state.snippets = load_snippets();
-                state.snippet_edit_id = None;
-                state.snippet_form_name.clear();
-                state.snippet_form_body.clear();
-            }
-            Task::none()
-        }
+        Message::ShowSnippetsPanel => on_show_snippets_panel(state),
         Message::HideSnippetsPanel => {
             state.show_snippets_panel = false;
             Task::none()
         }
-        Message::SnippetSend(id) => {
-            if let Some(sn) = state.snippets.iter().find(|s| s.id == id).cloned() {
-                // Split-aware: snippet lands in the focused pane.
-                if let Some(sid) = state.focused_session_id() {
-                    let body = if sn.body.ends_with('\n') { sn.body.clone() } else { format!("{}\n", sn.body) };
-                    let _ = state.ssh_manager.send_data(&sid, body.as_bytes());
-                }
-                state.show_snippets_panel = false;
-            }
-            Task::none()
-        }
-        Message::SnippetEdit(maybe_id) => {
-            state.snippet_edit_id = maybe_id.clone();
-            if let Some(id) = maybe_id {
-                if let Some(s) = state.snippets.iter().find(|s| s.id == id) {
-                    state.snippet_form_name = s.name.clone();
-                    state.snippet_form_body = s.body.clone();
-                }
-            } else {
-                state.snippet_form_name.clear();
-                state.snippet_form_body.clear();
-            }
-            Task::none()
-        }
+        Message::SnippetSend(id) => on_snippet_send(state, id),
+        Message::SnippetEdit(maybe_id) => on_snippet_edit(state, maybe_id),
         Message::SnippetFormNameChanged(v) => { state.snippet_form_name = v; Task::none() }
         Message::SnippetFormBodyChanged(v) => { state.snippet_form_body = v; Task::none() }
         Message::SnippetSave => on_snippet_save(state),
@@ -2445,18 +2212,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- v0.7.0: command palette (Cmd+K) --------------------------------
-        Message::TogglePalette => {
-            state.show_palette = !state.show_palette;
-            if state.show_palette {
-                state.palette_query.clear();
-                state.palette_selected = 0;
-                return Task::batch(vec![
-                    Task::done(Message::LoadConnections),
-                    state.focus.focus(text_input::Id::new(PALETTE_INPUT_ID)),
-                ]);
-            }
-            Task::none()
-        }
+        Message::TogglePalette => on_toggle_palette(state),
         Message::PaletteQueryChanged(q) => {
             state.palette_query = q;
             state.palette_selected = 0;
@@ -2480,29 +2236,14 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             let sel = state.palette_selected;
             return Task::done(Message::PaletteExecuteIndex(sel));
         }
-        Message::PaletteExecuteIndex(i) => {
-            let items = state.palette_items();
-            if let Some(item) = items.into_iter().nth(i) {
-                state.show_palette = false;
-                return Task::done(item.msg);
-            }
-            Task::none()
-        }
+        Message::PaletteExecuteIndex(i) => on_palette_execute_index(state, i),
 
         // ---- v0.7.0: tab rename ---------------------------------------------
         Message::TabRenameInput(s) => {
             state.tab_rename_input = s;
             Task::none()
         }
-        Message::TabRenameCommit => {
-            if let Some(idx) = state.tab_rename.take() {
-                if let Some(tab) = state.tabs.get_mut(idx) {
-                    let v = state.tab_rename_input.trim().to_string();
-                    tab.custom_title = if v.is_empty() { None } else { Some(v) };
-                }
-            }
-            Task::none()
-        }
+        Message::TabRenameCommit => on_tab_rename_commit(state),
         Message::TabRenameCancel => {
             state.tab_rename = None;
             Task::none()
@@ -2515,44 +2256,10 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             }
             schedule_groups_save(state)
         }
-        Message::SetAllGroupsCollapsed(collapse) => {
-            if collapse {
-                let all = state.connections.iter().map(|c| c.group.clone());
-                state.collapsed_groups.extend(all);
-            } else {
-                state.collapsed_groups.clear();
-            }
-            schedule_groups_save(state)
-        }
-        Message::SaveCollapsedGroups(gen) => {
-            // Only the save the latest change scheduled; a lock since has
-            // sealed the change already and emptied the set.
-            if gen == state.groups_gen && state.groups_dirty {
-                return persist_groups(state, false);
-            }
-            Task::none()
-        }
-        Message::GroupsWritten(result) => {
-            if let Err(e) = result {
-                log::warn!("folded groups not saved: {}", e);
-                // The next change, or the lock, tries again — unless the
-                // vault is locked already, which forgot the set.
-                if state.screen == Screen::Main {
-                    state.groups_dirty = true;
-                }
-            }
-            Task::none()
-        }
-        Message::SidebarHover(id, entered) => {
-            if entered {
-                state.hovered_conn = Some(id);
-            } else if state.hovered_conn.as_deref() == Some(id.as_str()) {
-                // Only clear our own row: the next row's enter can arrive
-                // before this row's exit.
-                state.hovered_conn = None;
-            }
-            Task::none()
-        }
+        Message::SetAllGroupsCollapsed(collapse) => on_set_all_groups_collapsed(state, collapse),
+        Message::SaveCollapsedGroups(gen) => on_save_collapsed_groups(state, gen),
+        Message::GroupsWritten(result) => on_groups_written(state, result),
+        Message::SidebarHover(id, entered) => on_sidebar_hover(state, id, entered),
 
         // ---- v0.7.0: live sync input ------------------------------------------
         Message::ToggleSyncInput => {
@@ -2561,14 +2268,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- v0.7.0: threshold alerts -----------------------------------------
-        Message::AlertEnabledToggled(v) => {
-            state.alert_cfg.enabled = v;
-            if !v {
-                state.alerts_active.clear();
-            }
-            save_alerts(&state.alert_cfg);
-            Task::none()
-        }
+        Message::AlertEnabledToggled(v) => on_alert_enabled_toggled(state, v),
         Message::AlertCpuChanged(v) => {
             state.alert_cfg.cpu_pct = v;
             save_alerts(&state.alert_cfg);
@@ -2586,18 +2286,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- v0.7.0: SSH key manager ------------------------------------------
-        Message::ShowKeyManager => {
-            // Toolbar buttons toggle (v0.6.19 convention).
-            if state.show_key_manager {
-                state.show_key_manager = false;
-                state.key_deploying = None;
-                return Task::none();
-            }
-            state.show_key_manager = true;
-            state.local_keys = crate::sshkeys::list_keys();
-            state.key_deploy_status = None;
-            Task::done(Message::LoadConnections)
-        }
+        Message::ShowKeyManager => on_show_key_manager(state),
         Message::HideKeyManager => {
             state.show_key_manager = false;
             state.key_deploying = None;
@@ -2612,15 +2301,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::KeyGenerate => on_key_generate(state),
-        Message::KeyCopyPubkey(path) => {
-            if let Some(k) = state.local_keys.iter().find(|k| k.path == path) {
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(&k.pubkey);
-                }
-                state.key_deploy_status = Some(i18n::t("keys.copied").to_string());
-            }
-            Task::none()
-        }
+        Message::KeyCopyPubkey(path) => on_key_copy_pubkey(state, path),
         Message::KeyDeployStart(path) => {
             state.key_deploying = Some(path);
             state.key_deploy_status = None;
@@ -2642,91 +2323,23 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         // ---- v0.7.0: split panes ----------------------------------------------
         Message::SplitTab(vertical) => on_split_tab(state, vertical),
         Message::SplitConnected(tab_id, vertical, session_id) => on_split_connected(state, tab_id, vertical, session_id),
-        Message::SplitFailed(tab_id, e) => {
-            log::error!("{}", e);
-            let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) else {
-                // Closed while the split connected: nobody is waiting.
-                return Task::none();
-            };
-            tab.split_pending = None;
-            state.error_message = e;
-            state.show_error_dialog = true;
-            Task::none()
-        }
-        Message::SplitDividerPressed => {
-            let start = state
-                .active_tab
-                .and_then(|i| state.tabs.get(i))
-                .and_then(|t| t.split.as_ref())
-                .map(|sp| {
-                    let pos = if sp.vertical { state.cursor_x } else { state.cursor_y };
-                    (pos, sp.ratio)
-                });
-            state.split_drag = start;
-            Task::none()
-        }
-        Message::SplitFocusToggle => {
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get_mut(idx) {
-                    if tab.split.is_some() {
-                        tab.focus_split = !tab.focus_split;
-                    }
-                }
-            }
-            Task::none()
-        }
+        Message::SplitFailed(tab_id, e) => on_split_failed(state, tab_id, e),
+        Message::SplitDividerPressed => on_split_divider_pressed(state),
+        Message::SplitFocusToggle => on_split_focus_toggle(state),
         Message::CloseFocusedPane => on_close_focused_pane(state),
 
-        Message::RzUploadDone(sid, bar, result) => {
-            release_bar(&mut state.transfer_progress, &bar);
-            if result.is_err() {
-                report_transfer_error(state, result);
-                return Task::none();
-            }
-            if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
-                tab.terminal.lock().write(
-                    b"\r\n\x1b[32m[NeoShell] Upload complete.\x1b[0m\r\n",
-                );
-            }
-            let path = state.current_dir.get(&sid).cloned()
-                .unwrap_or_else(|| "~".to_string());
-            Task::done(Message::ChangeDir(sid, path))
-        }
+        Message::RzUploadDone(sid, bar, result) => on_rz_upload_done(state, sid, bar, result),
 
         // ---- terminal search (Cmd+F) ---------------------------------------
-        Message::ToggleTerminalSearch => {
-            state.term_search_active = !state.term_search_active;
-            if state.term_search_active {
-                rerun_terminal_search(state);
-                scroll_to_current_match(state);
-                state.focus.focus(text_input::Id::new(TERM_SEARCH_INPUT_ID))
-            } else {
-                state.term_search_matches.clear();
-                Task::none()
-            }
-        }
+        Message::ToggleTerminalSearch => on_toggle_terminal_search(state),
         Message::TerminalSearchChanged(q) => {
             state.term_search_query = q;
             rerun_terminal_search(state);
             scroll_to_current_match(state);
             Task::none()
         }
-        Message::TerminalSearchNext => {
-            if !state.term_search_matches.is_empty() {
-                state.term_search_current =
-                    (state.term_search_current + 1) % state.term_search_matches.len();
-                scroll_to_current_match(state);
-            }
-            Task::none()
-        }
-        Message::TerminalSearchPrev => {
-            if !state.term_search_matches.is_empty() {
-                let n = state.term_search_matches.len();
-                state.term_search_current = (state.term_search_current + n - 1) % n;
-                scroll_to_current_match(state);
-            }
-            Task::none()
-        }
+        Message::TerminalSearchNext => on_terminal_search_next(state),
+        Message::TerminalSearchPrev => on_terminal_search_prev(state),
         Message::TerminalSearchClose => {
             state.term_search_active = false;
             state.term_search_matches.clear();
@@ -2741,25 +2354,8 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::SzDetected(sid) => on_sz_detected(state, sid),
 
         // ---- terminal scrollback & selection ------------------------------------
-        Message::TerminalScrollUp(lines) => {
-            // Passthrough guard: if any overlay is open, the user is scrolling
-            // inside it — don't let the event also scroll the terminal below.
-            if state.any_overlay_open() { return Task::none(); }
-            // An application reading the mouse (less, vim, htop) scrolls itself.
-            if report_wheel(state, MouseButton::WheelUp) { return Task::none(); }
-            if let Some(term) = state.focused_terminal() {
-                term.lock().scroll_view_up(lines);
-            }
-            Task::none()
-        }
-        Message::TerminalScrollDown(lines) => {
-            if state.any_overlay_open() { return Task::none(); }
-            if report_wheel(state, MouseButton::WheelDown) { return Task::none(); }
-            if let Some(term) = state.focused_terminal() {
-                term.lock().scroll_view_down(lines);
-            }
-            Task::none()
-        }
+        Message::TerminalScrollUp(lines) => on_terminal_scroll_up(state, lines),
+        Message::TerminalScrollDown(lines) => on_terminal_scroll_down(state, lines),
         Message::TerminalMouseDown(MouseButton::Left) => on_terminal_mouse_down(state),
         Message::TerminalMouseDown(button) => on_terminal_mouse_down_2(state, button),
         Message::TerminalMouseMove(x, y) => on_terminal_mouse_move(state, x, y),
@@ -2785,15 +2381,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- bottom panel ----------------------------------------------------
-        Message::SwitchBottomTab(tab) => {
-            let ports = tab == BottomTab::Ports;
-            state.bottom_panel_tab = tab;
-            state.quick_cmd_focused = false;
-            if ports {
-                return Task::done(Message::FetchPorts);
-            }
-            Task::none()
-        }
+        Message::SwitchBottomTab(tab) => on_switch_bottom_tab(state, tab),
         Message::PathInputChanged(v) => {
             state.path_input = v;
             Task::none()
@@ -2811,18 +2399,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.context_menu = None;
             Task::none()
         }
-        Message::PathInputSubmit => {
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let sid = tab.focused_session().to_string();
-                    let path = state.path_input.clone();
-                    if !path.is_empty() {
-                        return Task::done(Message::ChangeDir(sid, path));
-                    }
-                }
-            }
-            Task::none()
-        }
+        Message::PathInputSubmit => on_path_input_submit(state),
 
         // ---- UI state -------------------------------------------------------
         Message::ToggleSidebar => {
@@ -2871,14 +2448,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ReplayCommand(cmd) => on_replay_command(state, cmd),
-        Message::ClearHistory => {
-            clear_history(&mut state.cmd_history, &mut state.history_sync);
-            // On disk at once, and over the old bytes: clearing is how a user
-            // takes back a line they did not mean to keep. A cleartext
-            // history.json still waiting to be imported goes too, or the next
-            // unlock would bring its lines straight back.
-            persist_history(state, true, true)
-        }
+        Message::ClearHistory => on_clear_history(state),
         Message::QuickCmdInputChanged(v) => {
             state.quick_cmd_input = v;
             // Only a focused input produces this.
@@ -2902,70 +2472,22 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.local_entries = list_local_dir(&state.local_path);
             Task::none()
         }
-        Message::LocalFileClicked(path) => {
-            let p = std::path::Path::new(&path);
-            if p.is_dir() {
-                state.local_path = path;
-                state.local_entries = list_local_dir(&state.local_path);
-                state.selected_local_file = None;
-            } else {
-                state.selected_local_file = Some(path);
-            }
-            Task::none()
-        }
+        Message::LocalFileClicked(path) => on_local_file_clicked(state, path),
         Message::RefreshLocalFiles => {
             state.local_entries = list_local_dir(&state.local_path);
             Task::none()
         }
-        Message::RefreshRemoteFiles => {
-            if let Some(idx) = state.active_tab {
-                if let Some(tab) = state.tabs.get(idx) {
-                    let sid = tab.focused_session().to_string();
-                    let path = state.current_dir.get(&sid).cloned().unwrap_or_else(|| "~".into());
-                    return Task::done(Message::ChangeDir(sid, path));
-                }
-            }
-            Task::none()
-        }
+        Message::RefreshRemoteFiles => on_refresh_remote_files(state),
         Message::UploadLocalFile => on_upload_local_file(state),
-        Message::SendQuickCmd => {
-            let cmd = state.quick_cmd_input.trim().to_string();
-            if !cmd.is_empty() {
-                state.quick_cmd_input.clear();
-                return Task::done(Message::ReplayCommand(cmd));
-            }
-            Task::none()
-        }
+        Message::SendQuickCmd => on_send_quick_cmd(state),
 
         // ---- proxy management ------------------------------------------------
-        Message::ShowProxyManager => {
-            // Toggle: second click closes the side panel.
-            state.show_proxy_manager = !state.show_proxy_manager;
-            if state.show_proxy_manager {
-                state.proxies = state.proxy_store.load();
-                state.proxy_edit_id = None;
-            }
-            Task::none()
-        }
+        Message::ShowProxyManager => on_show_proxy_manager(state),
         Message::HideProxyManager => {
             state.show_proxy_manager = false;
             Task::none()
         }
-        Message::ShowProxyForm(maybe_id) => {
-            state.show_proxy_form = true;
-            // One builder for opening and for ESC's "still as opened?" test,
-            // so the two cannot drift apart.
-            if let Some(id) = maybe_id {
-                if let Some(p) = state.proxies.iter().find(|p| p.id == id) {
-                    state.proxy_form = proxy_form_for(Some(p));
-                    state.proxy_edit_id = Some(id);
-                }
-            } else {
-                state.proxy_edit_id = None;
-                state.proxy_form = proxy_form_for(None);
-            }
-            Task::none()
-        }
+        Message::ShowProxyForm(maybe_id) => on_show_proxy_form(state, maybe_id),
         Message::HideProxyForm => {
             state.show_proxy_form = false;
             state.proxy_edit_id = None;
@@ -2981,25 +2503,9 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::ProxyFormAuthTypeChanged(v) => { state.proxy_form.auth_type = v; Task::none() }
         Message::ProxyFormPrivateKeyChanged(v) => { state.proxy_form.private_key = v; Task::none() }
         Message::ProxyFormPassphraseChanged(v) => { state.proxy_form.passphrase = v; Task::none() }
-        Message::ProxyFormBrowsePrivateKey => {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title(i18n::t("filedialog.select_key"))
-                .pick_file()
-            {
-                state.proxy_form.private_key = path.to_string_lossy().to_string();
-            }
-            Task::none()
-        }
+        Message::ProxyFormBrowsePrivateKey => on_proxy_form_browse_private_key(state),
         Message::SaveProxy => on_save_proxy(state),
-        Message::DeleteProxy(id) => {
-            if let Err(e) = state.proxy_store.try_delete(&id) {
-                state.error_message = e;
-                state.show_error_dialog = true;
-                return Task::none();
-            }
-            state.proxies = state.proxy_store.load();
-            Task::none()
-        }
+        Message::DeleteProxy(id) => on_delete_proxy(state, id),
         Message::TestProxy(id) => on_test_proxy(state, id),
         Message::ProxyTestDone(id, result) => {
             state.proxy_test_results.insert(id, result);
@@ -3011,31 +2517,12 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- tunnels ---------------------------------------------------------
-        Message::ShowTunnelManager => {
-            // Toggle: second click closes.
-            state.show_tunnel_manager = !state.show_tunnel_manager;
-            if state.show_tunnel_manager {
-                state.tunnels = state.tunnel_store.load();
-            }
-            Task::none()
-        }
+        Message::ShowTunnelManager => on_show_tunnel_manager(state),
         Message::HideTunnelManager => {
             state.show_tunnel_manager = false;
             Task::none()
         }
-        Message::ShowTunnelForm(edit_id) => {
-            state.show_tunnel_form = true;
-            state.tunnel_edit_id = edit_id.clone();
-            // Same builder as ESC's "still as opened?" test.
-            if let Some(id) = edit_id {
-                if let Some(t) = state.tunnels.iter().find(|x| x.id == id) {
-                    state.tunnel_form = tunnel_form_for(Some(t));
-                }
-            } else {
-                state.tunnel_form = tunnel_form_for(None);
-            }
-            Task::none()
-        }
+        Message::ShowTunnelForm(edit_id) => on_show_tunnel_form(state, edit_id),
         Message::HideTunnelForm => {
             state.show_tunnel_form = false;
             state.tunnel_edit_id = None;
@@ -3051,26 +2538,9 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::TunnelFormKeyChanged(v) => { state.tunnel_form.private_key = v; Task::none() }
         Message::TunnelFormPassphraseChanged(v) => { state.tunnel_form.passphrase = v; Task::none() }
         Message::TunnelFormForwardsChanged(v) => { state.tunnel_form.forwards_text = v; Task::none() }
-        Message::TunnelFormBrowseKey => {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title(i18n::t("filedialog.select_key"))
-                .pick_file()
-            {
-                state.tunnel_form.private_key = path.to_string_lossy().to_string();
-            }
-            Task::none()
-        }
+        Message::TunnelFormBrowseKey => on_tunnel_form_browse_key(state),
         Message::SaveTunnel => on_save_tunnel(state),
-        Message::DeleteTunnel(id) => {
-            state.tunnel_manager.stop(&id);
-            if let Err(e) = state.tunnel_store.try_delete(&id) {
-                state.error_message = e;
-                state.show_error_dialog = true;
-                return Task::none();
-            }
-            state.tunnels = state.tunnel_store.load();
-            Task::none()
-        }
+        Message::DeleteTunnel(id) => on_delete_tunnel(state, id),
         Message::StartTunnel(id) => on_start_tunnel(state, id),
         Message::StopTunnel(id) => {
             state.tunnel_manager.stop(&id);
@@ -3087,33 +2557,9 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             state.theme_editing_zone = None;
             Task::none()
         }
-        Message::ThemeRChanged(r) => {
-            if let Some(z) = state.theme_editing_zone {
-                let mut v = z.get(&state.theme_cfg);
-                v.r = r;
-                z.set(&mut state.theme_cfg, v);
-                apply_theme(state);
-            }
-            Task::none()
-        }
-        Message::ThemeGChanged(g) => {
-            if let Some(z) = state.theme_editing_zone {
-                let mut v = z.get(&state.theme_cfg);
-                v.g = g;
-                z.set(&mut state.theme_cfg, v);
-                apply_theme(state);
-            }
-            Task::none()
-        }
-        Message::ThemeBChanged(b) => {
-            if let Some(z) = state.theme_editing_zone {
-                let mut v = z.get(&state.theme_cfg);
-                v.b = b;
-                z.set(&mut state.theme_cfg, v);
-                apply_theme(state);
-            }
-            Task::none()
-        }
+        Message::ThemeRChanged(r) => on_theme_r_changed(state, r),
+        Message::ThemeGChanged(g) => on_theme_g_changed(state, g),
+        Message::ThemeBChanged(b) => on_theme_b_changed(state, b),
         Message::ThemeHexChanged(hex) => on_theme_hex_changed(state, hex),
         Message::ThemeTerminalFontSize(s) => {
             state.theme_cfg.terminal_font_size = s.clamp(8.0, 28.0);
@@ -3135,48 +2581,15 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         }
 
         // ---- language --------------------------------------------------------
-        Message::ToggleLanguage => {
-            state.locale = if state.locale == "zh-CN" {
-                "en".to_string()
-            } else {
-                "zh-CN".to_string()
-            };
-            i18n::set_locale(&state.locale);
-            save_locale(&state.locale);
-            Task::none()
-        }
+        Message::ToggleLanguage => on_toggle_language(state),
 
         // ---- remote file operations (SFTP) ----------------------------------
-        Message::RemoteMenuOpen(session_id, dir, entry) => {
-            // ".." is navigation, not an entry that can be renamed or deleted.
-            let entry = entry.filter(|e| e.name != ".." && e.name != ".");
-            state.context_menu = None;
-            state.remote_menu = Some(RemoteFileMenu {
-                session_id,
-                dir,
-                entry,
-                x: state.cursor_x,
-                y: state.cursor_y,
-            });
-            Task::none()
-        }
+        Message::RemoteMenuOpen(session_id, dir, entry) => on_remote_menu_open(state, session_id, dir, entry),
         Message::RemoteMenuClose => {
             state.remote_menu = None;
             Task::none()
         }
-        Message::SftpNewFolder => {
-            let Some(menu) = state.remote_menu.take() else {
-                return Task::none();
-            };
-            state.sftp_input = Some(SftpInputDialog {
-                session_id: menu.session_id,
-                dir: menu.dir,
-                kind: SftpInputKind::NewFolder,
-                value: String::new(),
-                error: None,
-            });
-            state.focus.focus(text_input::Id::new(SFTP_INPUT_ID))
-        }
+        Message::SftpNewFolder => on_sftp_new_folder(state),
         Message::SftpRename => on_sftp_rename(state),
         Message::SftpChmod => on_sftp_chmod(state),
         Message::SftpDelete => on_sftp_delete(state),
@@ -3192,15 +2605,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SftpInputSubmit => on_sftp_input_submit(state),
-        Message::SftpOpDone(session_id, dir, result) => {
-            // Set directly rather than through Message::Error, which would
-            // also drop a transfer's progress bar and placeholder tabs. A
-            // recursive delete that left names out still re-lists below.
-            report_transfer_error(state, result);
-            // Re-list whatever the browser shows for that session now.
-            let path = state.current_dir.get(&session_id).cloned().unwrap_or(dir);
-            Task::done(Message::ChangeDir(session_id, path))
-        }
+        Message::SftpOpDone(session_id, dir, result) => on_sftp_op_done(state, session_id, dir, result),
         Message::ConfirmActionCancel => {
             state.confirm_action = None;
             Task::none()
@@ -3209,16 +2614,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
 
         // ---- recursive transfer / drag-and-drop -------------------------------
         Message::UploadDir => on_upload_dir(state),
-        Message::UploadPicked(session_id, dir, picked) => {
-            let Some(local) = picked else {
-                return Task::none();
-            };
-            // Another transfer may have started while the picker was open.
-            if state.transfer_refused_busy() {
-                return Task::none();
-            }
-            start_upload(state, session_id, local, dir)
-        }
+        Message::UploadPicked(session_id, dir, picked) => on_upload_picked(state, session_id, dir, picked),
         Message::DownloadDir(session_id, remote) => on_download_dir(state, session_id, remote),
         Message::DownloadDirPicked(session_id, remote, parent) => on_download_dir_picked(state, session_id, remote, parent),
         Message::DownloadDirDone(bar, result) => {
@@ -3226,95 +2622,21 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
             report_transfer_error(state, result);
             Task::none()
         }
-        Message::UploadFinished(session_id, bar, result) => {
-            state.upload_job_running = false;
-            release_bar(&mut state.transfer_progress, &bar);
-            // A report of skipped entries is no failure: the drop carries on.
-            if report_transfer_error(state, result) {
-                // Stop the rest of a drop rather than pile errors up.
-                state.drop_queue.clear();
-            }
-            let next = start_next_drop(state);
-            // Show what arrived (a cancel can leave a partial tree) — but only
-            // for a session the browser tracks; a split pane's has no listing.
-            match state.current_dir.get(&session_id).cloned() {
-                Some(path) => Task::batch([Task::done(Message::ChangeDir(session_id, path)), next]),
-                None => next,
-            }
-        }
+        Message::UploadFinished(session_id, bar, result) => on_upload_finished(state, session_id, bar, result),
         Message::FileDropped(path) => on_file_dropped(state, path),
 
         // ---- command history / quick-command autocomplete --------------------
-        Message::FlushHistory => {
-            // Paced: at most one write per HISTORY_FLUSH_INTERVAL. Lock, quit
-            // and ClearHistory write at once, through their own paths.
-            let now = std::time::Instant::now();
-            if !history_flush_due(&state.history_sync, now) {
-                return Task::none();
-            }
-            state.history_sync.flushed_at = Some(now);
-            persist_history(state, false, false)
-        }
-        Message::HistoryWritten(result) => {
-            if let Err(e) = result {
-                log::warn!("command history not saved: {}", e);
-                // The next paced flush tries again — unless the vault was
-                // locked since, which wiped the records this write carried.
-                if state.history_sync.loaded {
-                    state.history_sync.dirty = true;
-                }
-            }
-            Task::none()
-        }
+        Message::FlushHistory => on_flush_history(state),
+        Message::HistoryWritten(result) => on_history_written(state, result),
         Message::HistoryLoaded(seq, load) => on_history_loaded(state, seq, load),
-        Message::QuickCmdAccept(cmd) => {
-            state.quick_cmd_input = cmd;
-            state.quick_cmd_focused = true;
-            Task::batch([
-                state.focus.focus(text_input::Id::new(QUICK_CMD_INPUT_ID)),
-                text_input::move_cursor_to_end(text_input::Id::new(QUICK_CMD_INPUT_ID)),
-            ])
-        }
+        Message::QuickCmdAccept(cmd) => on_quick_cmd_accept(state, cmd),
 
         // ---- keyboard-interactive auth ---------------------------------------
-        Message::AuthAnswerChanged(i, mut value) => {
-            // Keys in the modal's first moments were typed before anyone
-            // could see it, for something else: they are no answer.
-            if !auth_armed(state.auth_shown_at, std::time::Instant::now()) {
-                value.zeroize();
-                return Task::none();
-            }
-            if let Some(slot) = state.auth_answers.get_mut(i) {
-                let mut old = std::mem::replace(slot, value);
-                old.zeroize();
-            }
-            Task::none()
-        }
-        Message::AuthFocus(i) => {
-            // Enter in an answer field moves on — not an Enter that arrived
-            // with the modal.
-            if !auth_armed(state.auth_shown_at, std::time::Instant::now()) {
-                return Task::none();
-            }
-            state.focus.focus(auth_input_id(i))
-        }
+        Message::AuthAnswerChanged(i, value) => on_auth_answer_changed(state, i, value),
+        Message::AuthFocus(i) => on_auth_focus(state, i),
         Message::AuthSubmit => submit_auth_answers(state),
-        Message::AuthEnter => {
-            // Never an Enter typed before the modal appeared: that one ended
-            // whatever the user was typing elsewhere, a sudo password say.
-            if !auth_armed(state.auth_shown_at, std::time::Instant::now()) {
-                return Task::none();
-            }
-            submit_auth_answers(state)
-        }
-        Message::AuthCancel => {
-            // The user declining to answer: a cancel, which the SSH thread
-            // tells apart from a modal retired unanswered.
-            if let Some((challenge, _)) = state.auth_queue.pop_front() {
-                challenge.cancel();
-            }
-            state.begin_auth_prompt()
-        }
+        Message::AuthEnter => on_auth_enter(state),
+        Message::AuthCancel => on_auth_cancel(state),
 
         // ---- process kill ------------------------------------------------------
         Message::KillProcessRequest(signal) => on_kill_process_request(state, signal),
@@ -3340,58 +2662,20 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         // ---- listening ports ---------------------------------------------------
         Message::FetchPorts => on_fetch_ports(state),
         Message::PortsReceived(session_id, result) => on_ports_received(state, session_id, result),
-        Message::PortsSortBy(key) => {
-            resort_ports(
-                &mut state.ports,
-                &mut state.ports_sort,
-                &mut state.ports_sort_desc,
-                key,
-            );
-            Task::none()
-        }
+        Message::PortsSortBy(key) => on_ports_sort_by(state, key),
 
         // ---- colour scheme presets ---------------------------------------------
-        Message::ThemeApplyPreset(name) => {
-            if let Some(preset) = theme_config::preset_by_name(&name) {
-                state.theme_cfg = preset_keeping_fonts(preset, &state.theme_cfg);
-                state.theme_editing_zone = None;
-                // Saves, publishes to the shared styles, and re-palettes the
-                // open terminals — the whole window is the live preview.
-                apply_theme(state);
-            }
-            Task::none()
-        }
+        Message::ThemeApplyPreset(name) => on_theme_apply_preset(state, name),
 
         // ---- misc ------------------------------------------------------------
         Message::None => Task::none(),
-        Message::Error(e) => {
-            // No tab is touched: a connect reports its failure on its own tab
-            // (`ConnectFailed`, `SplitFailed`). Taking every still-connecting
-            // tab down over an unrelated error — a listing, a paste — lost
-            // those connects, whose sessions then came up with no tab.
-            log::error!("{}", e);
-            state.error_message = e;
-            state.show_error_dialog = true;
-            // The progress bar is not touched: every transfer reports its own
-            // end, and an unrelated failure — a refused connection, a wrong
-            // password at the lock screen — must not strand one in flight
-            // with no bar and no Cancel.
-            Task::none()
-        }
+        Message::Error(e) => on_error(state, e),
         Message::DismissErrorDialog => {
             state.show_error_dialog = false;
             state.error_message.clear();
             Task::none()
         }
-        Message::CopyErrorText => {
-            let copied = arboard::Clipboard::new()
-                .and_then(|mut clipboard| clipboard.set_text(state.error_message.clone()));
-            match copied {
-                Ok(()) => state.error_copied = Some(fingerprint(&state.error_message)),
-                Err(e) => log::warn!("copy error text to clipboard: {}", e),
-            }
-            Task::none()
-        }
+        Message::CopyErrorText => on_copy_error_text(state),
         Message::ShowLogViewer => on_show_log_viewer(state),
         Message::HideLogViewer => {
             state.show_log_viewer = false;
@@ -3401,17 +2685,7 @@ fn handle_message(state: &mut NeoShell, message: Message) -> Task<Message> {
         Message::RefreshLogViewer => {
             Task::done(Message::ShowLogViewer)
         }
-        Message::OpenLogFolder => {
-            let path = crate::log_file_path();
-            let dir = path.parent().unwrap_or(std::path::Path::new("."));
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg(dir).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("explorer").arg(dir).spawn();
-            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-            Task::none()
-        }
+        Message::OpenLogFolder => on_open_log_folder(),
         Message::WindowCloseRequested(id) => {
             // Intercept × button — minimize so SSH sessions survive. Use
             // Cmd/Ctrl+Shift+Q (or status bar QUIT button) for real exit.

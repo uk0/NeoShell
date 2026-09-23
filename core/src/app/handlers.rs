@@ -674,3 +674,417 @@ pub(crate) fn on_quit_app(state: &mut NeoShell) -> Task<Message> {
         .and_then(|id| iced::window::close(id));
     t
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::UnlockVault`, moved out of `handle_message`.
+pub(crate) fn on_unlock_vault(state: &mut NeoShell) -> Task<Message> {
+    let store = state.store.clone();
+    let pw = state.password_input.clone();
+    Task::perform(
+        async move { store.unlock(&pw) },
+        |result| match result {
+            Ok(true) => Message::VaultUnlocked,
+            Ok(false) => Message::Error(i18n::t("unlock.err_invalid").to_string()),
+            Err(e) => Message::Error(e),
+        },
+    )
+}
+
+/// `Message::LoadConnections`, moved out of `handle_message`.
+pub(crate) fn on_load_connections(state: &mut NeoShell) -> Task<Message> {
+    let store = state.store.clone();
+    Task::perform(
+        async move { store.get_connections() },
+        |result| match result {
+            Ok(conns) => Message::ConnectionsLoaded(conns),
+            Err(e) => Message::Error(e),
+        },
+    )
+}
+
+/// `Message::SwitchToNextTab`, moved out of `handle_message`.
+pub(crate) fn on_switch_to_next_tab(state: &mut NeoShell) -> Task<Message> {
+    if !state.tabs.is_empty() {
+        let next = match state.active_tab {
+            Some(idx) => (idx + 1) % state.tabs.len(),
+            None => 0,
+        };
+        state.active_tab = Some(next);
+    }
+    Task::none()
+}
+
+/// `Message::SwitchToPrevTab`, moved out of `handle_message`.
+pub(crate) fn on_switch_to_prev_tab(state: &mut NeoShell) -> Task<Message> {
+    if !state.tabs.is_empty() {
+        let prev = match state.active_tab {
+            Some(0) | None => state.tabs.len() - 1,
+            Some(idx) => idx - 1,
+        };
+        state.active_tab = Some(prev);
+    }
+    Task::none()
+}
+
+/// `Message::DeleteConnection`, moved out of `handle_message`.
+pub(crate) fn on_delete_connection(state: &mut NeoShell, id: String) -> Task<Message> {
+    // Find name for confirm dialog
+    let name = state.connections.iter()
+        .find(|c| c.id == id)
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| id.clone());
+    state.confirm_delete = Some((id, name));
+    Task::none()
+}
+
+/// `Message::HideForm`, moved out of `handle_message`.
+pub(crate) fn on_hide_form(state: &mut NeoShell) -> Task<Message> {
+    state.show_form = false;
+    state.edit_id = None;
+    state.form = ConnectionFormData::default();
+    state.form_test_result = None;
+    state.form_testing = false;
+    Task::none()
+}
+
+/// `Message::CancelTransfer`, moved out of `handle_message`.
+pub(crate) fn on_cancel_transfer(state: &mut NeoShell) -> Task<Message> {
+    if let Some(ref progress) = state.transfer_progress {
+        progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    state.transfer_progress = None;
+    // Cancel means the whole drop, not just the file in flight.
+    state.drop_queue.clear();
+    Task::none()
+}
+
+/// `Message::ResumeMonitoringDone`, moved out of `handle_message`.
+pub(crate) fn on_resume_monitoring_done(state: &mut NeoShell, sid: String, result: Result<(), String>) -> Task<Message> {
+    if let Err(e) = &result {
+        log::warn!("Monitoring reconnect for {} failed: {}", sid, e);
+    }
+    if state.monitor_parked.finish_resume(&sid, result) {
+        // Fill the panel now rather than on the next tick.
+        return Task::done(Message::FetchMonitorData);
+    }
+    Task::none()
+}
+
+/// `Message::BrowseKeyFile`, moved out of `handle_message`.
+pub(crate) fn on_browse_key_file() -> Task<Message> {
+    Task::perform(
+        async {
+            let file = rfd::AsyncFileDialog::new()
+                .set_title(i18n::t("filedialog.select_key"))
+                .set_directory(dirs::home_dir().unwrap_or_default().join(".ssh"))
+                .pick_file()
+                .await;
+            file.map(|f| f.path().to_string_lossy().to_string())
+        },
+        |path| match path {
+            Some(p) => Message::KeyFileSelected(p),
+            None => Message::None,
+        },
+    )
+}
+
+/// `Message::ShowBroadcastDialog`, moved out of `handle_message`.
+pub(crate) fn on_show_broadcast_dialog(state: &mut NeoShell) -> Task<Message> {
+    state.show_broadcast_dialog = !state.show_broadcast_dialog;
+    if state.show_broadcast_dialog {
+        // Pre-select all currently-active sessions
+        state.broadcast_selected.clear();
+        for tab in &state.tabs {
+            if !tab.session_id.is_empty() {
+                state.broadcast_selected.insert(tab.session_id.clone());
+            }
+        }
+    }
+    Task::none()
+}
+
+/// `Message::BroadcastToggleSession`, moved out of `handle_message`.
+pub(crate) fn on_broadcast_toggle_session(state: &mut NeoShell, sid: String) -> Task<Message> {
+    if state.broadcast_selected.contains(&sid) {
+        state.broadcast_selected.remove(&sid);
+    } else {
+        state.broadcast_selected.insert(sid);
+    }
+    Task::none()
+}
+
+/// `Message::BroadcastSendNow`, moved out of `handle_message`.
+pub(crate) fn on_broadcast_send_now(state: &mut NeoShell) -> Task<Message> {
+    let cmd = state.broadcast_text.clone();
+    if cmd.is_empty() { return Task::none(); }
+    // Append newline if the user didn't so the server actually runs it
+    let payload = if cmd.ends_with('\n') { cmd } else { format!("{}\n", cmd) };
+    let ssh = state.ssh_manager.clone();
+    let ids: Vec<String> = state.broadcast_selected.iter().cloned().collect();
+    log::info!("Broadcast: sending {} bytes to {} sessions", payload.len(), ids.len());
+    for sid in ids {
+        let _ = ssh.send_data(&sid, payload.as_bytes());
+    }
+    state.broadcast_text.clear();
+    state.show_broadcast_dialog = false;
+    Task::none()
+}
+
+/// `Message::ShowSnippetsPanel`, moved out of `handle_message`.
+pub(crate) fn on_show_snippets_panel(state: &mut NeoShell) -> Task<Message> {
+    state.show_snippets_panel = !state.show_snippets_panel;
+    if state.show_snippets_panel {
+        state.snippets = load_snippets();
+        state.snippet_edit_id = None;
+        state.snippet_form_name.clear();
+        state.snippet_form_body.clear();
+    }
+    Task::none()
+}
+
+/// `Message::TogglePalette`, moved out of `handle_message`.
+pub(crate) fn on_toggle_palette(state: &mut NeoShell) -> Task<Message> {
+    state.show_palette = !state.show_palette;
+    if state.show_palette {
+        state.palette_query.clear();
+        state.palette_selected = 0;
+        return Task::batch(vec![
+            Task::done(Message::LoadConnections),
+            state.focus.focus(text_input::Id::new(PALETTE_INPUT_ID)),
+        ]);
+    }
+    Task::none()
+}
+
+/// `Message::TabRenameCommit`, moved out of `handle_message`.
+pub(crate) fn on_tab_rename_commit(state: &mut NeoShell) -> Task<Message> {
+    if let Some(idx) = state.tab_rename.take() {
+        if let Some(tab) = state.tabs.get_mut(idx) {
+            let v = state.tab_rename_input.trim().to_string();
+            tab.custom_title = if v.is_empty() { None } else { Some(v) };
+        }
+    }
+    Task::none()
+}
+
+/// `Message::SetAllGroupsCollapsed`, moved out of `handle_message`.
+pub(crate) fn on_set_all_groups_collapsed(state: &mut NeoShell, collapse: bool) -> Task<Message> {
+    if collapse {
+        let all = state.connections.iter().map(|c| c.group.clone());
+        state.collapsed_groups.extend(all);
+    } else {
+        state.collapsed_groups.clear();
+    }
+    schedule_groups_save(state)
+}
+
+/// `Message::SaveCollapsedGroups`, moved out of `handle_message`.
+pub(crate) fn on_save_collapsed_groups(state: &mut NeoShell, gen: u64) -> Task<Message> {
+    // Only the save the latest change scheduled; a lock since has
+    // sealed the change already and emptied the set.
+    if gen == state.groups_gen && state.groups_dirty {
+        return persist_groups(state, false);
+    }
+    Task::none()
+}
+
+/// `Message::SidebarHover`, moved out of `handle_message`.
+pub(crate) fn on_sidebar_hover(state: &mut NeoShell, id: String, entered: bool) -> Task<Message> {
+    if entered {
+        state.hovered_conn = Some(id);
+    } else if state.hovered_conn.as_deref() == Some(id.as_str()) {
+        // Only clear our own row: the next row's enter can arrive
+        // before this row's exit.
+        state.hovered_conn = None;
+    }
+    Task::none()
+}
+
+/// `Message::ShowKeyManager`, moved out of `handle_message`.
+pub(crate) fn on_show_key_manager(state: &mut NeoShell) -> Task<Message> {
+    // Toolbar buttons toggle (v0.6.19 convention).
+    if state.show_key_manager {
+        state.show_key_manager = false;
+        state.key_deploying = None;
+        return Task::none();
+    }
+    state.show_key_manager = true;
+    state.local_keys = crate::sshkeys::list_keys();
+    state.key_deploy_status = None;
+    Task::done(Message::LoadConnections)
+}
+
+/// `Message::ToggleTerminalSearch`, moved out of `handle_message`.
+pub(crate) fn on_toggle_terminal_search(state: &mut NeoShell) -> Task<Message> {
+    state.term_search_active = !state.term_search_active;
+    if state.term_search_active {
+        rerun_terminal_search(state);
+        scroll_to_current_match(state);
+        state.focus.focus(text_input::Id::new(TERM_SEARCH_INPUT_ID))
+    } else {
+        state.term_search_matches.clear();
+        Task::none()
+    }
+}
+
+/// `Message::SwitchBottomTab`, moved out of `handle_message`.
+pub(crate) fn on_switch_bottom_tab(state: &mut NeoShell, tab: BottomTab) -> Task<Message> {
+    let ports = tab == BottomTab::Ports;
+    state.bottom_panel_tab = tab;
+    state.quick_cmd_focused = false;
+    if ports {
+        return Task::done(Message::FetchPorts);
+    }
+    Task::none()
+}
+
+/// `Message::ClearHistory`, moved out of `handle_message`.
+pub(crate) fn on_clear_history(state: &mut NeoShell) -> Task<Message> {
+    clear_history(&mut state.cmd_history, &mut state.history_sync);
+    // On disk at once, and over the old bytes: clearing is how a user
+    // takes back a line they did not mean to keep. A cleartext
+    // history.json still waiting to be imported goes too, or the next
+    // unlock would bring its lines straight back.
+    persist_history(state, true, true)
+}
+
+/// `Message::RefreshRemoteFiles`, moved out of `handle_message`.
+pub(crate) fn on_refresh_remote_files(state: &mut NeoShell) -> Task<Message> {
+    if let Some(idx) = state.active_tab {
+        if let Some(tab) = state.tabs.get(idx) {
+            let sid = tab.focused_session().to_string();
+            let path = state.current_dir.get(&sid).cloned().unwrap_or_else(|| "~".into());
+            return Task::done(Message::ChangeDir(sid, path));
+        }
+    }
+    Task::none()
+}
+
+/// `Message::ShowProxyManager`, moved out of `handle_message`.
+pub(crate) fn on_show_proxy_manager(state: &mut NeoShell) -> Task<Message> {
+    // Toggle: second click closes the side panel.
+    state.show_proxy_manager = !state.show_proxy_manager;
+    if state.show_proxy_manager {
+        state.proxies = state.proxy_store.load();
+        state.proxy_edit_id = None;
+    }
+    Task::none()
+}
+
+/// `Message::ShowProxyForm`, moved out of `handle_message`.
+pub(crate) fn on_show_proxy_form(state: &mut NeoShell, maybe_id: Option<String>) -> Task<Message> {
+    state.show_proxy_form = true;
+    // One builder for opening and for ESC's "still as opened?" test,
+    // so the two cannot drift apart.
+    if let Some(id) = maybe_id {
+        if let Some(p) = state.proxies.iter().find(|p| p.id == id) {
+            state.proxy_form = proxy_form_for(Some(p));
+            state.proxy_edit_id = Some(id);
+        }
+    } else {
+        state.proxy_edit_id = None;
+        state.proxy_form = proxy_form_for(None);
+    }
+    Task::none()
+}
+
+/// `Message::DeleteProxy`, moved out of `handle_message`.
+pub(crate) fn on_delete_proxy(state: &mut NeoShell, id: String) -> Task<Message> {
+    if let Err(e) = state.proxy_store.try_delete(&id) {
+        state.error_message = e;
+        state.show_error_dialog = true;
+        return Task::none();
+    }
+    state.proxies = state.proxy_store.load();
+    Task::none()
+}
+
+/// `Message::ShowTunnelManager`, moved out of `handle_message`.
+pub(crate) fn on_show_tunnel_manager(state: &mut NeoShell) -> Task<Message> {
+    // Toggle: second click closes.
+    state.show_tunnel_manager = !state.show_tunnel_manager;
+    if state.show_tunnel_manager {
+        state.tunnels = state.tunnel_store.load();
+    }
+    Task::none()
+}
+
+/// `Message::ShowTunnelForm`, moved out of `handle_message`.
+pub(crate) fn on_show_tunnel_form(state: &mut NeoShell, edit_id: Option<String>) -> Task<Message> {
+    state.show_tunnel_form = true;
+    state.tunnel_edit_id = edit_id.clone();
+    // Same builder as ESC's "still as opened?" test.
+    if let Some(id) = edit_id {
+        if let Some(t) = state.tunnels.iter().find(|x| x.id == id) {
+            state.tunnel_form = tunnel_form_for(Some(t));
+        }
+    } else {
+        state.tunnel_form = tunnel_form_for(None);
+    }
+    Task::none()
+}
+
+/// `Message::DeleteTunnel`, moved out of `handle_message`.
+pub(crate) fn on_delete_tunnel(state: &mut NeoShell, id: String) -> Task<Message> {
+    state.tunnel_manager.stop(&id);
+    if let Err(e) = state.tunnel_store.try_delete(&id) {
+        state.error_message = e;
+        state.show_error_dialog = true;
+        return Task::none();
+    }
+    state.tunnels = state.tunnel_store.load();
+    Task::none()
+}
+
+/// `Message::ToggleLanguage`, moved out of `handle_message`.
+pub(crate) fn on_toggle_language(state: &mut NeoShell) -> Task<Message> {
+    state.locale = if state.locale == "zh-CN" {
+        "en".to_string()
+    } else {
+        "zh-CN".to_string()
+    };
+    i18n::set_locale(&state.locale);
+    save_locale(&state.locale);
+    Task::none()
+}
+
+/// `Message::Error`, moved out of `handle_message`.
+pub(crate) fn on_error(state: &mut NeoShell, e: String) -> Task<Message> {
+    // No tab is touched: a connect reports its failure on its own tab
+    // (`ConnectFailed`, `SplitFailed`). Taking every still-connecting
+    // tab down over an unrelated error — a listing, a paste — lost
+    // those connects, whose sessions then came up with no tab.
+    log::error!("{}", e);
+    state.error_message = e;
+    state.show_error_dialog = true;
+    // The progress bar is not touched: every transfer reports its own
+    // end, and an unrelated failure — a refused connection, a wrong
+    // password at the lock screen — must not strand one in flight
+    // with no bar and no Cancel.
+    Task::none()
+}
+
+/// `Message::CopyErrorText`, moved out of `handle_message`.
+pub(crate) fn on_copy_error_text(state: &mut NeoShell) -> Task<Message> {
+    let copied = arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(state.error_message.clone()));
+    match copied {
+        Ok(()) => state.error_copied = Some(fingerprint(&state.error_message)),
+        Err(e) => log::warn!("copy error text to clipboard: {}", e),
+    }
+    Task::none()
+}
+
+/// `Message::OpenLogFolder`, moved out of `handle_message`.
+pub(crate) fn on_open_log_folder() -> Task<Message> {
+    let path = crate::log_file_path();
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(dir).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    Task::none()
+}

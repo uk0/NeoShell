@@ -240,3 +240,15 @@ pub(crate) fn build_palette_items(
 // ---------------------------------------------------------------------------
 // Application entry point
 // ---------------------------------------------------------------------------
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::PaletteExecuteIndex`, moved out of `handle_message`.
+pub(crate) fn on_palette_execute_index(state: &mut NeoShell, i: usize) -> Task<Message> {
+    let items = state.palette_items();
+    if let Some(item) = items.into_iter().nth(i) {
+        state.show_palette = false;
+        return Task::done(item.msg);
+    }
+    Task::none()
+}

@@ -1101,3 +1101,161 @@ pub(crate) fn on_file_dropped(state: &mut NeoShell, path: std::path::PathBuf) ->
     });
     start_next_drop(state)
 }
+
+/// `Message::FileClicked`, moved out of `handle_message`.
+pub(crate) fn on_file_clicked(sid: String, dir: String, entry: FileEntry) -> Task<Message> {
+    // `dir` is the listing the row was on, which the view handed over
+    // with it — not `current_dir`, which may name another directory
+    // by now.
+    if entry.is_dir || entry.name == ".." {
+        let new_path = if entry.name == ".." {
+            remote_parent(&dir)
+        } else {
+            join_remote_path(&dir, &entry.name)
+        };
+        return Task::done(Message::ChangeDir(sid, new_path));
+    }
+    Task::none()
+}
+
+/// `Message::OpenEditor`, moved out of `handle_message`.
+pub(crate) fn on_open_editor(state: &mut NeoShell, sid: String, path: String) -> Task<Message> {
+    let ssh = state.ssh_manager.clone();
+    let sid2 = sid.clone();
+    let path2 = path.clone();
+    Task::perform(
+        async move {
+            let content = ssh.read_file_content(&sid2, &path2)?;
+            Ok((sid2, path2, content))
+        },
+        |result: Result<(String, String, String), String>| match result {
+            Ok((sid, path, content)) => Message::EditorContentLoaded(sid, path, content),
+            Err(e) => Message::Error(e),
+        },
+    )
+}
+
+/// `Message::EditorAction`, moved out of `handle_message`.
+pub(crate) fn on_editor_action(state: &mut NeoShell, action: text_editor::Action) -> Task<Message> {
+    let is_edit = action.is_edit();
+    state.editor_content.perform(action);
+    if is_edit {
+        state.editor_dirty = true;
+    }
+    Task::none()
+}
+
+/// `Message::RzUploadDone`, moved out of `handle_message`.
+pub(crate) fn on_rz_upload_done(state: &mut NeoShell, sid: String, bar: Arc<TransferProgress>, result: Result<(), String>) -> Task<Message> {
+    release_bar(&mut state.transfer_progress, &bar);
+    if result.is_err() {
+        report_transfer_error(state, result);
+        return Task::none();
+    }
+    if let Some(tab) = state.tabs.iter().find(|t| t.session_id == sid) {
+        tab.terminal.lock().write(
+            b"\r\n\x1b[32m[NeoShell] Upload complete.\x1b[0m\r\n",
+        );
+    }
+    let path = state.current_dir.get(&sid).cloned()
+        .unwrap_or_else(|| "~".to_string());
+    Task::done(Message::ChangeDir(sid, path))
+}
+
+/// `Message::PathInputSubmit`, moved out of `handle_message`.
+pub(crate) fn on_path_input_submit(state: &mut NeoShell) -> Task<Message> {
+    if let Some(idx) = state.active_tab {
+        if let Some(tab) = state.tabs.get(idx) {
+            let sid = tab.focused_session().to_string();
+            let path = state.path_input.clone();
+            if !path.is_empty() {
+                return Task::done(Message::ChangeDir(sid, path));
+            }
+        }
+    }
+    Task::none()
+}
+
+/// `Message::LocalFileClicked`, moved out of `handle_message`.
+pub(crate) fn on_local_file_clicked(state: &mut NeoShell, path: String) -> Task<Message> {
+    let p = std::path::Path::new(&path);
+    if p.is_dir() {
+        state.local_path = path;
+        state.local_entries = list_local_dir(&state.local_path);
+        state.selected_local_file = None;
+    } else {
+        state.selected_local_file = Some(path);
+    }
+    Task::none()
+}
+
+/// `Message::RemoteMenuOpen`, moved out of `handle_message`.
+pub(crate) fn on_remote_menu_open(state: &mut NeoShell, session_id: String, dir: String, entry: Option<FileEntry>) -> Task<Message> {
+    // ".." is navigation, not an entry that can be renamed or deleted.
+    let entry = entry.filter(|e| e.name != ".." && e.name != ".");
+    state.context_menu = None;
+    state.remote_menu = Some(RemoteFileMenu {
+        session_id,
+        dir,
+        entry,
+        x: state.cursor_x,
+        y: state.cursor_y,
+    });
+    Task::none()
+}
+
+/// `Message::SftpNewFolder`, moved out of `handle_message`.
+pub(crate) fn on_sftp_new_folder(state: &mut NeoShell) -> Task<Message> {
+    let Some(menu) = state.remote_menu.take() else {
+        return Task::none();
+    };
+    state.sftp_input = Some(SftpInputDialog {
+        session_id: menu.session_id,
+        dir: menu.dir,
+        kind: SftpInputKind::NewFolder,
+        value: String::new(),
+        error: None,
+    });
+    state.focus.focus(text_input::Id::new(SFTP_INPUT_ID))
+}
+
+/// `Message::SftpOpDone`, moved out of `handle_message`.
+pub(crate) fn on_sftp_op_done(state: &mut NeoShell, session_id: String, dir: String, result: Result<(), String>) -> Task<Message> {
+    // Set directly rather than through Message::Error, which would
+    // also drop a transfer's progress bar and placeholder tabs. A
+    // recursive delete that left names out still re-lists below.
+    report_transfer_error(state, result);
+    // Re-list whatever the browser shows for that session now.
+    let path = state.current_dir.get(&session_id).cloned().unwrap_or(dir);
+    Task::done(Message::ChangeDir(session_id, path))
+}
+
+/// `Message::UploadPicked`, moved out of `handle_message`.
+pub(crate) fn on_upload_picked(state: &mut NeoShell, session_id: String, dir: String, picked: Option<std::path::PathBuf>) -> Task<Message> {
+    let Some(local) = picked else {
+        return Task::none();
+    };
+    // Another transfer may have started while the picker was open.
+    if state.transfer_refused_busy() {
+        return Task::none();
+    }
+    start_upload(state, session_id, local, dir)
+}
+
+/// `Message::UploadFinished`, moved out of `handle_message`.
+pub(crate) fn on_upload_finished(state: &mut NeoShell, session_id: String, bar: Arc<TransferProgress>, result: Result<(), String>) -> Task<Message> {
+    state.upload_job_running = false;
+    release_bar(&mut state.transfer_progress, &bar);
+    // A report of skipped entries is no failure: the drop carries on.
+    if report_transfer_error(state, result) {
+        // Stop the rest of a drop rather than pile errors up.
+        state.drop_queue.clear();
+    }
+    let next = start_next_drop(state);
+    // Show what arrived (a cancel can leave a partial tree) — but only
+    // for a session the browser tracks; a split pane's has no listing.
+    match state.current_dir.get(&session_id).cloned() {
+        Some(path) => Task::batch([Task::done(Message::ChangeDir(session_id, path)), next]),
+        None => next,
+    }
+}

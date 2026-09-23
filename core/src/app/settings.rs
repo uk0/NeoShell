@@ -305,3 +305,72 @@ pub(crate) fn on_theme_hex_changed(state: &mut NeoShell, hex: String) -> Task<Me
     }
     Task::none()
 }
+
+/// `Message::IdleCheck`, moved out of `handle_message`.
+pub(crate) fn on_idle_check(state: &mut NeoShell) -> Task<Message> {
+    if state.screen == Screen::Main
+        && idle_lock_due(state.lock_timeout_mins, state.last_activity.elapsed())
+    {
+        log::info!(
+            "vault re-locked after {} idle minutes",
+            state.lock_timeout_mins
+        );
+        return lock_vault(state);
+    }
+    Task::none()
+}
+
+/// `Message::AlertEnabledToggled`, moved out of `handle_message`.
+pub(crate) fn on_alert_enabled_toggled(state: &mut NeoShell, v: bool) -> Task<Message> {
+    state.alert_cfg.enabled = v;
+    if !v {
+        state.alerts_active.clear();
+    }
+    save_alerts(&state.alert_cfg);
+    Task::none()
+}
+
+/// `Message::ThemeRChanged`, moved out of `handle_message`.
+pub(crate) fn on_theme_r_changed(state: &mut NeoShell, r: u8) -> Task<Message> {
+    if let Some(z) = state.theme_editing_zone {
+        let mut v = z.get(&state.theme_cfg);
+        v.r = r;
+        z.set(&mut state.theme_cfg, v);
+        apply_theme(state);
+    }
+    Task::none()
+}
+
+/// `Message::ThemeGChanged`, moved out of `handle_message`.
+pub(crate) fn on_theme_g_changed(state: &mut NeoShell, g: u8) -> Task<Message> {
+    if let Some(z) = state.theme_editing_zone {
+        let mut v = z.get(&state.theme_cfg);
+        v.g = g;
+        z.set(&mut state.theme_cfg, v);
+        apply_theme(state);
+    }
+    Task::none()
+}
+
+/// `Message::ThemeBChanged`, moved out of `handle_message`.
+pub(crate) fn on_theme_b_changed(state: &mut NeoShell, b: u8) -> Task<Message> {
+    if let Some(z) = state.theme_editing_zone {
+        let mut v = z.get(&state.theme_cfg);
+        v.b = b;
+        z.set(&mut state.theme_cfg, v);
+        apply_theme(state);
+    }
+    Task::none()
+}
+
+/// `Message::ThemeApplyPreset`, moved out of `handle_message`.
+pub(crate) fn on_theme_apply_preset(state: &mut NeoShell, name: String) -> Task<Message> {
+    if let Some(preset) = theme_config::preset_by_name(&name) {
+        state.theme_cfg = preset_keeping_fonts(preset, &state.theme_cfg);
+        state.theme_editing_zone = None;
+        // Saves, publishes to the shared styles, and re-palettes the
+        // open terminals — the whole window is the live preview.
+        apply_theme(state);
+    }
+    Task::none()
+}

@@ -316,3 +316,18 @@ pub(crate) fn connection_matches(conn: &ConnectionInfo, folded_query: &str) -> b
         .iter()
         .any(|field| search_fold(field).contains(folded_query))
 }
+
+// ---- Message handlers moved out of handle_message ----
+
+/// `Message::GroupsWritten`, moved out of `handle_message`.
+pub(crate) fn on_groups_written(state: &mut NeoShell, result: Result<(), String>) -> Task<Message> {
+    if let Err(e) = result {
+        log::warn!("folded groups not saved: {}", e);
+        // The next change, or the lock, tries again — unless the
+        // vault is locked already, which forgot the set.
+        if state.screen == Screen::Main {
+            state.groups_dirty = true;
+        }
+    }
+    Task::none()
+}

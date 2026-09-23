@@ -746,3 +746,48 @@ pub(crate) fn on_history_loaded(state: &mut NeoShell, seq: u64, load: HistoryLoa
         Task::none()
     }
 }
+
+/// `Message::SendQuickCmd`, moved out of `handle_message`.
+pub(crate) fn on_send_quick_cmd(state: &mut NeoShell) -> Task<Message> {
+    let cmd = state.quick_cmd_input.trim().to_string();
+    if !cmd.is_empty() {
+        state.quick_cmd_input.clear();
+        return Task::done(Message::ReplayCommand(cmd));
+    }
+    Task::none()
+}
+
+/// `Message::FlushHistory`, moved out of `handle_message`.
+pub(crate) fn on_flush_history(state: &mut NeoShell) -> Task<Message> {
+    // Paced: at most one write per HISTORY_FLUSH_INTERVAL. Lock, quit
+    // and ClearHistory write at once, through their own paths.
+    let now = std::time::Instant::now();
+    if !history_flush_due(&state.history_sync, now) {
+        return Task::none();
+    }
+    state.history_sync.flushed_at = Some(now);
+    persist_history(state, false, false)
+}
+
+/// `Message::HistoryWritten`, moved out of `handle_message`.
+pub(crate) fn on_history_written(state: &mut NeoShell, result: Result<(), String>) -> Task<Message> {
+    if let Err(e) = result {
+        log::warn!("command history not saved: {}", e);
+        // The next paced flush tries again — unless the vault was
+        // locked since, which wiped the records this write carried.
+        if state.history_sync.loaded {
+            state.history_sync.dirty = true;
+        }
+    }
+    Task::none()
+}
+
+/// `Message::QuickCmdAccept`, moved out of `handle_message`.
+pub(crate) fn on_quick_cmd_accept(state: &mut NeoShell, cmd: String) -> Task<Message> {
+    state.quick_cmd_input = cmd;
+    state.quick_cmd_focused = true;
+    Task::batch([
+        state.focus.focus(text_input::Id::new(QUICK_CMD_INPUT_ID)),
+        text_input::move_cursor_to_end(text_input::Id::new(QUICK_CMD_INPUT_ID)),
+    ])
+}

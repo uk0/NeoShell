@@ -708,3 +708,27 @@ pub(crate) fn on_ports_received(state: &mut NeoShell, session_id: String, result
     }
     Task::none()
 }
+
+/// `Message::MonitorError`, moved out of `handle_message`.
+pub(crate) fn on_monitor_error(state: &mut NeoShell, sid: String, e: String) -> Task<Message> {
+    state.monitor_inflight.finish(&sid);
+    if !exec_parked(&e) {
+        log::warn!("Monitor fetch error: {}", e);
+    } else if state.monitor_parked.park(&sid) {
+        // Every tick fails this way until the user reconnects: the
+        // panel says so from now on, the log says it once.
+        log::warn!("Monitoring parked for {}: {}", sid, e);
+    }
+    Task::none()
+}
+
+/// `Message::PortsSortBy`, moved out of `handle_message`.
+pub(crate) fn on_ports_sort_by(state: &mut NeoShell, key: PortSort) -> Task<Message> {
+    resort_ports(
+        &mut state.ports,
+        &mut state.ports_sort,
+        &mut state.ports_sort_desc,
+        key,
+    );
+    Task::none()
+}

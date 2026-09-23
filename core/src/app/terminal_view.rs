@@ -1518,3 +1518,85 @@ pub(crate) fn on_copy_selection(state: &mut NeoShell) -> Task<Message> {
     }
     Task::none()
 }
+
+/// `Message::SplitFailed`, moved out of `handle_message`.
+pub(crate) fn on_split_failed(state: &mut NeoShell, tab_id: String, e: String) -> Task<Message> {
+    log::error!("{}", e);
+    let Some(tab) = state.tabs.iter_mut().find(|t| t.id == tab_id) else {
+        // Closed while the split connected: nobody is waiting.
+        return Task::none();
+    };
+    tab.split_pending = None;
+    state.error_message = e;
+    state.show_error_dialog = true;
+    Task::none()
+}
+
+/// `Message::SplitDividerPressed`, moved out of `handle_message`.
+pub(crate) fn on_split_divider_pressed(state: &mut NeoShell) -> Task<Message> {
+    let start = state
+        .active_tab
+        .and_then(|i| state.tabs.get(i))
+        .and_then(|t| t.split.as_ref())
+        .map(|sp| {
+            let pos = if sp.vertical { state.cursor_x } else { state.cursor_y };
+            (pos, sp.ratio)
+        });
+    state.split_drag = start;
+    Task::none()
+}
+
+/// `Message::SplitFocusToggle`, moved out of `handle_message`.
+pub(crate) fn on_split_focus_toggle(state: &mut NeoShell) -> Task<Message> {
+    if let Some(idx) = state.active_tab {
+        if let Some(tab) = state.tabs.get_mut(idx) {
+            if tab.split.is_some() {
+                tab.focus_split = !tab.focus_split;
+            }
+        }
+    }
+    Task::none()
+}
+
+/// `Message::TerminalSearchNext`, moved out of `handle_message`.
+pub(crate) fn on_terminal_search_next(state: &mut NeoShell) -> Task<Message> {
+    if !state.term_search_matches.is_empty() {
+        state.term_search_current =
+            (state.term_search_current + 1) % state.term_search_matches.len();
+        scroll_to_current_match(state);
+    }
+    Task::none()
+}
+
+/// `Message::TerminalSearchPrev`, moved out of `handle_message`.
+pub(crate) fn on_terminal_search_prev(state: &mut NeoShell) -> Task<Message> {
+    if !state.term_search_matches.is_empty() {
+        let n = state.term_search_matches.len();
+        state.term_search_current = (state.term_search_current + n - 1) % n;
+        scroll_to_current_match(state);
+    }
+    Task::none()
+}
+
+/// `Message::TerminalScrollUp`, moved out of `handle_message`.
+pub(crate) fn on_terminal_scroll_up(state: &mut NeoShell, lines: usize) -> Task<Message> {
+    // Passthrough guard: if any overlay is open, the user is scrolling
+    // inside it — don't let the event also scroll the terminal below.
+    if state.any_overlay_open() { return Task::none(); }
+    // An application reading the mouse (less, vim, htop) scrolls itself.
+    if report_wheel(state, MouseButton::WheelUp) { return Task::none(); }
+    if let Some(term) = state.focused_terminal() {
+        term.lock().scroll_view_up(lines);
+    }
+    Task::none()
+}
+
+/// `Message::TerminalScrollDown`, moved out of `handle_message`.
+pub(crate) fn on_terminal_scroll_down(state: &mut NeoShell, lines: usize) -> Task<Message> {
+    if state.any_overlay_open() { return Task::none(); }
+    if report_wheel(state, MouseButton::WheelDown) { return Task::none(); }
+    if let Some(term) = state.focused_terminal() {
+        term.lock().scroll_view_down(lines);
+    }
+    Task::none()
+}

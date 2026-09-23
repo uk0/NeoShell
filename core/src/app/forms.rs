@@ -628,3 +628,99 @@ pub(crate) fn on_key_deploy_to(state: &mut NeoShell, path: String, conn_id: Stri
         Message::KeyDeployDone,
     )
 }
+
+/// `Message::ConnectionsLoaded`, moved out of `handle_message`.
+pub(crate) fn on_connections_loaded(state: &mut NeoShell, mut conns: Vec<ConnectionInfo>) -> Task<Message> {
+    // In the order every list shows them: the vault is a map.
+    conns.sort_by(connection_order);
+    state.connections = conns;
+    // Re-read ~/.ssh/config alongside the list it is compared with:
+    // the connect dialog and the welcome screen's importer render
+    // from this copy instead of parsing the file on every frame.
+    // Opening the connect dialog lands here via LoadConnections.
+    state.ssh_config_hosts = crate::sshconfig::parse_ssh_config();
+    // A group whose last connection was deleted or moved away is not
+    // folded any more: were it to come back, it would come back open.
+    if prune_collapsed_groups(&mut state.collapsed_groups, &state.connections) {
+        return schedule_groups_save(state);
+    }
+    Task::none()
+}
+
+/// `Message::ConnectFailed`, moved out of `handle_message`.
+pub(crate) fn on_connect_failed(state: &mut NeoShell, tab_id: String, connection_id: String, e: String) -> Task<Message> {
+    log::error!("{}", e);
+    let Some(idx) = state.tabs.iter().position(|t| t.id == tab_id) else {
+        // The tab was closed while it connected — a sign-in withdrawn
+        // by that close ends here too. Nobody is waiting for this.
+        return Task::none();
+    };
+    state.tabs.remove(idx);
+    state.active_tab = active_after_removal(state.active_tab, idx, state.tabs.len());
+    // Allow a manual retry.
+    state.connecting_ids.remove(&connection_id);
+    state.error_message = e;
+    state.show_error_dialog = true;
+    Task::none()
+}
+
+/// `Message::SnippetSend`, moved out of `handle_message`.
+pub(crate) fn on_snippet_send(state: &mut NeoShell, id: String) -> Task<Message> {
+    if let Some(sn) = state.snippets.iter().find(|s| s.id == id).cloned() {
+        // Split-aware: snippet lands in the focused pane.
+        if let Some(sid) = state.focused_session_id() {
+            let body = if sn.body.ends_with('\n') { sn.body.clone() } else { format!("{}\n", sn.body) };
+            let _ = state.ssh_manager.send_data(&sid, body.as_bytes());
+        }
+        state.show_snippets_panel = false;
+    }
+    Task::none()
+}
+
+/// `Message::SnippetEdit`, moved out of `handle_message`.
+pub(crate) fn on_snippet_edit(state: &mut NeoShell, maybe_id: Option<String>) -> Task<Message> {
+    state.snippet_edit_id = maybe_id.clone();
+    if let Some(id) = maybe_id {
+        if let Some(s) = state.snippets.iter().find(|s| s.id == id) {
+            state.snippet_form_name = s.name.clone();
+            state.snippet_form_body = s.body.clone();
+        }
+    } else {
+        state.snippet_form_name.clear();
+        state.snippet_form_body.clear();
+    }
+    Task::none()
+}
+
+/// `Message::KeyCopyPubkey`, moved out of `handle_message`.
+pub(crate) fn on_key_copy_pubkey(state: &mut NeoShell, path: String) -> Task<Message> {
+    if let Some(k) = state.local_keys.iter().find(|k| k.path == path) {
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(&k.pubkey);
+        }
+        state.key_deploy_status = Some(i18n::t("keys.copied").to_string());
+    }
+    Task::none()
+}
+
+/// `Message::ProxyFormBrowsePrivateKey`, moved out of `handle_message`.
+pub(crate) fn on_proxy_form_browse_private_key(state: &mut NeoShell) -> Task<Message> {
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title(i18n::t("filedialog.select_key"))
+        .pick_file()
+    {
+        state.proxy_form.private_key = path.to_string_lossy().to_string();
+    }
+    Task::none()
+}
+
+/// `Message::TunnelFormBrowseKey`, moved out of `handle_message`.
+pub(crate) fn on_tunnel_form_browse_key(state: &mut NeoShell) -> Task<Message> {
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title(i18n::t("filedialog.select_key"))
+        .pick_file()
+    {
+        state.tunnel_form.private_key = path.to_string_lossy().to_string();
+    }
+    Task::none()
+}

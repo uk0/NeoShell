@@ -7,7 +7,11 @@ resolver = "2"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-strip = true
+# Keep the symbol table so the panic hook's backtrace names functions: with
+# `strip = true` the core dylib kept 55 symbols and a crash log was unreadable.
+# Measured on macOS: 22.8 MB instead of 20.6 MB. Windows (MSVC) names come
+# from a PDB, which release builds do not produce, so its frames stay unnamed.
+strip = "debuginfo"
 panic = "abort"
 
 # ssh2 0.9.5 + one fix (Windows panicked on non-UTF-8 SFTP names): see mkpath in vendor/ssh2/src/sftp.rs

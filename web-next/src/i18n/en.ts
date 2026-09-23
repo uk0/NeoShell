@@ -6,13 +6,13 @@ export const en = {
   "nav.download": "Download",
   "nav.github": "GitHub",
 
-  "hero.badge": "v0.6.27 · Pure Rust · Native GPU",
+  "hero.badge": "v0.7.0 · Pure Rust · Native GPU",
   "hero.title_a": "The terminal",
   "hero.title_b": "you actually",
   "hero.title_c": "want to use.",
   "hero.lede":
     "NeoShell is a native SSH workstation built entirely in Rust. Encrypted vault, real-time monitoring, multi-tab terminals, SFTP — all in a single 6 MB binary. No Electron. No JavaScript runtime.",
-  "hero.cta.primary": "Download v0.6.27",
+  "hero.cta.primary": "Download v0.7.0",
   "hero.cta.secondary": "Explore features",
   "hero.cta.source": "Source on GitHub →",
   "hero.stat.binary": "Binary size",
@@ -72,7 +72,7 @@ export const en = {
 
   "dl.eyebrow": "Get started",
   "dl.title": "Download NeoShell",
-  "dl.lede": "v0.6.27 — single binary, no installer dependencies.",
+  "dl.lede": "v0.7.0 — single binary, no installer dependencies.",
   "dl.macos": "macOS",
   "dl.macos_arm": "Apple Silicon (ARM64)",
   "dl.macos_intel": "Intel (x86_64)",
@@ -85,36 +85,40 @@ export const en = {
   "dl.update_note": "Already installed? App auto-updates within 1 hour.",
 
   "cl.eyebrow": "Release log",
-  "cl.title": "What shipped in v0.6.27",
-  "cl.date": "2026-04-25",
+  "cl.title": "What shipped in v0.7.0",
+  "cl.date": "2026-09-23",
   "cl.latest": "Latest",
   "cl.category.added": "Added",
   "cl.category.changed": "Changed",
   "cl.category.fixed": "Fixed",
   "cl.added.1":
-    "Cmd+F terminal search — floating bar scans scrollback + grid in real time. Yellow/orange hit highlights, 3/12 counter, case toggle, Enter/↑/↓ navigation.",
+    "Chinese input methods work everywhere — type into connection names, groups, search and the terminal itself. Password fields switch the input method off.",
   "cl.added.2":
-    "Bulk import from ~/.ssh/config — one click adds every Host entry, deduped by user@host:port.",
+    "SFTP file operations — new folder, rename, delete and permissions from the right-click menu, whole-folder upload and download, and drag-and-drop upload.",
   "cl.added.3":
-    "Command broadcast — type once, send to any subset of active sessions. Perfect for fleet-wide apt update / log tail.",
+    "Remote (-R) and dynamic SOCKS5 (-D) port forwarding, alongside local forwards.",
   "cl.added.4":
-    "Command snippet library — named snippets persisted to snippets.json; click to send.",
+    "Two-factor sign-in (keyboard-interactive codes) and SSH agent authentication.",
   "cl.added.5":
-    "Settings → Appearance — 7 color-zone palettes, font-size sliders, live preview, auto-saved theme.json.",
+    "Command palette (Cmd/Ctrl+K), split panes, an SSH key manager, and synchronized input across sessions.",
   "cl.added.6":
-    "Collapsible bottom panel — chevron button on the splitter + new Cmd+J / Ctrl+J shortcut (VSCode/iTerm2 convention).",
+    "Monitoring adds listening ports, process kill, per-core CPU and swap; eight colour schemes; collapsible connection groups.",
   "cl.changed.1":
-    "Theme system rolled out across 29 view functions, 206 font-size call sites, ~280 color refs. Live, no restart.",
+    "SSH host keys are checked against ~/.ssh/known_hosts. A new host is remembered on first connect; a changed key is refused.",
   "cl.changed.2":
-    "Toolbar buttons now toggle open/close on click — no more hunting for the × button.",
+    "Proxy and tunnel passwords move into the encrypted vault on first unlock, and the vault locks itself after 15 minutes idle.",
   "cl.changed.3":
-    "Shortcuts help panel rebuilt — platform-aware (⌘ on macOS, Ctrl elsewhere), EN+ZH i18n, grouped by domain.",
+    "Updates are signed and verified before they are installed.",
   "cl.changed.4":
-    "Ctrl+C now sends SIGINT on Windows/Linux as expected — clipboard ops moved to Ctrl+Shift+C / Ctrl+Shift+V (Windows Terminal convention). macOS keeps ⌘+C / ⌘+V.",
+    "Lower idle CPU — terminal output wakes the window instead of polling 20 times a second.",
   "cl.changed.5":
-    "Shortcuts help spells out mouse behavior — drag-select auto-copies on release, right-click pastes inside a session, plus a dedicated row for Ctrl+C → SIGINT.",
+    "Readable contrast on every surface, tooltips on icon buttons, and a welcome screen that can create or import connections.",
   "cl.fixed.1":
-    "Overlay scroll-through & click-through — terminal below stops reacting while any overlay is open.",
+    "No more crash when an error message mixes Chinese and English.",
+  "cl.fixed.2":
+    "Windows no longer quits on SFTP folders that contain GBK file names.",
+  "cl.fixed.3":
+    "A failed update rolls back to the previous version instead of leaving the app unable to start.",
 
   "contact.eyebrow": "Stay in touch",
   "contact.title": "Join the community",

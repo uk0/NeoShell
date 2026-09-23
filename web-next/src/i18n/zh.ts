@@ -8,13 +8,13 @@ export const zh: Dict = {
   "nav.download": "下载",
   "nav.github": "GitHub",
 
-  "hero.badge": "v0.6.27 · 纯 Rust · 原生 GPU",
+  "hero.badge": "v0.7.0 · 纯 Rust · 原生 GPU",
   "hero.title_a": "你真正",
   "hero.title_b": "想用的",
   "hero.title_c": "那款终端。",
   "hero.lede":
     "NeoShell 是一款完全用 Rust 打造的原生 SSH 工作台。加密凭据库、实时监控、多标签终端、SFTP —— 全部集成在一个 6MB 的单文件可执行程序中。无 Electron、无 JavaScript 运行时。",
-  "hero.cta.primary": "下载 v0.6.27",
+  "hero.cta.primary": "下载 v0.7.0",
   "hero.cta.secondary": "探索功能",
   "hero.cta.source": "查看源码 →",
   "hero.stat.binary": "程序体积",
@@ -73,7 +73,7 @@ export const zh: Dict = {
 
   "dl.eyebrow": "立即开始",
   "dl.title": "下载 NeoShell",
-  "dl.lede": "v0.6.27 —— 单文件可执行，无需安装依赖。",
+  "dl.lede": "v0.7.0 —— 单文件可执行，无需安装依赖。",
   "dl.macos": "macOS",
   "dl.macos_arm": "Apple Silicon（ARM64）",
   "dl.macos_intel": "Intel（x86_64）",
@@ -86,36 +86,40 @@ export const zh: Dict = {
   "dl.update_note": "已安装用户？App 会在 1 小时内自动升级。",
 
   "cl.eyebrow": "发布日志",
-  "cl.title": "v0.6.27 里有什么",
-  "cl.date": "2026-04-25",
+  "cl.title": "v0.7.0 里有什么",
+  "cl.date": "2026-09-23",
   "cl.latest": "最新",
   "cl.category.added": "新增",
   "cl.category.changed": "优化",
   "cl.category.fixed": "修复",
   "cl.added.1":
-    "Cmd+F 终端搜索 —— 浮动搜索栏实时扫 scrollback + 当前 grid，黄/橙色高亮、3/12 计数、大小写 toggle、Enter/↑/↓ 导航。",
+    "输入法全面可用 —— 连接名、分组、搜索框和终端里都能直接用拼音等输入法打中文；密码框会自动关闭输入法。",
   "cl.added.2":
-    "一键批量导入 ~/.ssh/config —— 所有 Host 条目入连接列表，按 user@host:port 去重。",
+    "SFTP 文件操作 —— 右键新建文件夹、重命名、删除、改权限；整个文件夹上传和下载；把文件拖进窗口直接上传。",
   "cl.added.3":
-    "命令广播 —— 一次输入，下发到任意多个活跃 session。完美适配 apt update、日志 tail 等场景。",
+    "端口转发新增远程转发（-R）和动态 SOCKS5 转发（-D），与本地转发并列。",
   "cl.added.4":
-    "命令片段库 —— 命名片段持久化到 snippets.json，点击即发送。",
+    "支持双因素登录（keyboard-interactive 验证码）和 SSH agent 认证。",
   "cl.added.5":
-    "Settings → Appearance —— 7 个颜色 zone 调色盘、字号滑条、实时预览、自动存 theme.json。",
+    "命令面板（Cmd/Ctrl+K）、分屏、SSH 密钥管理器，以及多会话同步输入。",
   "cl.added.6":
-    "底部面板可折叠 —— Splitter 中央 chevron 按钮 + 新快捷键 Cmd+J / Ctrl+J（VSCode/iTerm2 约定）。",
+    "监控面板新增监听端口、结束进程、每核 CPU 和 swap；8 套配色方案；连接分组可折叠。",
   "cl.changed.1":
-    "主题系统全面 rollout：29 个 view 函数、206 处字号、~280 处颜色。实时生效无需重启。",
+    "SSH 主机密钥会对照 ~/.ssh/known_hosts 校验：首次连接自动记录，密钥变化则拒绝连接。",
   "cl.changed.2":
-    "工具栏按钮支持点开/点关切换，不用再找 × 按钮。",
+    "代理和隧道的密码在首次解锁时迁入加密保险库；闲置 15 分钟后保险库自动上锁。",
   "cl.changed.3":
-    "快捷键帮助面板大改：平台自适应（macOS 显示 ⌘，其他 Ctrl）、中英文 i18n、按领域分组。",
+    "更新包带签名，安装前先校验。",
   "cl.changed.4":
-    "Windows / Linux 上 Ctrl+C 现在正确发 SIGINT 中断命令——复制粘贴改用 Ctrl+Shift+C / Ctrl+Shift+V（Windows Terminal 约定）。macOS 仍用 ⌘+C / ⌘+V。",
+    "空闲时更省电 —— 终端有输出才刷新界面，不再每秒轮询 20 次。",
   "cl.changed.5":
-    "帮助面板写出鼠标行为——左键拖选释放后自动复制、session 内右键粘贴，外加单独一条 Ctrl+C → SIGINT 提示。",
+    "所有界面文字对比度达到 WCAG AA；图标按钮加上提示；欢迎页可以直接新建或导入连接。",
   "cl.fixed.1":
-    "Overlay 滚动穿透 & 点击穿透 —— 打开任意 overlay 时，下面的终端不再响应滚轮或点击。",
+    "修复错误信息中英文混排时程序闪退。",
+  "cl.fixed.2":
+    "修复 Windows 上打开含 GBK 编码文件名的 SFTP 目录时程序退出。",
+  "cl.fixed.3":
+    "更新失败时回滚到上一个版本，不再导致程序无法启动。",
 
   "contact.eyebrow": "保持联系",
   "contact.title": "加入社区",

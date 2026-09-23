@@ -53,7 +53,7 @@ arboard = "3"
 ureq = { version = "~2", features = ["json"] }
 # md-5 is only kept to validate legacy manifests that predate the sha256 field.
 md-5 = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 # Detached ed25519 signature over a downloaded core library (verified again by
 # the launcher before it is installed).
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }

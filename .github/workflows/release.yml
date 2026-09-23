@@ -117,6 +117,19 @@ jobs:
             SIGN_IDENTITY="${{ secrets.MACOS_SIGN_IDENTITY }}"
             [ -n "$SIGN_IDENTITY" ] || { echo "::error::MACOS_CERTIFICATE_BASE64 is set but MACOS_SIGN_IDENTITY is empty"; exit 1; }
             REQUIRE_REAL_SIGNATURE=1
+            # An expired or revoked certificate imports fine but is no valid
+            # signing identity, and codesign then fails with "no identity
+            # found". (The Apple Development certificate this was set up with
+            # expired on 2026-08-07.) Warn loudly and sign ad-hoc rather than
+            # block the release. Fresh downloads were never Gatekeeper-approved
+            # anyway (a development certificate is not a distribution one),
+            # and in-app updates always load the unsigned core library.
+            if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -qF "$SIGN_IDENTITY"; then
+              echo "::warning::MACOS_SIGN_IDENTITY is not a valid code-signing identity in the imported certificate (expired or revoked?). Signing ad-hoc. Renew the certificate and update MACOS_CERTIFICATE_BASE64 / MACOS_CERTIFICATE_PASSWORD."
+              echo "### macOS build signed ad-hoc: the configured certificate is expired or invalid" >> "$GITHUB_STEP_SUMMARY"
+              SIGN_IDENTITY="-"
+              REQUIRE_REAL_SIGNATURE=0
+            fi
           else
             echo "::warning::No MACOS_CERTIFICATE_BASE64 — falling back to ad-hoc signing. This build is NOT distributable."
             SIGN_IDENTITY="-"  # Ad-hoc signing (no certificate)

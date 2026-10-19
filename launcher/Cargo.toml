@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 libloading = "0.8"
-dirs = "5"
+dirs = "7"
 
 # Update authenticity: the launcher re-verifies the detached ed25519 signature
 # of a staged core library before installing it. Kept deliberately minimal —
